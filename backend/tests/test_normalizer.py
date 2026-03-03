@@ -71,13 +71,15 @@ def test_parse_jsonl():
     assert len(docs) == 1
     doc = docs[0]
     assert doc.format == "jsonl"
-    assert doc.raw_text == "Hi Chloe!\nHello there"
+    assert doc.raw_text == "volunteer: Hi Chloe!\nstudent: Hello there"
     assert len(doc.pre_annotations) == 1
     span = doc.pre_annotations[0]
     assert span.label == "NAME"  # PERSON -> NAME
     assert span.text == "Chloe"
-    assert span.start == 3
-    assert span.end == 8
+    assert span.start == 14
+    assert span.end == 19
+    assert doc.utterances[0].speaker == "volunteer"
+    assert doc.raw_text[doc.utterances[0].global_start : doc.utterances[0].global_end] == "Hi Chloe!"
     assert "NAME" in doc.label_set
 
 
@@ -146,14 +148,39 @@ def test_jsonl_offset_remapping():
     raw = json.dumps(record).encode()
     docs = parse_file(raw, "test.json", "doc5")
     doc = docs[0]
-    # "Hello world\nHi Alice!"
-    #  01234567890 1 234567890
-    #  offset 0    12
-    assert doc.raw_text == "Hello world\nHi Alice!"
+    # "a: Hello world\nb: Hi Alice!"
+    # 01234567890123 4 567890123456
+    assert doc.raw_text == "a: Hello world\nb: Hi Alice!"
     span = doc.pre_annotations[0]
-    assert span.start == 15  # 12 (len("Hello world") + 1 for \n) + 3
-    assert span.end == 20
+    assert span.start == 21
+    assert span.end == 26
     assert doc.raw_text[span.start : span.end] == "Alice"
+
+
+def test_jsonl_sorted_by_sequence_id():
+    record = {
+        "transcript": [
+            {
+                "_id": "1",
+                "role": "student",
+                "content": "Second line",
+                "sequence_id": 2,
+                "annotations": [],
+            },
+            {
+                "_id": "0",
+                "role": "volunteer",
+                "content": "First line",
+                "sequence_id": 1,
+                "annotations": [],
+            },
+        ],
+        "annotations": [],
+    }
+    raw = json.dumps(record).encode()
+    docs = parse_file(raw, "sorted.json", "seq")
+    assert len(docs) == 1
+    assert docs[0].raw_text.startswith("volunteer: First line\nstudent: Second line")
 
 
 def test_hips_v2_full():

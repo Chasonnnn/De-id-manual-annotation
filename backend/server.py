@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
@@ -12,9 +13,25 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from models import CanonicalDocument, CanonicalSpan, AgentOutputs
+from models import (
+    AgentOutputs,
+    AgentRunMetrics,
+    CanonicalDocument,
+    CanonicalSpan,
+    LLMConfidenceMetric,
+)
 from normalizer import parse_file
-from agent import MODEL_PRESETS, SYSTEM_PROMPT, run_regex, run_llm_with_metadata
+from agent import (
+    FORMAT_GUARDRAIL,
+    METHOD_DEFINITION_BY_ID,
+    MODEL_PRESETS,
+    SYSTEM_PROMPT,
+    list_agent_methods,
+    normalize_method_spans,
+    run_llm_with_metadata,
+    run_method_with_metadata,
+    run_regex,
+)
 from metrics import compute_metrics
 
 app = FastAPI(title="Annotation Tool")
@@ -30,6 +47,12 @@ app.add_middleware(
 BASE_DIR = Path(".annotation_tool")
 SESSIONS_DIR = BASE_DIR / "sessions"
 CONFIG_PATH = BASE_DIR / "config.json"
+PROFILE_PATH = BASE_DIR / "session_profile.json"
+
+BUNDLE_FORMAT = "annotation_tool_session"
+BUNDLE_VERSION = 2
+SUPPORTED_BUNDLE_VERSIONS = {1, 2}
+TOOL_VERSION = "2026.03.03"
 
 DEFAULT_CONFIG = {
     "system_prompt": SYSTEM_PROMPT,
@@ -39,6 +62,12 @@ DEFAULT_CONFIG = {
     "reasoning_effort": "xhigh",
     "anthropic_thinking": False,
     "anthropic_thinking_budget_tokens": None,
+}
+
+DEFAULT_SESSION_PROFILE = {
+    "project_name": "",
+    "author": "",
+    "notes": "",
 }
 
 
@@ -83,6 +112,72 @@ def _load_sidecar(
     return [CanonicalSpan(**s) for s in raw]
 
 
+def _delete_sidecar(doc_id: str, kind: str, session_id: str = "default") -> bool:
+    path = _session_dir(session_id) / f"{doc_id}.{kind}.json"
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
+
+
+def _load_method_sidecars(
+    doc_id: str,
+    session_id: str = "default",
+) -> dict[str, list[CanonicalSpan]]:
+    base = _session_dir(session_id)
+    sidecars: dict[str, list[CanonicalSpan]] = {}
+    prefix = f"{doc_id}.agent.method."
+    for path in sorted(base.glob(f"{prefix}*.json")):
+        name = path.name
+        if not name.startswith(prefix) or not name.endswith(".json"):
+            continue
+        method_id = name[len(prefix) : -len(".json")]
+        if not method_id:
+            continue
+        try:
+            raw = json.loads(path.read_text())
+            if not isinstance(raw, list):
+                continue
+            sidecars[method_id] = [CanonicalSpan(**item) for item in raw]
+        except Exception:
+            continue
+    return sidecars
+
+
+def _save_json_sidecar(
+    doc_id: str,
+    kind: str,
+    payload: dict,
+    session_id: str = "default",
+):
+    d = _session_dir(session_id)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{doc_id}.{kind}.json").write_text(json.dumps(payload, indent=2))
+
+
+def _load_json_sidecar(
+    doc_id: str,
+    kind: str,
+    session_id: str = "default",
+) -> dict | None:
+    p = _session_dir(session_id) / f"{doc_id}.{kind}.json"
+    if not p.exists():
+        return None
+    raw = json.loads(p.read_text())
+    if not isinstance(raw, dict):
+        return None
+    return raw
+
+
+def _normalize_optional_llm_confidence(raw: object) -> LLMConfidenceMetric | None:
+    if raw is None:
+        return None
+    try:
+        return LLMConfidenceMetric.model_validate(raw)
+    except Exception as exc:
+        raise ValueError(f"Invalid llm_confidence metric: {exc}") from exc
+
+
 # Session index management
 _session_docs: dict[str, list[str]] = {}
 
@@ -112,15 +207,37 @@ def _enrich_doc(
     manual = _load_sidecar(doc.id, "manual", session_id)
     agent_rule = _load_sidecar(doc.id, "agent.rule", session_id)
     agent_llm = _load_sidecar(doc.id, "agent.llm", session_id)
+    agent_methods = _load_method_sidecars(doc.id, session_id)
     # Backward compat: also check old sidecar name
     agent_openai = _load_sidecar(doc.id, "agent.openai", session_id)
+    llm_metric_raw = _load_json_sidecar(doc.id, "agent.llm.metrics", session_id)
 
-    llm_spans = (agent_llm or []) + (agent_openai or [])
+    # Prefer canonical sidecar. Only fall back to legacy sidecar when canonical is absent.
+    if agent_llm is not None:
+        llm_spans = agent_llm
+    elif agent_openai is not None:
+        llm_spans = agent_openai
+    else:
+        llm_spans = []
+    llm_confidence: LLMConfidenceMetric | None = None
+    if isinstance(llm_metric_raw, dict):
+        try:
+            llm_confidence = LLMConfidenceMetric.model_validate(llm_metric_raw)
+        except Exception:
+            llm_confidence = None
 
     doc.manual_annotations = manual or []
-    doc.agent_outputs = AgentOutputs(rule=agent_rule or [], llm=llm_spans)
-    doc.agent_annotations = doc.agent_outputs.rule + doc.agent_outputs.llm
+    doc.agent_outputs = AgentOutputs(
+        rule=agent_rule or [],
+        llm=llm_spans,
+        methods=agent_methods,
+    )
+    method_spans: list[CanonicalSpan] = []
+    for method_id in sorted(doc.agent_outputs.methods.keys()):
+        method_spans.extend(doc.agent_outputs.methods[method_id])
+    doc.agent_annotations = doc.agent_outputs.rule + doc.agent_outputs.llm + method_spans
     doc.agent_run_warnings = []
+    doc.agent_run_metrics = AgentRunMetrics(llm_confidence=llm_confidence)
 
     if manual:
         doc.status = "in_progress"
@@ -165,6 +282,84 @@ def _normalize_and_validate_spans(
     return _dedup_spans(normalized)
 
 
+def _spans_from_source(
+    doc: CanonicalDocument,
+    source: str,
+) -> list[CanonicalSpan]:
+    if source == "pre":
+        return doc.pre_annotations
+    if source == "manual":
+        return doc.manual_annotations
+    if source == "agent":
+        return doc.agent_annotations
+    if source == "agent.rule":
+        return doc.agent_outputs.rule
+    if source == "agent.llm":
+        return doc.agent_outputs.llm
+    if source.startswith("agent.method."):
+        method_id = source[len("agent.method.") :]
+        if not method_id:
+            raise HTTPException(status_code=400, detail=f"Unknown source: {source}")
+        return doc.agent_outputs.methods.get(method_id, [])
+    raise HTTPException(status_code=400, detail=f"Unknown source: {source}")
+
+
+def _prf_from_counts(tp: int, fp: int, fn: int) -> dict[str, float | int]:
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = (
+        2 * precision * recall / (precision + recall)
+        if (precision + recall) > 0
+        else 0.0
+    )
+    return {
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+    }
+
+
+def _normalize_optional_spans(raw: object, raw_text: str) -> list[CanonicalSpan]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("Span list must be a JSON array")
+    spans: list[CanonicalSpan] = []
+    for index, item in enumerate(raw):
+        try:
+            spans.append(CanonicalSpan.model_validate(item))
+        except Exception as exc:  # pragma: no cover - pydantic message can vary
+            raise ValueError(f"Invalid span at index {index}: {exc}") from exc
+    try:
+        return _normalize_and_validate_spans(spans, raw_text)
+    except HTTPException as exc:
+        raise ValueError(str(exc.detail)) from exc
+
+
+def _delete_doc_files(doc_id: str, session_id: str = "default") -> bool:
+    base = _session_dir(session_id)
+    targets = [
+        base / f"{doc_id}.source.json",
+        base / f"{doc_id}.manual.json",
+        base / f"{doc_id}.agent.rule.json",
+        base / f"{doc_id}.agent.llm.json",
+        base / f"{doc_id}.agent.llm.metrics.json",
+        base / f"{doc_id}.agent.openai.json",
+    ]
+    deleted = False
+    for path in targets:
+        if path.exists():
+            path.unlink()
+            deleted = True
+    for path in base.glob(f"{doc_id}.agent.method.*.json"):
+        path.unlink()
+        deleted = True
+    return deleted
+
+
 # --- Config ---
 
 
@@ -178,6 +373,73 @@ def _load_config() -> dict:
 def _save_config(cfg: dict):
     _ensure_dirs()
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+
+
+def _normalize_session_profile(raw: object) -> dict[str, str]:
+    if raw is None:
+        return dict(DEFAULT_SESSION_PROFILE)
+    if not isinstance(raw, dict):
+        raise ValueError("Session profile must be an object")
+
+    def _clean(key: str, max_len: int) -> str:
+        value = raw.get(key, "")
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise ValueError(f"Session profile field '{key}' must be a string")
+        normalized = value.strip()
+        if len(normalized) > max_len:
+            raise ValueError(
+                f"Session profile field '{key}' exceeds max length {max_len}"
+            )
+        return normalized
+
+    return {
+        "project_name": _clean("project_name", 120),
+        "author": _clean("author", 120),
+        "notes": _clean("notes", 5000),
+    }
+
+
+def _load_session_profile() -> dict[str, str]:
+    _ensure_dirs()
+    if not PROFILE_PATH.exists():
+        return dict(DEFAULT_SESSION_PROFILE)
+    try:
+        raw = json.loads(PROFILE_PATH.read_text())
+        return _normalize_session_profile(raw)
+    except Exception:
+        # Keep app usable even with a malformed local profile file.
+        return dict(DEFAULT_SESSION_PROFILE)
+
+
+def _save_session_profile(profile: dict[str, str]):
+    _ensure_dirs()
+    PROFILE_PATH.write_text(json.dumps(profile, indent=2))
+
+
+def _resolve_bundle_version(payload: dict) -> int:
+    bundle_format = payload.get("format")
+    raw_version = payload.get("version")
+
+    if bundle_format == "annotation_tool_session_v1":
+        return 1
+    if bundle_format == "annotation_tool_session_v2":
+        return 2
+    if bundle_format == BUNDLE_FORMAT:
+        if raw_version is None:
+            return BUNDLE_VERSION
+        if isinstance(raw_version, int):
+            return raw_version
+        raise HTTPException(status_code=400, detail="Bundle version must be an integer")
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Unsupported bundle format. Expected one of: "
+            "'annotation_tool_session', 'annotation_tool_session_v1', "
+            "'annotation_tool_session_v2'."
+        ),
+    )
 
 
 def _normalize_gateway_base(api_base: str) -> str:
@@ -227,6 +489,97 @@ def _fetch_gateway_model_ids(api_base: str, api_key: str) -> list[str]:
             if isinstance(value, str) and value:
                 model_ids.append(value)
     return model_ids
+
+
+# Credential status helpers (no secret exposure)
+ENV_API_KEY_VARS = [
+    "LITELLM_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+]
+ENV_API_BASE_VARS = ["LITELLM_BASE_URL"]
+
+
+def _present_env_vars(names: list[str]) -> list[str]:
+    return [name for name in names if bool(os.environ.get(name))]
+
+
+def _resolve_llm_runtime_config(body: "AgentRunBody") -> dict[str, object]:
+    cfg = _load_config()
+    api_key = (
+        body.api_key
+        or os.environ.get("LITELLM_API_KEY", "")
+        or os.environ.get("OPENAI_API_KEY", "")
+        or os.environ.get("ANTHROPIC_API_KEY", "")
+        or os.environ.get("GEMINI_API_KEY", "")
+        or os.environ.get("GOOGLE_API_KEY", "")
+    )
+    api_base = (
+        body.api_base
+        or str(cfg.get("api_base", "") or "")
+        or os.environ.get("LITELLM_BASE_URL", "")
+    )
+    model = body.model or cfg.get("model", DEFAULT_CONFIG["model"])
+    requested_system_prompt = body.system_prompt or cfg.get(
+        "system_prompt", DEFAULT_CONFIG["system_prompt"]
+    )
+    if (
+        isinstance(requested_system_prompt, str)
+        and "confidence" in requested_system_prompt
+        and '"start"' not in requested_system_prompt
+    ):
+        requested_system_prompt = SYSTEM_PROMPT
+
+    temperature = (
+        body.temperature
+        if body.temperature is not None
+        else float(cfg.get("temperature", 0.0))
+    )
+    reasoning_effort = body.reasoning_effort or cfg.get("reasoning_effort", "none")
+    anthropic_thinking = (
+        body.anthropic_thinking
+        if body.anthropic_thinking is not None
+        else bool(cfg.get("anthropic_thinking", False))
+    )
+    anthropic_thinking_budget_tokens = (
+        body.anthropic_thinking_budget_tokens
+        if body.anthropic_thinking_budget_tokens is not None
+        else cfg.get("anthropic_thinking_budget_tokens")
+    )
+    return {
+        "api_key": api_key,
+        "api_base": api_base,
+        "model": model,
+        "requested_system_prompt": requested_system_prompt,
+        "temperature": temperature,
+        "reasoning_effort": reasoning_effort,
+        "anthropic_thinking": anthropic_thinking,
+        "anthropic_thinking_budget_tokens": anthropic_thinking_budget_tokens,
+    }
+
+
+def _validate_gateway_model_access(*, model: str, api_base: str, api_key: str):
+    if "." in model and "/" not in model and not api_base:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Model '{model}' is a gateway model ID. Set api_base (or LITELLM_BASE_URL) "
+                "to use gateway-routed models."
+            ),
+        )
+    if api_base:
+        gateway_models = _fetch_gateway_model_ids(api_base, api_key)
+        if model not in gateway_models:
+            preview = ", ".join(gateway_models[:15])
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Model '{model}' is not available for this API key on {api_base}. "
+                    f"Pick a model from /v1/models. Examples: {preview}"
+                ),
+            )
 
 
 # --- Routes ---
@@ -286,6 +639,22 @@ async def upload_file(file: UploadFile = File(...)):
     raise HTTPException(status_code=400, detail="No documents parsed from file")
 
 
+@app.delete("/api/documents/{doc_id}")
+async def delete_document(doc_id: str):
+    session_id = "default"
+    ids = _load_session_index(session_id)
+    in_index = doc_id in ids
+    removed_files = _delete_doc_files(doc_id, session_id)
+    if not in_index and not removed_files:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if in_index:
+        _session_docs[session_id] = [did for did in ids if did != doc_id]
+        _save_session_index(session_id)
+
+    return {"deleted": True, "doc_id": doc_id}
+
+
 @app.put("/api/documents/{doc_id}/manual-annotations")
 async def save_manual_annotations(doc_id: str, spans: list[CanonicalSpan]):
     session_id = "default"
@@ -298,7 +667,7 @@ async def save_manual_annotations(doc_id: str, spans: list[CanonicalSpan]):
 
 
 class AgentRunBody(BaseModel):
-    mode: Literal["rule", "llm", "openai"] = "rule"
+    mode: Literal["rule", "llm", "method", "openai"] = "rule"
     system_prompt: str | None = None
     model: str | None = None
     temperature: float | None = None
@@ -307,6 +676,14 @@ class AgentRunBody(BaseModel):
     reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"] | None = None
     anthropic_thinking: bool | None = None
     anthropic_thinking_budget_tokens: int | None = None
+    method_id: str | None = None
+    method_verify: bool | None = None
+
+
+class SessionProfileBody(BaseModel):
+    project_name: str | None = None
+    author: str | None = None
+    notes: str | None = None
 
 
 @app.post("/api/documents/{doc_id}/agent")
@@ -324,20 +701,16 @@ async def run_agent(doc_id: str, body: AgentRunBody):
         return enriched
 
     if body.mode in ("llm", "openai"):
-        cfg = _load_config()
-        api_key = (
-            body.api_key
-            or os.environ.get("LITELLM_API_KEY", "")
-            or os.environ.get("OPENAI_API_KEY", "")
-            or os.environ.get("ANTHROPIC_API_KEY", "")
-            or os.environ.get("GEMINI_API_KEY", "")
-            or os.environ.get("GOOGLE_API_KEY", "")
-        )
-        api_base = (
-            body.api_base
-            or str(cfg.get("api_base", "") or "")
-            or os.environ.get("LITELLM_BASE_URL", "")
-        )
+        llm_runtime = _resolve_llm_runtime_config(body)
+        api_key = str(llm_runtime["api_key"])
+        api_base = str(llm_runtime["api_base"])
+        model = str(llm_runtime["model"])
+        requested_system_prompt = str(llm_runtime["requested_system_prompt"])
+        temperature = float(llm_runtime["temperature"])
+        reasoning_effort = str(llm_runtime["reasoning_effort"])
+        anthropic_thinking = bool(llm_runtime["anthropic_thinking"])
+        anthropic_thinking_budget_tokens = llm_runtime["anthropic_thinking_budget_tokens"]
+
         if not api_key:
             raise HTTPException(
                 status_code=400,
@@ -347,54 +720,9 @@ async def run_agent(doc_id: str, body: AgentRunBody):
                     "or provide api_key in request."
                 ),
             )
-        model = body.model or cfg.get("model", DEFAULT_CONFIG["model"])
-        if "." in model and "/" not in model and not api_base:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Model '{model}' is a gateway model ID. Set api_base (or LITELLM_BASE_URL) "
-                    "to use gateway-routed models."
-                ),
-            )
-        if api_base:
-            gateway_models = _fetch_gateway_model_ids(api_base, api_key)
-            if model not in gateway_models:
-                preview = ", ".join(gateway_models[:15])
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Model '{model}' is not available for this API key on {api_base}. "
-                        f"Pick a model from /v1/models. Examples: {preview}"
-                    ),
-                )
-        system_prompt = body.system_prompt or cfg.get(
-            "system_prompt", DEFAULT_CONFIG["system_prompt"]
-        )
-        if (
-            isinstance(system_prompt, str)
-            and "confidence" in system_prompt
-            and '"start"' not in system_prompt
-        ):
-            # Migrate older local config prompt schema to offset-based schema.
-            system_prompt = SYSTEM_PROMPT
-        temperature = (
-            body.temperature
-            if body.temperature is not None
-            else float(cfg.get("temperature", 0.0))
-        )
-        reasoning_effort = body.reasoning_effort or cfg.get(
-            "reasoning_effort", "none"
-        )
-        anthropic_thinking = (
-            body.anthropic_thinking
-            if body.anthropic_thinking is not None
-            else bool(cfg.get("anthropic_thinking", False))
-        )
-        anthropic_thinking_budget_tokens = (
-            body.anthropic_thinking_budget_tokens
-            if body.anthropic_thinking_budget_tokens is not None
-            else cfg.get("anthropic_thinking_budget_tokens")
-        )
+        _validate_gateway_model_access(model=model, api_base=api_base, api_key=api_key)
+
+        system_prompt = f"{requested_system_prompt}\n\n{FORMAT_GUARDRAIL}"
 
         try:
             llm_result = run_llm_with_metadata(
@@ -404,9 +732,9 @@ async def run_agent(doc_id: str, body: AgentRunBody):
                 model=model,
                 system_prompt=system_prompt,
                 temperature=temperature,
-                reasoning_effort=reasoning_effort,
+                reasoning_effort=reasoning_effort,  # type: ignore[arg-type]
                 anthropic_thinking=anthropic_thinking,
-                anthropic_thinking_budget_tokens=anthropic_thinking_budget_tokens,
+                anthropic_thinking_budget_tokens=anthropic_thinking_budget_tokens,  # type: ignore[arg-type]
             )
         except Exception as exc:
             message = str(exc).strip() or exc.__class__.__name__
@@ -416,16 +744,93 @@ async def run_agent(doc_id: str, body: AgentRunBody):
             if api_base:
                 parsed = urlparse(api_base)
                 path = parsed.path.rstrip("/")
-                if not path.endswith("/v1"):
+                message_lower = message.lower()
+                is_base_routing_issue = any(
+                    marker in message_lower
+                    for marker in ("not found", "404", "connection", "timeout", "refused")
+                )
+                if not path.endswith("/v1") and is_base_routing_issue:
                     detail += (
                         " Hint: this gateway may require an OpenAI-compatible '/v1' path; "
                         "the backend also retries with '/v1' automatically."
                     )
             raise HTTPException(status_code=502, detail=detail) from exc
-        spans = _normalize_and_validate_spans(llm_result.spans, doc.raw_text)
+        spans = _normalize_and_validate_spans(
+            normalize_method_spans(llm_result.spans),
+            doc.raw_text,
+        )
         _save_sidecar(doc_id, "agent.llm", spans, session_id)
+        _delete_sidecar(doc_id, "agent.openai", session_id)
+        _save_json_sidecar(
+            doc_id,
+            "agent.llm.metrics",
+            llm_result.llm_confidence.model_dump(),
+            session_id,
+        )
         enriched = _enrich_doc(doc, session_id)
         enriched.agent_run_warnings = llm_result.warnings
+        enriched.agent_run_metrics = AgentRunMetrics(
+            llm_confidence=llm_result.llm_confidence
+        )
+        return enriched
+
+    if body.mode == "method":
+        method_id = (body.method_id or "").strip()
+        if not method_id:
+            raise HTTPException(status_code=400, detail="method_id is required for mode='method'")
+
+        method_definition = METHOD_DEFINITION_BY_ID.get(method_id)
+        if method_definition is None:
+            raise HTTPException(status_code=400, detail=f"Unknown method: {method_id}")
+
+        llm_runtime = _resolve_llm_runtime_config(body)
+        api_key = str(llm_runtime["api_key"])
+        api_base = str(llm_runtime["api_base"])
+        model = str(llm_runtime["model"])
+        requested_system_prompt = str(llm_runtime["requested_system_prompt"])
+        temperature = float(llm_runtime["temperature"])
+        reasoning_effort = str(llm_runtime["reasoning_effort"])
+        anthropic_thinking = bool(llm_runtime["anthropic_thinking"])
+        anthropic_thinking_budget_tokens = llm_runtime["anthropic_thinking_budget_tokens"]
+
+        if method_definition["uses_llm"] and not api_key:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "API key required for this method. Set LITELLM_API_KEY "
+                    "(recommended for proxy/gateway) or provide api_key in request."
+                ),
+            )
+        if method_definition["uses_llm"]:
+            _validate_gateway_model_access(model=model, api_base=api_base, api_key=api_key)
+
+        try:
+            method_result = run_method_with_metadata(
+                text=doc.raw_text,
+                method_id=method_id,
+                api_key=api_key or None,
+                api_base=api_base or None,
+                model=model,
+                system_prompt=requested_system_prompt,
+                temperature=temperature,
+                reasoning_effort=reasoning_effort,  # type: ignore[arg-type]
+                anthropic_thinking=anthropic_thinking,
+                anthropic_thinking_budget_tokens=anthropic_thinking_budget_tokens,  # type: ignore[arg-type]
+                method_verify=body.method_verify,
+            )
+        except Exception as exc:
+            message = str(exc).strip() or exc.__class__.__name__
+            if len(message) > 800:
+                message = f"{message[:800]}..."
+            status_code = 400
+            if "LLM returned" in message or "request failed" in message.lower():
+                status_code = 502
+            raise HTTPException(status_code=status_code, detail=message) from exc
+
+        spans = _normalize_and_validate_spans(method_result.spans, doc.raw_text)
+        _save_sidecar(doc_id, f"agent.method.{method_id}", spans, session_id)
+        enriched = _enrich_doc(doc, session_id)
+        enriched.agent_run_warnings = method_result.warnings
         return enriched
 
     raise HTTPException(status_code=400, detail=f"Unknown agent mode: {body.mode}")
@@ -444,25 +849,338 @@ async def get_metrics(
         raise HTTPException(status_code=404, detail="Document not found")
 
     enriched = _enrich_doc(doc, session_id)
-
-    def _get_spans(source: str) -> list[CanonicalSpan]:
-        if source == "pre":
-            return enriched.pre_annotations
-        if source == "manual":
-            return enriched.manual_annotations
-        if source == "agent":
-            return enriched.agent_annotations
-        if source == "agent.rule":
-            return enriched.agent_outputs.rule
-        if source == "agent.llm":
-            return enriched.agent_outputs.llm
-        raise HTTPException(status_code=400, detail=f"Unknown source: {source}")
-
-    ref_spans = _get_spans(reference)
-    hyp_spans = _get_spans(hypothesis)
+    ref_spans = _spans_from_source(enriched, reference)
+    hyp_spans = _spans_from_source(enriched, hypothesis)
 
     result = compute_metrics(ref_spans, hyp_spans, match_mode)
+    result["llm_confidence"] = (
+        enriched.agent_run_metrics.llm_confidence.model_dump()
+        if enriched.agent_run_metrics.llm_confidence is not None
+        else None
+    )
     return result
+
+
+@app.get("/api/session/profile")
+async def get_session_profile():
+    return _load_session_profile()
+
+
+@app.put("/api/session/profile")
+async def update_session_profile(body: SessionProfileBody):
+    current = _load_session_profile()
+    merged = {
+        **current,
+        **body.model_dump(exclude_none=True),
+    }
+    try:
+        normalized = _normalize_session_profile(merged)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _save_session_profile(normalized)
+    return normalized
+
+
+@app.get("/api/session/export")
+async def export_session_bundle():
+    session_id = "default"
+    ids = _load_session_index(session_id)
+    documents: list[dict] = []
+    for did in ids:
+        doc = _load_doc(did, session_id)
+        if not doc:
+            continue
+        manual = _load_sidecar(did, "manual", session_id) or []
+        agent_rule = _load_sidecar(did, "agent.rule", session_id) or []
+        agent_llm = _load_sidecar(did, "agent.llm", session_id) or []
+        agent_methods = _load_method_sidecars(did, session_id)
+        llm_confidence = _load_json_sidecar(did, "agent.llm.metrics", session_id)
+        export_item = {
+            "source": doc.model_dump(),
+            "manual_annotations": [span.model_dump() for span in manual],
+            "agent_outputs": {
+                "rule": [span.model_dump() for span in agent_rule],
+                "llm": [span.model_dump() for span in agent_llm],
+                "methods": {
+                    method_id: [span.model_dump() for span in spans]
+                    for method_id, spans in agent_methods.items()
+                },
+            },
+        }
+        if llm_confidence is not None:
+            export_item["agent_metrics"] = {"llm_confidence": llm_confidence}
+        documents.append(export_item)
+
+    return {
+        "format": BUNDLE_FORMAT,
+        "version": BUNDLE_VERSION,
+        "project": _load_session_profile(),
+        "compatibility": {
+            "tool_version": TOOL_VERSION,
+            "import_supported_versions": sorted(SUPPORTED_BUNDLE_VERSIONS),
+        },
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "documents": documents,
+        "config": _load_config(),
+    }
+
+
+@app.post("/api/session/import")
+async def import_session_bundle(file: UploadFile = File(...)):
+    session_id = "default"
+    raw = await file.read()
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400, detail="Import file must be valid UTF-8 JSON"
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Import payload must be a JSON object")
+
+    bundle_version = _resolve_bundle_version(payload)
+    if bundle_version not in SUPPORTED_BUNDLE_VERSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported bundle version '{bundle_version}'. "
+                f"Supported versions: {sorted(SUPPORTED_BUNDLE_VERSIONS)}"
+            ),
+        )
+    if bundle_version > BUNDLE_VERSION:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Bundle version {bundle_version} is newer than this tool "
+                f"(max supported version is {BUNDLE_VERSION})."
+            ),
+        )
+
+    raw_documents = payload.get("documents")
+    if not isinstance(raw_documents, list):
+        raise HTTPException(
+            status_code=400, detail="Import payload must contain a 'documents' array"
+        )
+
+    ids = _load_session_index(session_id)
+    existing_ids = set(ids)
+    imported_ids: list[str] = []
+    skipped: list[dict[str, str | int]] = []
+    warnings: list[str] = []
+
+    incoming_project = payload.get("project")
+    if incoming_project is not None:
+        try:
+            profile = _normalize_session_profile(incoming_project)
+            _save_session_profile(profile)
+        except ValueError as exc:
+            warnings.append(f"Ignored invalid project metadata: {exc}")
+
+    for idx, item in enumerate(raw_documents):
+        if not isinstance(item, dict):
+            skipped.append({"index": idx, "reason": "Item is not an object"})
+            continue
+
+        source_raw = item.get("source", item)
+        if not isinstance(source_raw, dict):
+            skipped.append({"index": idx, "reason": "Missing document source object"})
+            continue
+
+        try:
+            doc = CanonicalDocument.model_validate(source_raw)
+        except Exception as exc:  # pragma: no cover - message can vary
+            skipped.append({"index": idx, "reason": f"Invalid source document: {exc}"})
+            continue
+
+        manual_raw = item.get("manual_annotations", source_raw.get("manual_annotations"))
+        agent_outputs = item.get("agent_outputs", source_raw.get("agent_outputs", {}))
+        if not isinstance(agent_outputs, dict):
+            skipped.append({"index": idx, "reason": "agent_outputs must be an object"})
+            continue
+        agent_metrics = item.get("agent_metrics", source_raw.get("agent_run_metrics", {}))
+        if agent_metrics is not None and not isinstance(agent_metrics, dict):
+            skipped.append({"index": idx, "reason": "agent_metrics must be an object"})
+            continue
+
+        try:
+            manual_spans = _normalize_optional_spans(manual_raw, doc.raw_text)
+            rule_spans = _normalize_optional_spans(agent_outputs.get("rule"), doc.raw_text)
+            llm_spans = _normalize_optional_spans(agent_outputs.get("llm"), doc.raw_text)
+            methods_raw = agent_outputs.get("methods", {})
+            if methods_raw is None:
+                methods_raw = {}
+            if not isinstance(methods_raw, dict):
+                raise ValueError("agent_outputs.methods must be an object")
+            method_spans: dict[str, list[CanonicalSpan]] = {}
+            for method_id, method_items in methods_raw.items():
+                if not isinstance(method_id, str) or method_id.strip() == "":
+                    raise ValueError("Method output keys must be non-empty strings")
+                normalized_method = _normalize_optional_spans(method_items, doc.raw_text)
+                if normalized_method:
+                    method_spans[method_id] = normalized_method
+            llm_confidence = _normalize_optional_llm_confidence(
+                agent_metrics.get("llm_confidence") if isinstance(agent_metrics, dict) else None
+            )
+        except ValueError as exc:
+            skipped.append({"index": idx, "reason": str(exc)})
+            continue
+
+        new_id = doc.id
+        while new_id in existing_ids:
+            new_id = str(uuid.uuid4())[:8]
+        if new_id != doc.id:
+            doc = doc.model_copy(update={"id": new_id})
+
+        _save_doc(doc, session_id)
+        if manual_spans:
+            _save_sidecar(new_id, "manual", manual_spans, session_id)
+        if rule_spans:
+            _save_sidecar(new_id, "agent.rule", rule_spans, session_id)
+        if llm_spans:
+            _save_sidecar(new_id, "agent.llm", llm_spans, session_id)
+        for method_id, spans in method_spans.items():
+            _save_sidecar(new_id, f"agent.method.{method_id}", spans, session_id)
+        if llm_confidence is not None:
+            _save_json_sidecar(
+                new_id,
+                "agent.llm.metrics",
+                llm_confidence.model_dump(),
+                session_id,
+            )
+
+        ids.append(new_id)
+        existing_ids.add(new_id)
+        imported_ids.append(new_id)
+
+    _save_session_index(session_id)
+
+    return {
+        "bundle_version": bundle_version,
+        "imported_count": len(imported_ids),
+        "imported_ids": imported_ids,
+        "skipped_count": len(skipped),
+        "skipped": skipped,
+        "warnings": warnings,
+        "total_in_bundle": len(raw_documents),
+    }
+
+
+@app.get("/api/metrics/dashboard")
+async def get_dashboard_metrics(
+    reference: str = Query(...),
+    hypothesis: str = Query(...),
+    match_mode: str = Query("exact"),
+):
+    session_id = "default"
+    ids = _load_session_index(session_id)
+    documents: list[dict] = []
+    total_tp = 0
+    total_fp = 0
+    total_fn = 0
+    sum_micro_p = 0.0
+    sum_micro_r = 0.0
+    sum_micro_f1 = 0.0
+    sum_macro_p = 0.0
+    sum_macro_r = 0.0
+    sum_macro_f1 = 0.0
+    confidence_sum = 0.0
+    documents_with_confidence = 0
+    band_counts = {"high": 0, "medium": 0, "low": 0, "na": 0}
+
+    for did in ids:
+        doc = _load_doc(did, session_id)
+        if not doc:
+            continue
+        enriched = _enrich_doc(doc, session_id)
+        ref_spans = _spans_from_source(enriched, reference)
+        hyp_spans = _spans_from_source(enriched, hypothesis)
+        result = compute_metrics(ref_spans, hyp_spans, match_mode)
+        micro = result["micro"]
+        macro = result["macro"]
+
+        tp = int(micro.get("tp", 0))
+        fp = int(micro.get("fp", 0))
+        fn = int(micro.get("fn", 0))
+        total_tp += tp
+        total_fp += fp
+        total_fn += fn
+
+        sum_micro_p += float(micro.get("precision", 0.0))
+        sum_micro_r += float(micro.get("recall", 0.0))
+        sum_micro_f1 += float(micro.get("f1", 0.0))
+        sum_macro_p += float(macro.get("precision", 0.0))
+        sum_macro_r += float(macro.get("recall", 0.0))
+        sum_macro_f1 += float(macro.get("f1", 0.0))
+        llm_confidence = enriched.agent_run_metrics.llm_confidence
+        if llm_confidence is not None:
+            band_counts[llm_confidence.band] += 1
+            if llm_confidence.available and llm_confidence.confidence is not None:
+                confidence_sum += float(llm_confidence.confidence)
+                documents_with_confidence += 1
+        else:
+            band_counts["na"] += 1
+
+        documents.append(
+            {
+                "id": enriched.id,
+                "filename": enriched.filename,
+                "reference_count": len(ref_spans),
+                "hypothesis_count": len(hyp_spans),
+                "micro": {
+                    "precision": float(micro.get("precision", 0.0)),
+                    "recall": float(micro.get("recall", 0.0)),
+                    "f1": float(micro.get("f1", 0.0)),
+                    "tp": tp,
+                    "fp": fp,
+                    "fn": fn,
+                },
+                "macro": {
+                    "precision": float(macro.get("precision", 0.0)),
+                    "recall": float(macro.get("recall", 0.0)),
+                    "f1": float(macro.get("f1", 0.0)),
+                },
+                "cohens_kappa": float(result.get("cohens_kappa", 0.0)),
+                "mean_iou": float(result.get("mean_iou", 0.0)),
+                "llm_confidence": (
+                    llm_confidence.model_dump() if llm_confidence is not None else None
+                ),
+            }
+        )
+
+    compared = len(documents)
+    avg_doc_micro = {
+        "precision": (sum_micro_p / compared) if compared else 0.0,
+        "recall": (sum_micro_r / compared) if compared else 0.0,
+        "f1": (sum_micro_f1 / compared) if compared else 0.0,
+    }
+    avg_doc_macro = {
+        "precision": (sum_macro_p / compared) if compared else 0.0,
+        "recall": (sum_macro_r / compared) if compared else 0.0,
+        "f1": (sum_macro_f1 / compared) if compared else 0.0,
+    }
+
+    documents.sort(key=lambda item: item["micro"]["f1"])
+    return {
+        "reference": reference,
+        "hypothesis": hypothesis,
+        "match_mode": match_mode,
+        "total_documents": len(ids),
+        "documents_compared": compared,
+        "micro": _prf_from_counts(total_tp, total_fp, total_fn),
+        "avg_document_micro": avg_doc_micro,
+        "avg_document_macro": avg_doc_macro,
+        "llm_confidence_summary": {
+            "documents_with_confidence": documents_with_confidence,
+            "mean_confidence": (
+                (confidence_sum / documents_with_confidence)
+                if documents_with_confidence > 0
+                else None
+            ),
+            "band_counts": band_counts,
+        },
+        "documents": documents,
+    }
 
 
 @app.get("/api/config")
@@ -481,3 +1199,20 @@ async def update_config(body: dict):
 @app.get("/api/models/presets")
 async def list_model_presets():
     return {"presets": MODEL_PRESETS}
+
+
+@app.get("/api/agent/methods")
+async def list_agent_method_catalog():
+    return {"methods": list_agent_methods()}
+
+
+@app.get("/api/agent/credentials/status")
+async def get_agent_credentials_status():
+    api_key_sources = _present_env_vars(ENV_API_KEY_VARS)
+    api_base_sources = _present_env_vars(ENV_API_BASE_VARS)
+    return {
+        "has_api_key": bool(api_key_sources),
+        "api_key_sources": api_key_sources,
+        "has_api_base": bool(api_base_sources),
+        "api_base_sources": api_base_sources,
+    }

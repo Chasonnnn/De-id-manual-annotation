@@ -4,18 +4,20 @@ import { MODEL_PRESETS, getModelPreset } from "../modelPresets";
 import type {
   AgentConfig,
   AgentCredentialStatus,
-  AgentView,
+  AgentMethodOption,
   CanonicalSpan,
+  MethodView,
 } from "../types";
 import AnnotatedText from "./AnnotatedText";
 
 interface Props {
   text: string;
   spans: CanonicalSpan[];
-  activeOutput: AgentView;
-  onActiveOutputChange: (view: AgentView) => void;
+  methods: AgentMethodOption[];
+  activeMethod: MethodView;
+  onActiveMethodChange: (methodId: MethodView) => void;
   diffSpans?: { start: number; end: number; type: "added" | "removed" }[];
-  onRunAgent: (config: AgentConfig) => Promise<void>;
+  onRunMethod: (config: AgentConfig) => Promise<void>;
   running: boolean;
   onScroll: (scrollTop: number) => void;
 }
@@ -23,24 +25,24 @@ interface Props {
 const MODEL_GROUPS = ["OpenAI", "Anthropic", "Google Gemini"] as const;
 const REASONING_EFFORT_OPTIONS = ["none", "low", "medium", "high", "xhigh"] as const;
 
-const AgentPane = forwardRef<HTMLDivElement, Props>(
+const MethodPane = forwardRef<HTMLDivElement, Props>(
   (
     {
       text,
       spans,
-      activeOutput,
-      onActiveOutputChange,
+      methods,
+      activeMethod,
+      onActiveMethodChange,
       diffSpans = [],
-      onRunAgent,
+      onRunMethod,
       running,
       onScroll,
     },
     ref,
   ) => {
     const [configOpen, setConfigOpen] = useState(false);
-    const [mode, setMode] = useState<"rule" | "llm">("rule");
     const [systemPrompt, setSystemPrompt] = useState(
-      "You are a PII annotation assistant. Return ONLY a JSON array of objects with start (0-based), end (exclusive), label, and text for each PII span.",
+      "Identify all PII in the transcript. Label each span with: NAME, LOCATION, SCHOOL, DATE, AGE, PHONE, EMAIL, URL, or MISC_ID.",
     );
     const [model, setModel] = useState("openai.gpt-5.3-codex");
     const [customModel, setCustomModel] = useState("");
@@ -50,6 +52,7 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
     >("xhigh");
     const [anthropicThinking, setAnthropicThinking] = useState(false);
     const [anthropicThinkingBudget, setAnthropicThinkingBudget] = useState(2048);
+    const [methodVerify, setMethodVerify] = useState(false);
     const [apiKey, setApiKey] = useState(() => {
       try {
         return sessionStorage.getItem("agent_api_key") ?? "";
@@ -84,7 +87,29 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
         .catch(() => {
           setCredentialStatus(null);
         });
+      // Load once; local overrides are tracked separately in component state.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    useEffect(() => {
+      const selected = methods.find((method) => method.id === activeMethod);
+      if (selected?.supports_verify_override) {
+        setMethodVerify(Boolean(selected.id === "verified"));
+      } else {
+        setMethodVerify(false);
+      }
+    }, [activeMethod, methods]);
+
+    const selectedMethod = methods.find((method) => method.id === activeMethod) ?? null;
+    const methodAvailable = selectedMethod?.available ?? false;
+    const methodUsesLlm = selectedMethod?.uses_llm ?? true;
+    const supportsVerifyOverride = selectedMethod?.supports_verify_override ?? false;
+
+    const effectiveModel = model === "__custom__" ? customModel.trim() : model;
+    const selectedPreset =
+      model === "__custom__" ? undefined : getModelPreset(effectiveModel);
+    const supportsReasoningEffort = selectedPreset?.supportsReasoningEffort ?? false;
+    const supportsAnthropicThinking = selectedPreset?.supportsAnthropicThinking ?? false;
 
     const handleApiKeyChange = (value: string) => {
       setApiKey(value);
@@ -98,6 +123,7 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
         // sessionStorage unavailable
       }
     };
+
     const handleApiBaseChange = (value: string) => {
       setApiBase(value);
       try {
@@ -111,47 +137,51 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
       }
     };
 
-    const effectiveModel = model === "__custom__" ? customModel : model;
-    const selectedPreset =
-      model === "__custom__" ? undefined : getModelPreset(effectiveModel);
-    const supportsReasoningEffort = selectedPreset?.supportsReasoningEffort ?? false;
-    const supportsAnthropicThinking =
-      selectedPreset?.supportsAnthropicThinking ?? false;
-
     const handleRun = () => {
-      onRunAgent({
-        mode,
-        system_prompt: systemPrompt,
-        model: effectiveModel,
-        temperature,
-        api_key: apiKey || undefined,
-        api_base: apiBase || undefined,
-        reasoning_effort: reasoningEffort,
-        anthropic_thinking: anthropicThinking,
-        anthropic_thinking_budget_tokens: anthropicThinking
+      if (!selectedMethod) return;
+      const payload: AgentConfig = {
+        mode: "method",
+        method_id: selectedMethod.id,
+      };
+      if (supportsVerifyOverride) {
+        payload.method_verify = methodVerify;
+      }
+      if (methodUsesLlm) {
+        payload.system_prompt = systemPrompt;
+        payload.model = effectiveModel;
+        payload.temperature = temperature;
+        payload.api_key = apiKey || undefined;
+        payload.api_base = apiBase || undefined;
+        payload.reasoning_effort = reasoningEffort;
+        payload.anthropic_thinking = anthropicThinking;
+        payload.anthropic_thinking_budget_tokens = anthropicThinking
           ? anthropicThinkingBudget
-          : undefined,
-      });
+          : undefined;
+      }
+      void onRunMethod(payload);
     };
+
+    const runDisabled =
+      running || !selectedMethod || !methodAvailable || (methodUsesLlm && !effectiveModel);
 
     return (
       <div className="pane">
         <div className="pane-header pane-header-agent">
           <div className="pane-header-agent-left">
-            <span>Agent Annotations</span>
+            <span>Method Annotations</span>
             <span className="agent-view-control">
-              <label htmlFor="agent-view-select">View:</label>
+              <label htmlFor="method-view-select">View:</label>
               <select
-                id="agent-view-select"
-                name="agent_view"
-                value={activeOutput}
-                onChange={(e) =>
-                  onActiveOutputChange(e.target.value as "combined" | "rule" | "llm")
-                }
+                id="method-view-select"
+                name="method_view"
+                value={activeMethod}
+                onChange={(e) => onActiveMethodChange(e.target.value)}
               >
-                <option value="combined">Combined</option>
-                <option value="rule">Rule Only</option>
-                <option value="llm">LLM Only</option>
+                {methods.map((method) => (
+                  <option key={method.id} value={method.id}>
+                    {method.label}
+                  </option>
+                ))}
               </select>
             </span>
           </div>
@@ -161,33 +191,59 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
         </div>
         <div className={`agent-config ${configOpen ? "" : "collapsed"}`}>
           <div className="field">
-            <label htmlFor="agent-mode">Mode</label>
+            <label htmlFor="method-select">Method</label>
             <select
-              id="agent-mode"
-              name="agent_mode"
-              value={mode}
-              onChange={(e) => setMode(e.target.value as "rule" | "llm")}
+              id="method-select"
+              name="method_select"
+              value={activeMethod}
+              onChange={(e) => onActiveMethodChange(e.target.value)}
             >
-              <option value="rule">Rule-based</option>
-              <option value="llm">LLM (via LiteLLM)</option>
+              {methods.map((method) => (
+                <option key={method.id} value={method.id} disabled={!method.available}>
+                  {method.label}
+                  {!method.available ? " (setup required)" : ""}
+                </option>
+              ))}
             </select>
+            {selectedMethod && (
+              <span className="config-note">
+                {selectedMethod.description}
+              </span>
+            )}
+            {selectedMethod?.unavailable_reason && (
+              <span className="config-warning">
+                {selectedMethod.unavailable_reason}
+              </span>
+            )}
           </div>
-          {mode === "llm" && (
+          {supportsVerifyOverride && (
+            <div className="field">
+              <label className="inline-checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={methodVerify}
+                  onChange={(e) => setMethodVerify(e.target.checked)}
+                />
+                Method Verifier
+              </label>
+            </div>
+          )}
+          {methodUsesLlm && (
             <>
               <div className="field">
-                <label htmlFor="agent-system-prompt">System Prompt</label>
+                <label htmlFor="method-system-prompt">System Prompt</label>
                 <textarea
-                  id="agent-system-prompt"
-                  name="agent_system_prompt"
+                  id="method-system-prompt"
+                  name="method_system_prompt"
                   value={systemPrompt}
                   onChange={(e) => setSystemPrompt(e.target.value)}
                 />
               </div>
               <div className="field">
-                <label htmlFor="agent-model">Model</label>
+                <label htmlFor="method-model">Model</label>
                 <select
-                  id="agent-model"
-                  name="agent_model"
+                  id="method-model"
+                  name="method_model"
                   value={model}
                   onChange={(e) => {
                     const value = e.target.value;
@@ -209,8 +265,8 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
                 </select>
                 {model === "__custom__" && (
                   <input
-                    id="agent-custom-model"
-                    name="agent_custom_model"
+                    id="method-custom-model"
+                    name="method_custom_model"
                     type="text"
                     value={customModel}
                     onChange={(e) => setCustomModel(e.target.value)}
@@ -220,13 +276,13 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
                 )}
               </div>
               <div className={`field ${supportsReasoningEffort ? "" : "field-disabled"}`}>
-                <label htmlFor="agent-reasoning-effort">
+                <label htmlFor="method-reasoning-effort">
                   Reasoning Effort
                   {!supportsReasoningEffort && " (not supported for this model)"}
                 </label>
                 <select
-                  id="agent-reasoning-effort"
-                  name="agent_reasoning_effort"
+                  id="method-reasoning-effort"
+                  name="method_reasoning_effort"
                   value={reasoningEffort}
                   disabled={!supportsReasoningEffort}
                   onChange={(e) =>
@@ -243,22 +299,22 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
                 </select>
               </div>
               <div className={`field ${supportsAnthropicThinking ? "" : "field-disabled"}`}>
-                <label htmlFor="agent-anthropic-thinking">
+                <label htmlFor="method-anthropic-thinking">
                   Anthropic Thinking
                   {!supportsAnthropicThinking && " (not supported for this model)"}
                 </label>
                 <div className="inline-control-row">
                   <input
-                    id="agent-anthropic-thinking"
-                    name="agent_anthropic_thinking"
+                    id="method-anthropic-thinking"
+                    name="method_anthropic_thinking"
                     type="checkbox"
                     checked={anthropicThinking}
                     disabled={!supportsAnthropicThinking}
                     onChange={(e) => setAnthropicThinking(e.target.checked)}
                   />
                   <input
-                    id="agent-anthropic-thinking-budget"
-                    name="agent_anthropic_thinking_budget_tokens"
+                    id="method-anthropic-thinking-budget"
+                    name="method_anthropic_thinking_budget_tokens"
                     type="number"
                     min={256}
                     step={256}
@@ -272,10 +328,10 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
                 </div>
               </div>
               <div className="field">
-                <label htmlFor="agent-temperature">Temperature: {temperature}</label>
+                <label htmlFor="method-temperature">Temperature: {temperature}</label>
                 <input
-                  id="agent-temperature"
-                  name="agent_temperature"
+                  id="method-temperature"
+                  name="method_temperature"
                   type="range"
                   min="0"
                   max="2"
@@ -308,10 +364,10 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
                   </>
                 ) : (
                   <>
-                    <label htmlFor="agent-api-key">API Key</label>
+                    <label htmlFor="method-api-key">API Key</label>
                     <input
-                      id="agent-api-key"
-                      name="agent_api_key"
+                      id="method-api-key"
+                      name="method_api_key"
                       type="password"
                       value={apiKey}
                       onChange={(e) => handleApiKeyChange(e.target.value)}
@@ -347,10 +403,10 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
                   </>
                 ) : (
                   <>
-                    <label htmlFor="agent-api-base">LiteLLM Base URL (optional)</label>
+                    <label htmlFor="method-api-base">LiteLLM Base URL (optional)</label>
                     <input
-                      id="agent-api-base"
-                      name="agent_api_base"
+                      id="method-api-base"
+                      name="method_api_base"
                       type="text"
                       value={apiBase}
                       onChange={(e) => handleApiBaseChange(e.target.value)}
@@ -364,8 +420,8 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
               </div>
             </>
           )}
-          <button className="run-btn" onClick={handleRun} disabled={running}>
-            {running ? "Running..." : "Run Agent"}
+          <button className="run-btn" onClick={handleRun} disabled={runDisabled}>
+            {running ? "Running..." : "Run Method"}
           </button>
         </div>
         <div
@@ -375,7 +431,7 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
         >
           {spans.length === 0 && !running ? (
             <span style={{ color: "#888" }}>
-              No agent annotations yet. Configure and run the agent above.
+              No method annotations yet for the selected method.
             </span>
           ) : (
             <AnnotatedText text={text} spans={spans} diffSpans={diffSpans} />
@@ -386,5 +442,5 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
   },
 );
 
-AgentPane.displayName = "AgentPane";
-export default AgentPane;
+MethodPane.displayName = "MethodPane";
+export default MethodPane;

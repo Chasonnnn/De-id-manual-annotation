@@ -116,12 +116,22 @@ class TestStripCodeFences:
 # ---------------------------------------------------------------------------
 
 
-def _mock_completion_response(content: str):
+def _mock_completion_response(content: str, token_logprobs: list[float] | None = None):
     """Build a mock LiteLLM completion response (OpenAI format)."""
     message = MagicMock()
     message.content = content
     choice = MagicMock()
     choice.message = message
+    if token_logprobs is not None:
+        tokens = []
+        for value in token_logprobs:
+            token = MagicMock()
+            token.logprob = value
+            tokens.append(token)
+        choice.logprobs = MagicMock()
+        choice.logprobs.content = tokens
+    else:
+        choice.logprobs = None
     resp = MagicMock()
     resp.choices = [choice]
     return resp
@@ -143,6 +153,30 @@ class TestRunLLM:
         assert spans[0].text == "John"
 
     @patch("agent.completion")
+    def test_parses_object_with_spans_key(self, mock_completion):
+        payload = json.dumps(
+            {
+                "spans": [
+                    {"start": 0, "end": 4, "label": "NAME", "text": "John"},
+                ]
+            }
+        )
+        mock_completion.return_value = _mock_completion_response(payload)
+        spans = run_llm("Hi John!", api_key="test-key")
+        assert len(spans) == 1
+        assert spans[0].text == "John"
+
+    @patch("agent.completion")
+    def test_parses_json_embedded_in_text(self, mock_completion):
+        payload = (
+            "I found entities.\n"
+            '[{"start": 0, "end": 4, "label": "NAME", "text": "John"}]'
+        )
+        mock_completion.return_value = _mock_completion_response(payload)
+        spans = run_llm("Hi John!", api_key="test-key")
+        assert len(spans) == 1
+
+    @patch("agent.completion")
     def test_strips_markdown_fences(self, mock_completion):
         payload = (
             '```json\n[{"start": 0, "end": 4, "label": "NAME", "text": "John"}]\n```'
@@ -156,14 +190,14 @@ class TestRunLLM:
     def test_raises_on_invalid_json(self, mock_completion):
         mock_completion.return_value = _mock_completion_response("not json at all")
 
-        with pytest.raises(ValueError, match="invalid JSON"):
+        with pytest.raises(ValueError, match="non-JSON output"):
             run_llm("text", api_key="test-key")
 
     @patch("agent.completion")
     def test_raises_on_non_array_json(self, mock_completion):
         mock_completion.return_value = _mock_completion_response('{"not": "an array"}')
 
-        with pytest.raises(ValueError, match="Expected JSON array"):
+        with pytest.raises(ValueError, match="top-level array or object with 'spans'"):
             run_llm("text", api_key="test-key")
 
     @patch("agent.completion")
@@ -326,7 +360,7 @@ class TestRunLLM:
             text="text",
             api_key="k",
             model="openai.gpt-5.2-chat",
-            temperature=0.0,
+            temperature=0.5,
         )
         assert result.spans == []
         call_kwargs = mock_completion.call_args
@@ -380,6 +414,69 @@ class TestRunLLM:
             > call_kwargs.kwargs["extra_body"]["thinking"]["budget_tokens"]
         )
         assert any("requires temperature=1" in warning for warning in result.warnings)
+
+    @patch("agent.completion")
+    def test_openai_model_enables_logprobs_and_computes_confidence(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response(
+            "[]", token_logprobs=[-0.1, -0.2, -0.3]
+        )
+        result = run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            model="openai/gpt-4o",
+        )
+        call_kwargs = mock_completion.call_args
+        assert call_kwargs.kwargs["logprobs"] is True
+        assert result.llm_confidence.available is True
+        assert result.llm_confidence.reason == "ok"
+        assert result.llm_confidence.token_count == 3
+        assert result.llm_confidence.confidence is not None
+        assert result.llm_confidence.perplexity is not None
+        assert result.llm_confidence.band in {"high", "medium", "low"}
+
+    @patch("agent.completion")
+    def test_non_openai_model_omits_logprobs(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response("[]")
+        result = run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            model="anthropic.claude-4.6-opus",
+        )
+        call_kwargs = mock_completion.call_args
+        assert "logprobs" not in call_kwargs.kwargs
+        assert result.llm_confidence.available is False
+        assert result.llm_confidence.reason == "unsupported_provider"
+        assert result.llm_confidence.band == "na"
+
+    @patch("agent.completion")
+    def test_openai_missing_logprobs_sets_unavailable_metric(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response("[]")
+        result = run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            model="openai/gpt-4o",
+        )
+        assert result.llm_confidence.available is False
+        assert result.llm_confidence.reason == "missing_logprobs"
+        assert result.llm_confidence.band == "na"
+
+    @patch("agent.completion")
+    def test_openai_logprobs_fallback_retries_without_param(self, mock_completion):
+        mock_completion.side_effect = [
+            Exception("UnsupportedParamsError: openai does not support parameters: ['logprobs']"),
+            _mock_completion_response("[]"),
+        ]
+        result = run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            model="openai/gpt-4o",
+        )
+        assert result.spans == []
+        first_call = mock_completion.call_args_list[0].kwargs
+        second_call = mock_completion.call_args_list[1].kwargs
+        assert first_call["logprobs"] is True
+        assert "logprobs" not in second_call
+        assert any("rejected logprobs" in warning for warning in result.warnings)
 
 
 def test_model_presets_include_requested_options():

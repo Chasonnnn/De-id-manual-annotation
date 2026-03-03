@@ -22,6 +22,27 @@ class UtteranceRow(BaseModel):
 class AgentOutputs(BaseModel):
     rule: list[CanonicalSpan] = Field(default_factory=list)
     llm: list[CanonicalSpan] = Field(default_factory=list)
+    methods: dict[str, list[CanonicalSpan]] = Field(default_factory=dict)
+
+
+class LLMConfidenceMetric(BaseModel):
+    available: bool
+    provider: str
+    model: str
+    reason: Literal[
+        "ok", "unsupported_provider", "missing_logprobs", "empty_completion"
+    ]
+    token_count: int
+    mean_logprob: float | None = None
+    confidence: float | None = None
+    perplexity: float | None = None
+    band: Literal["high", "medium", "low", "na"]
+    high_threshold: float = 0.9
+    medium_threshold: float = 0.75
+
+
+class AgentRunMetrics(BaseModel):
+    llm_confidence: LLMConfidenceMetric | None = None
 
 
 class CanonicalDocument(BaseModel):
@@ -36,4 +57,5 @@ class CanonicalDocument(BaseModel):
     agent_annotations: list[CanonicalSpan] = Field(default_factory=list)
     agent_outputs: AgentOutputs = Field(default_factory=AgentOutputs)
     agent_run_warnings: list[str] = Field(default_factory=list)
+    agent_run_metrics: AgentRunMetrics = Field(default_factory=AgentRunMetrics)
     status: Literal["pending", "in_progress", "reviewed"] = "pending"

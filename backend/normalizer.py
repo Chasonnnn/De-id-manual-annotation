@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from models import CanonicalDocument, CanonicalSpan, UtteranceRow
 
@@ -118,42 +119,72 @@ def parse_hips_v2(data: dict, filename: str, doc_id: str) -> CanonicalDocument:
 
 def parse_jsonl_record(data: dict, filename: str, doc_id: str) -> CanonicalDocument:
     turns = data.get("transcript", [])
+    if not isinstance(turns, list):
+        raise ValueError("JSONL record must include 'transcript' as a list")
+
+    ordered_turns: list[dict[str, Any]] = []
+    for index, turn in enumerate(turns):
+        if isinstance(turn, dict):
+            ordered_turns.append({"__idx": index, **turn})
+
+    def _turn_sort_key(turn: dict[str, Any]) -> tuple[int, int]:
+        sequence = turn.get("sequence_id")
+        if isinstance(sequence, int):
+            return (0, sequence)
+        return (1, int(turn.get("__idx", 0)))
+
+    ordered_turns.sort(key=_turn_sort_key)
+
     parts: list[str] = []
     utterances: list[UtteranceRow] = []
     spans: list[CanonicalSpan] = []
     offset = 0
 
-    for turn in turns:
-        content = turn.get("content", "")
+    for turn in ordered_turns:
+        role = str(turn.get("role", "unknown") or "unknown")
+        content = str(turn.get("content", "") or "")
+        line_prefix = f"{role}: "
+        line_text = f"{line_prefix}{content}"
+
         if parts:
             offset += 1  # for \n separator
-        global_start = offset
-        global_end = offset + len(content)
+        line_start = offset
+        content_start = line_start + len(line_prefix)
+        content_end = content_start + len(content)
 
-        parts.append(content)
+        parts.append(line_text)
         utterances.append(
             UtteranceRow(
-                speaker=turn.get("role", "unknown"),
+                speaker=role,
                 text=content,
-                global_start=global_start,
-                global_end=global_end,
+                global_start=content_start,
+                global_end=content_end,
             )
         )
 
         for ann in turn.get("annotations", []):
-            abs_start = global_start + ann["start"]
-            abs_end = global_start + ann["end"]
-            label = _map_label(ann["pii_type"])
+            if not isinstance(ann, dict):
+                continue
+            start = ann.get("start")
+            end = ann.get("end")
+            pii_type = ann.get("pii_type")
+            if not isinstance(start, int) or not isinstance(end, int) or not isinstance(pii_type, str):
+                continue
+            abs_start = content_start + start
+            abs_end = content_start + end
+            if abs_start < content_start or abs_end > content_end or abs_start >= abs_end:
+                continue
+            label = _map_label(pii_type)
             spans.append(
                 CanonicalSpan(
                     start=abs_start,
                     end=abs_end,
                     label=label,
-                    text=content[ann["start"]:ann["end"]],
+                    text=content[start:end],
                 )
             )
 
-        offset = global_end
+        offset = line_start + len(line_text)
 
     full_text = "\n".join(parts)
     deduped = _dedup_spans(spans)

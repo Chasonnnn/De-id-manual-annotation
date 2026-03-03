@@ -3,18 +3,30 @@ import type { MetricsResult } from "../types";
 import { getLabelColor } from "../types";
 
 interface Props {
+  reference: string;
+  hypothesis: string;
+  matchMode: string;
   metrics: MetricsResult | null;
   loading: boolean;
   onRefresh: () => void;
 }
 
-export default function MetricsPanel({ metrics, loading, onRefresh }: Props) {
+export default function MetricsPanel({
+  reference,
+  hypothesis,
+  matchMode,
+  metrics,
+  loading,
+  onRefresh,
+}: Props) {
   const [collapsed, setCollapsed] = useState(false);
-
-  if (!metrics && !loading) return null;
 
   const fmt = (v: number) => (v * 100).toFixed(1) + "%";
   const confusion = metrics?.confusion_matrix;
+  const confidence = metrics?.llm_confidence ?? null;
+  const confidencePct =
+    confidence?.confidence != null ? `${(confidence.confidence * 100).toFixed(1)}%` : "N/A";
+  const confidenceBand = confidence?.band.toUpperCase() ?? "N/A";
 
   return (
     <div className={`metrics-panel ${collapsed ? "collapsed" : ""}`}>
@@ -44,8 +56,30 @@ export default function MetricsPanel({ metrics, loading, onRefresh }: Props) {
       {!collapsed && (
         <div className="metrics-body">
           {loading && <div className="loading">Computing metrics...</div>}
+          {!loading && !metrics && (
+            <div className="dashboard-subtitle">
+              No per-document metrics yet. Click <strong>Refresh</strong>.
+            </div>
+          )}
           {metrics && (
             <>
+              <div className="metrics-subtitle">
+                Comparing <strong>{reference}</strong> vs <strong>{hypothesis}</strong>{" "}
+                ({matchMode})
+              </div>
+              {confidence && (
+                <div className={`confidence-summary band-${confidence.band}`}>
+                  <strong>LLM Confidence:</strong> {confidencePct} ({confidenceBand}){" "}
+                  <span style={{ marginLeft: 8 }}>
+                    tokens={confidence.token_count}
+                  </span>
+                  {!confidence.available && (
+                    <span style={{ marginLeft: 8 }}>
+                      status={confidence.reason}
+                    </span>
+                  )}
+                </div>
+              )}
               <div className="metric-cards">
                 <div className="metric-card">
                   <div className="card-label">Micro P</div>
