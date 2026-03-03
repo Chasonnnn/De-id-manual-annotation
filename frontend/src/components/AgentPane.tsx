@@ -51,6 +51,13 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
         return "";
       }
     });
+    const [apiBase, setApiBase] = useState(() => {
+      try {
+        return sessionStorage.getItem("agent_api_base") ?? "";
+      } catch {
+        return "";
+      }
+    });
 
     const handleApiKeyChange = (value: string) => {
       setApiKey(value);
@@ -59,6 +66,18 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
           sessionStorage.setItem("agent_api_key", value);
         } else {
           sessionStorage.removeItem("agent_api_key");
+        }
+      } catch {
+        // sessionStorage unavailable
+      }
+    };
+    const handleApiBaseChange = (value: string) => {
+      setApiBase(value);
+      try {
+        if (value) {
+          sessionStorage.setItem("agent_api_base", value);
+        } else {
+          sessionStorage.removeItem("agent_api_base");
         }
       } catch {
         // sessionStorage unavailable
@@ -79,6 +98,7 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
         model: effectiveModel,
         temperature,
         api_key: apiKey || undefined,
+        api_base: apiBase || undefined,
         reasoning_effort: reasoningEffort,
         anthropic_thinking: anthropicThinking,
         anthropic_thinking_budget_tokens: anthropicThinking
@@ -115,8 +135,9 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
         </div>
         <div className={`agent-config ${configOpen ? "" : "collapsed"}`}>
           <div className="field">
-            <label>Mode</label>
+            <label htmlFor="agent-mode">Mode</label>
             <select
+              id="agent-mode"
               value={mode}
               onChange={(e) => setMode(e.target.value as "rule" | "llm")}
             >
@@ -127,15 +148,17 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
           {mode === "llm" && (
             <>
               <div className="field">
-                <label>System Prompt</label>
+                <label htmlFor="agent-system-prompt">System Prompt</label>
                 <textarea
+                  id="agent-system-prompt"
                   value={systemPrompt}
                   onChange={(e) => setSystemPrompt(e.target.value)}
                 />
               </div>
               <div className="field">
-                <label>Model</label>
+                <label htmlFor="agent-model">Model</label>
                 <select
+                  id="agent-model"
                   value={model}
                   onChange={(e) => {
                     const value = e.target.value;
@@ -232,15 +255,29 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
                 />
               </div>
               <div className="field">
-                <label>API Key</label>
+                <label htmlFor="agent-api-key">API Key</label>
                 <input
+                  id="agent-api-key"
                   type="password"
                   value={apiKey}
                   onChange={(e) => handleApiKeyChange(e.target.value)}
-                  placeholder="Provider API key (or set env var)"
+                  placeholder="LiteLLM gateway key or provider key"
                 />
                 <span style={{ fontSize: 10, color: "#888" }}>
-                  Uses OPENAI_API_KEY, ANTHROPIC_API_KEY, etc. env vars as fallback
+                  Uses LITELLM_API_KEY first, then provider env vars as fallback
+                </span>
+              </div>
+              <div className="field">
+                <label htmlFor="agent-api-base">LiteLLM Base URL (optional)</label>
+                <input
+                  id="agent-api-base"
+                  type="text"
+                  value={apiBase}
+                  onChange={(e) => handleApiBaseChange(e.target.value)}
+                  placeholder="https://your-litellm-gateway/v1"
+                />
+                <span style={{ fontSize: 10, color: "#888" }}>
+                  Uses LITELLM_BASE_URL env var when not set here
                 </span>
               </div>
             </>

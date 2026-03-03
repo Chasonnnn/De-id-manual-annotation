@@ -1,11 +1,10 @@
 import json
-import shutil
-from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
-from server import app, SESSIONS_DIR, _session_docs
+from server import app, _session_docs
 
 
 @pytest.fixture(autouse=True)
@@ -129,14 +128,72 @@ def test_agent_unknown_mode(client):
 
 
 def test_agent_llm_no_key(client, monkeypatch):
+    monkeypatch.delenv("LITELLM_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     resp = _upload(client)
     doc_id = resp.json()["id"]
 
     resp = client.post(f"/api/documents/{doc_id}/agent", json={"mode": "llm"})
     assert resp.status_code == 400
     assert "API key" in resp.json()["detail"]
+
+
+def test_agent_llm_uses_litellm_env_key_and_base(client, monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_run_llm_with_metadata(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(spans=[], warnings=[])
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+    monkeypatch.setenv("LITELLM_API_KEY", "litellm-key")
+    monkeypatch.setenv("LITELLM_BASE_URL", "https://proxy.example.com/v1")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+
+    resp = _upload(client)
+    doc_id = resp.json()["id"]
+
+    resp = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={"mode": "llm", "model": "openai/gpt-5.2-chat-latest"},
+    )
+    assert resp.status_code == 200
+    assert captured["api_key"] == "litellm-key"
+    assert captured["api_base"] == "https://proxy.example.com/v1"
+
+
+def test_agent_llm_request_overrides_env_key_and_base(client, monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_run_llm_with_metadata(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(spans=[], warnings=[])
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+    monkeypatch.setenv("LITELLM_API_KEY", "litellm-env-key")
+    monkeypatch.setenv("LITELLM_BASE_URL", "https://env.example.com/v1")
+
+    resp = _upload(client)
+    doc_id = resp.json()["id"]
+
+    resp = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "llm",
+            "model": "openai/gpt-5.2-chat-latest",
+            "api_key": "request-key",
+            "api_base": "https://request.example.com/v1",
+        },
+    )
+    assert resp.status_code == 200
+    assert captured["api_key"] == "request-key"
+    assert captured["api_base"] == "https://request.example.com/v1"
 
 
 def test_metrics(client):

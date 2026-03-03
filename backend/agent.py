@@ -187,6 +187,7 @@ def _is_unsupported_param_error(exc: Exception) -> bool:
 def run_llm_with_metadata(
     text: str,
     api_key: str,
+    api_base: str | None = None,
     model: str = "openai/gpt-4o-mini",
     system_prompt: str = SYSTEM_PROMPT,
     temperature: float = 0.0,
@@ -211,6 +212,8 @@ def run_llm_with_metadata(
         "temperature": temperature,
         "api_key": api_key,
     }
+    if api_base:
+        request_kwargs["api_base"] = api_base
 
     if reasoning_effort != "none":
         if supports_reasoning:
@@ -257,6 +260,7 @@ def run_llm_with_metadata(
 def run_llm(
     text: str,
     api_key: str,
+    api_base: str | None = None,
     model: str = "openai/gpt-4o-mini",
     system_prompt: str = SYSTEM_PROMPT,
     temperature: float = 0.0,
@@ -265,6 +269,7 @@ def run_llm(
     result = run_llm_with_metadata(
         text=text,
         api_key=api_key,
+        api_base=api_base,
         model=model,
         system_prompt=system_prompt,
         temperature=temperature,

@@ -41,6 +41,7 @@ DEFAULT_CONFIG = {
     ),
     "model": "openai/gpt-5.2-codex",
     "temperature": 0.0,
+    "api_base": "",
     "reasoning_effort": "xhigh",
     "anthropic_thinking": False,
     "anthropic_thinking_budget_tokens": None,
@@ -259,6 +260,7 @@ class AgentRunBody(BaseModel):
     model: str | None = None
     temperature: float | None = None
     api_key: str | None = None
+    api_base: str | None = None
     reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"] | None = None
     anthropic_thinking: bool | None = None
     anthropic_thinking_budget_tokens: int | None = None
@@ -282,13 +284,25 @@ async def run_agent(doc_id: str, body: AgentRunBody):
         cfg = _load_config()
         api_key = (
             body.api_key
+            or os.environ.get("LITELLM_API_KEY", "")
             or os.environ.get("OPENAI_API_KEY", "")
             or os.environ.get("ANTHROPIC_API_KEY", "")
+            or os.environ.get("GEMINI_API_KEY", "")
+            or os.environ.get("GOOGLE_API_KEY", "")
+        )
+        api_base = (
+            body.api_base
+            or str(cfg.get("api_base", "") or "")
+            or os.environ.get("LITELLM_BASE_URL", "")
         )
         if not api_key:
             raise HTTPException(
                 status_code=400,
-                detail="API key required. Set an env var (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.) or provide in request.",
+                detail=(
+                    "API key required. Set LITELLM_API_KEY (recommended for proxy/gateway) "
+                    "or provider keys like OPENAI_API_KEY / ANTHROPIC_API_KEY, "
+                    "or provide api_key in request."
+                ),
             )
         model = body.model or cfg.get("model", DEFAULT_CONFIG["model"])
         system_prompt = body.system_prompt or cfg.get(
@@ -316,6 +330,7 @@ async def run_agent(doc_id: str, body: AgentRunBody):
         llm_result = run_llm_with_metadata(
             text=doc.raw_text,
             api_key=api_key,
+            api_base=api_base or None,
             model=model,
             system_prompt=system_prompt,
             temperature=temperature,

@@ -226,6 +226,21 @@ class TestRunLLM:
         assert call_kwargs.kwargs["api_key"] == "sk-test-123"
 
     @patch("agent.completion")
+    def test_api_base_passed_to_litellm(self, mock_completion):
+        """Verify api_base is forwarded to litellm.completion when set."""
+        mock_completion.return_value = _mock_completion_response("[]")
+
+        run_llm(
+            "text",
+            api_key="sk-test-123",
+            api_base="https://litellm.local/v1",
+            model="openai/gpt-4o",
+        )
+
+        call_kwargs = mock_completion.call_args
+        assert call_kwargs.kwargs["api_base"] == "https://litellm.local/v1"
+
+    @patch("agent.completion")
     def test_default_model_uses_litellm_prefix(self, mock_completion):
         """Default model should use the provider/model format."""
         mock_completion.return_value = _mock_completion_response("[]")

@@ -102,6 +102,7 @@ export interface AgentConfig {
   model?: string;
   temperature?: number;
   api_key?: string;
+  api_base?: string;
   reasoning_effort?: "none" | "low" | "medium" | "high" | "xhigh";
   anthropic_thinking?: boolean;
   anthropic_thinking_budget_tokens?: number;
