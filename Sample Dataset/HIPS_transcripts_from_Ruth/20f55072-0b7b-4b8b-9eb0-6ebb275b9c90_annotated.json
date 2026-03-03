@@ -1,0 +1,41 @@
+{
+  "distinct_pii": {
+    "NAME": [
+      "Uddin",
+      "Torres",
+      "Teresa",
+      "Ramirez"
+    ],
+    "LOCATION": [],
+    "SCHOOL": [],
+    "DATE": [],
+    "AGE": [],
+    "PHONE": [],
+    "EMAIL": [],
+    "URL": [
+      "https://rodriguez.com/since"
+    ],
+    "MISC_ID": []
+  },
+  "pii_occurrences": [
+    {
+      "start": 79,
+      "end": 106,
+      "text": "https://rodriguez.com/since",
+      "pii_type": "URL"
+    },
+    {
+      "start": 714,
+      "end": 719,
+      "text": "Uddin",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 853,
+      "end": 880,
+      "text": "https://rodriguez.com/since",
+      "pii_type": "URL"
+    }
+  ],
+  "transcript": "Good afternoon.\nI'm going to put the link for the STAR assessment in the chat.\nhttps://rodriguez.com/since\nLet me know if the link in chat works.\nWhere did the link go?\nWhere did the link go?\nI put it in the chat.\nHow can I see the chat?\nPress the three lines on the right side of your screen, you should be able to see a chat.\nIf you can't, I'll just put it on the screen.\nTry to copy and paste it.\nI'm going to put it in the chat.\nWhat's the password?\nWhat's the email?\nThe password should be ABC.\nThat's right.\nThat's right.\nIt doesn't help.\nthree, six...\nYou good, bro?\nWhat the fuck?\nShut his head, the fuck?\nThank you\nHow about you shut the fuck up?\nAll right.\nLet me know once you're logged in.\nThis is Ms. Uddin. She is signing onto another computer\nOkay, I'm back.\nWait, I can't hear myself.\nDon't do anything.\nGood thing.\nHere the link again: https://rodriguez.com/since\n- All the bit so good.\nCan you stop calling me a faggot?\nThank You.\nYou called me that day.\nI'm confused\nIt's just the last three numbers.\nYou don't need the phone.\nI can't believe that drip, drip is actually...\nMm-hmm.\nYou're hearing?\nLet me count the later.\nOh, that's fine.\nWhat's your name?\nIt's not here.\nAfter a certain amount of timing.\nWhat's the question again?\nNext question.\nI don't know.\nI feel echoed."
+}

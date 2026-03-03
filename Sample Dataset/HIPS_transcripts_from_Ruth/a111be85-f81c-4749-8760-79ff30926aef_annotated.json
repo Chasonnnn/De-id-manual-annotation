@@ -1,0 +1,123 @@
+{
+  "distinct_pii": {
+    "NAME": [
+      "Giuseppe",
+      "Jose",
+      "Morgan",
+      "Gabriel"
+    ],
+    "LOCATION": [],
+    "SCHOOL": [],
+    "DATE": [],
+    "AGE": [],
+    "PHONE": [],
+    "EMAIL": [],
+    "URL": [],
+    "MISC_ID": []
+  },
+  "pii_occurrences": [
+    {
+      "start": 28,
+      "end": 36,
+      "text": "Giuseppe",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 744,
+      "end": 752,
+      "text": "Giuseppe",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 1587,
+      "end": 1591,
+      "text": "Jose",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 2389,
+      "end": 2397,
+      "text": "Giuseppe",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 2539,
+      "end": 2547,
+      "text": "Giuseppe",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 2939,
+      "end": 2947,
+      "text": "Giuseppe",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 4237,
+      "end": 4245,
+      "text": "Giuseppe",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 4969,
+      "end": 4973,
+      "text": "Jose",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 5012,
+      "end": 5016,
+      "text": "Jose",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 5473,
+      "end": 5481,
+      "text": "Giuseppe",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 5654,
+      "end": 5662,
+      "text": "Giuseppe",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 5892,
+      "end": 5900,
+      "text": "Giuseppe",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 5969,
+      "end": 5973,
+      "text": "Jose",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 6094,
+      "end": 6102,
+      "text": "Giuseppe",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 6340,
+      "end": 6344,
+      "text": "Jose",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 6417,
+      "end": 6421,
+      "text": "Jose",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 6715,
+      "end": 6723,
+      "text": "Giuseppe",
+      "pii_type": "NAME"
+    }
+  ],
+  "transcript": "How are you doing today?\nIs Giuseppe just about logged in?\nNope.\nI can't hear you.\nHow are you both doing today?\nAll right.\nLet's go ahead and jump in.\nJust our quick little opener here on the left.\nHave you had a part time job before?\nIf so, what was it?\nAnd what's the job you'd like to have in\nWait, wait.\nDid we get it?\nYou'll need your notebooks.\nSo we're just going to start with number one here on the left.\nHave you had a part time job?\nWhat was it?\nAnd what's a job you would like in the future?\nThank you.\nI don't see each other.\nWe're not supposed to write that.\nI'm just saying, getting my things ready.\nWhat would be one job?\nI'd like to...\nI'd like to...\nLoft the ambitions.\nLet's do this.\nAll right?\nI want to write an equation.\nGiuseppe, what about you?\nWell, good job.\nAll right.\nLove you.\nI would like...\nA full-time job?\nI don't even know.\nI don't know.\nPart of my construction.\nI don't know.\nI still want to find out.\nFair enough.\nConstruction makes bank.\nWhat does...\nAll right?\nAnd the part-time job would be...\nI don't even know.\nAny questions?\nOne more.\n- Fair enough.\nOkay, six right.\nYou said one more?\nI guess.\nThat's not fun.\nGood job.\nI'm going to see the camera from now.\nTaking a look at number two here on the right.\nWe've got our graphed line there.\nOkay, I'm going to do the right.\nUse our terms above it to describe that line.\nGo ahead and type down your thoughts,\nand then we're going to do the left.\nThat's loud.\nThat's a weird sound.\nLike, fuck it.\nWhat happened?\nIt's not working?\nYou're taking, like, mad long.\nThere you go.\nEverything all right, Jose?\n- Yeah, it's just that the headphones are taken.\nAs long as you can hear me and I can hear, it should be all right.\nSo we're working on number two.\nI'm going to use those terms to describe that line, that graphed line.\nWhat was the question?\nNumber two here on the right.\nIt's right here.\nRead it.\nI want it.\nChoose at least two words or expressions below and explain how they relate to each other.\nWhat's that?\nThank you.\nI knew.\nYeah, go ahead and type down.\nI'm going to take a number.\nGo ahead and type them on screen.\nMm-hmm\nI'm alone\nI don't know\nI'm still on top.\nIt's impossible.\nWhat was the time?\nYour answer for part two.\nI think.\nI saw you, where are your input?\nThat's love.\nLittle bigger.\nBigger?\nSo try to use the best one.\n- Put the number into X, that's all.\nGo ahead.\nI'm cool.\nGiuseppe, can you lower your camera a bit?\nI can't see.\nMm-hmm\nThank you.\nAll right.\nReally, dude.\nWe'll go ahead and move on from this question.\nSo, Giuseppe what is our rate of change over this graph line?\nMm-hmm.\nIs it increasing?\nLet's see.\nIncreasing by how much?\nHow do you know?\nBecause the four is going to eight.\nTell me what you mean.\n- So that's what I'm saying.\nIt's increasing by four.\nSo is that increasing by four?\nSo what does rate of change mean?\nThank you\n- The rate changes.\nMm.\nThat's loud.\nIt's not.\nSo rate of change, go ahead.\nGiuseppe and read rate of change here at the top.\nIn a linear function, the constant rate of change is how much?\n- And x minus value changes, the input change.\nBy one eight.\nIt is represented by the volume B in linear functions, f x equals a plus bx.\nOn\nThen look at our example.\nIf...\nSo what are they doing in that example?\n- Say that again, my headphones fell off.\nIn our example, what are they doing?\nThey're doing...\nSo in the example, what is the rate of change?\n- The rate of change is five.\nSo how would they find that based on what they're doing here on the graph?\nWould they find it?\nOn the graph?\nLAUGHS\nLAUGHS\nUm...\nBy spending, sir.\nBecause it's ten on bands, and sales basically makes five each.\nI don't know.\nSo they've got the numbers labeled here, five and one.\nMm.\nWhere are they getting those numbers?\nThey're for five.\nWhat's so funny?\nHow about you answer it, huh?\nHow about you answer it?\nAnswer it.\nAnswer what?\nWe have...\nWhere am I?\nThis number here.\nIt wasn't up close.\nAnd this number here, so our five and one.\nWhere are we getting those numbers from?\nThe white.\nCoordinate.\nBecause it's on the white coordinate.\nIf you set your point there.\nShow me what you mean.\nThe question was for him, why am I answering it?\nYou're muted.\nI'm not.\nBut I should have got you muted.\nGiuseppe, yes you are muted.\nI am muted.\nI'm sorry.\nGood job.\nCan you help me?\nThe rate of change is ten.\nI mean five.\nMinus five, one.\nWhat is this here?\nThat's five.\nThat's one.\nSo this dot.\nWhat is the coordinate of that dot?\nCan you hear me?\nWhat did you say?\nSo what does coordinate mean?\nI can't believe it\nSo it's our two numbers that are in parentheses like this, remember?\nOh, yeah.\nI don't know.\nSo what would the coordinates for that point be?\n- Five, one.\nYeah, go ahead.\nShow me.\nShow me.\nFive, one.\nWrite that out.\nAll right, hold on.\nLet me show you\nbecause I got it wrong.\nI can't see your notebook from here.\nWrite it out on screen, please\nAll right.\nGood job.\nI'm going to progress with it.\nThere you go.\nOkay, so Jose where would that point be?\nThank you.\nJose, what would that point be?\nFive, one.\nSo is this positive or negative one?\nIt's negative.\nAll right.\nThank you.\nThank you.\nNo, it's positive.\nMy bad.\nOkay, when we're writing a coordinate.\nIs it Y comma X?\nOr X comma Y?\nWhen we're writing a coordinate, is it X comma Y?\nIs it X comma Y?\nSo we would want our X coordinate first and then our Y coordinate.\nSo where are we on the X axis?\nYou know what?\nJust wait, yo.\nWhat the heck?\nMy Wi-Fi is plugging.\nSo, Giuseppe where on the X axis is this point?\nWhat just happened?\nMy Wi-Fi was plugging.\n- Everything all right?\nYeah, why if I went low?\nMm.\nMy bad.\nSo do we?\nSo do it right now.\nSo Giuseppe.\nWhere on our X axis are we for this point?\nI can hear you.\nBelieve me.\nThis point here.\nWhere does that line up on our X axis?\nIt lines up.\nHere I know.\nI'm going to tell you what.\nSo our X axis would be one.\nxt.\nI'm sorry.\nSo, Giuseppe where on our Y axis does that line up?\nWhere is this on our Y axis, Jose?\nWhere is this on our Y axis?\nIs it five?\nSo look, we're below zero.\nNegative five.\nIt would be negative five.\nWhere is Giuseppe off to?\nAll right.\nThank you.\nHe went to the Y axis.\nIt's private.\nAnd still there.\nIt's not her.\nBefore class ends, we'll go ahead and do our main definition.\nI don't have one.\nEverything good?\nAll right.\nJust check on your screen.\nSo, Jose read our first term and definition.\nRead this and that.\nThank you.\nYes, Jose.\nOur first term and definition\nlinear function.\nI'm going to get kicked out.\nfunction in the form?\n- x equals a plus bx.\nSo, let me answer.\nLet me answer.\nThose graph is a straight line where it runs.\nInitial value.\nWhy intercept?\nAnd b is a straight line.\nThe state of change slope.\nAnd then Giuseppe R next term.\nRead it as a fx equals y, where x represents the input value of fx.\nRepresents the output value.\nThank you.\nWith function notation, we're using f of x the same way We would use y.\nAnd with linear function.\nInstead of y equals mx plus b, we're...\njust going to start using f of x equals a plus bx.\nSo I want you both to quickly write down those two terms and definitions in your notebooks.\nYes, sir.\nWrite this down.\nWatch this now.\nWrite this down.\nAs well as...\nWhat's the day today?\nThat's the term.\nNovember, right?\nObviously, bro.\nI ain't know.\nHow do you not know?\nAll right.\nHow do you...\nMe too.\nAll right.\nI don't know.\nMan, this better be twenty-six.\nIt's crazy.\nHow about you write it instead of talking?\nMy teacher's telling me to get off and I barely got left.\nCan't do this?\nCan't do this next time?\nYeah, we'll go ahead and pick up with this step.\nAll right.\nThank you.\nHave a good rest of your day."
+}

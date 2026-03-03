@@ -1,0 +1,310 @@
+{
+  "distinct_pii": {
+    "NAME": [
+      "Muhammad",
+      "King",
+      "Juan",
+      "Joseph",
+      "Chris"
+    ],
+    "LOCATION": [],
+    "SCHOOL": [],
+    "DATE": [],
+    "AGE": [],
+    "PHONE": [],
+    "EMAIL": [],
+    "URL": [],
+    "MISC_ID": []
+  },
+  "pii_occurrences": [
+    {
+      "start": 268,
+      "end": 276,
+      "text": "Muhammad",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 369,
+      "end": 377,
+      "text": "Muhammad",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 428,
+      "end": 432,
+      "text": "King",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 451,
+      "end": 455,
+      "text": "King",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 527,
+      "end": 531,
+      "text": "Juan",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 1193,
+      "end": 1199,
+      "text": "Joseph",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 1239,
+      "end": 1243,
+      "text": "King",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 1277,
+      "end": 1283,
+      "text": "Joseph",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 1312,
+      "end": 1318,
+      "text": "Joseph",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 1386,
+      "end": 1394,
+      "text": "Muhammad",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 1608,
+      "end": 1614,
+      "text": "Joseph",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 1652,
+      "end": 1656,
+      "text": "Juan",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 2515,
+      "end": 2519,
+      "text": "King",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 2859,
+      "end": 2865,
+      "text": "Joseph",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 2884,
+      "end": 2890,
+      "text": "Joseph",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 2892,
+      "end": 2896,
+      "text": "King",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 3051,
+      "end": 3057,
+      "text": "Joseph",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 3170,
+      "end": 3176,
+      "text": "Joseph",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 3184,
+      "end": 3190,
+      "text": "Joseph",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 3261,
+      "end": 3267,
+      "text": "Joseph",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 3358,
+      "end": 3364,
+      "text": "Joseph",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 3674,
+      "end": 3678,
+      "text": "King",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 4371,
+      "end": 4377,
+      "text": "Joseph",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 4864,
+      "end": 4870,
+      "text": "Joseph",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 4975,
+      "end": 4981,
+      "text": "Joseph",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 4991,
+      "end": 4999,
+      "text": "Muhammad",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 5072,
+      "end": 5078,
+      "text": "Joseph",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 5603,
+      "end": 5607,
+      "text": "King",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 5838,
+      "end": 5842,
+      "text": "King",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 5958,
+      "end": 5964,
+      "text": "Joseph",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 5976,
+      "end": 5982,
+      "text": "Joseph",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 6219,
+      "end": 6225,
+      "text": "Joseph",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 6812,
+      "end": 6818,
+      "text": "Joseph",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 9347,
+      "end": 9351,
+      "text": "King",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 9420,
+      "end": 9426,
+      "text": "Joseph",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 9510,
+      "end": 9516,
+      "text": "Joseph",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 9668,
+      "end": 9672,
+      "text": "King",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 10240,
+      "end": 10244,
+      "text": "King",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 10383,
+      "end": 10387,
+      "text": "King",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 10445,
+      "end": 10449,
+      "text": "King",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 11283,
+      "end": 11291,
+      "text": "Muhammad",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 11371,
+      "end": 11376,
+      "text": "Chris",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 12276,
+      "end": 12280,
+      "text": "King",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 12796,
+      "end": 12800,
+      "text": "King",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 12887,
+      "end": 12891,
+      "text": "King",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 13024,
+      "end": 13028,
+      "text": "King",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 13094,
+      "end": 13098,
+      "text": "King",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 18203,
+      "end": 18207,
+      "text": "King",
+      "pii_type": "NAME"
+    }
+  ],
+  "transcript": "It's last period.\nPeriod three.\nYou know the guys I have in this class.\nThey're some of the smartest kids since Carver.\nOh, yeah.\nBut I always know when they arrive because unlike many other classes...\nThey arrived in this class.\nEach one of them always says, Hey Mr. Muhammad!\nSo they let me know that they're here and...\nthey're ready to start getting work.\nHey, Mr. Muhammad!\nWho's that?\nThat must be...\nThat must be...\nIt's King.\nWho's that?\nIt's King.\nI'm just giving you a hard time, man.\nI knew it was you... What's up?\nJuan, I've been pretty cool.\nAll right.\nI'm going to need your help today.\nI want you...\nI prepared a challenging but doable...\nFun activity for today.\nBut some people seem to have had a lot of difficulty with it.\nI'm going to give you...\nBonus points for honestly communicating with me before the end of class.\nWhether you perceive...\nToo big of a hurdle...\nTo completing the lesson.\nIf you think it's too challenging or if there are... Too many parts, just honestly let me know.\nAnd to express my appreciation, I will award you a bonus point just for doing that.\nDo you agree?\nIs that cool ?\nThat's cool.\nOkay, excellent.\nThank you very much.\nBrother, did you see Joseph?\nGive me the thumbs up.\nI'm talking to King.\nI got an extra credit activity, Joseph's like...\nI'm ready for it.\nJoseph doesn't want anyone else to get any extra credit.\nHe's like, ah Mr Muhammad I'll take that...\nI'll take that credit.\nAll right, guys.\nWhile we wait for anyone else to log in would you please spend about thirty seconds... To a minute on slide one and share your reasoning For question two?\nJoseph, I swear something's up with you and Juan.\nIt's like one of us absent the other comes in...\nI think you guys talk to each other via text, be like tomorrow i'm gonna take off.\nYou better go in\nYou guys should be finishing up wherever you are.\nFinishing up?\nDon't forget to let me know where you're feeling on the...\ncoordinate plane.\nOf positivity and negativity.\nTiredness and energy.\nDon't forget to let me know why.\nYou feel what you do.\nAbout questions.\nQuestion two.\nWait, hold it.\nI see i'm making this too large instead\nHere you go.\nAll right.\nDon't forget to add a sentence telling me I believe i chose A or B, C Or D because...\nI am going to...\nI'm looking at your work.\nWorried?\nAnd...\nLet's see what you finished up with.\nWhy, brother?\nIn my opinion, it's hard to explain.\nYou just move over too you don't post the add to zero\nDammit.\nSo then, what's the difference between A and C to you?\nKing.\nIt went up.\nYeah, it went up too.\nThey didn't go up.\nHold on.\nHow much?\nHow much did you go up in A?\nAll right, you?\nHow much did you go up in B?\nUh...\nHow much did you go up in B?\nHow much did you go up in C?\nOh, interesting.\nAll right, so this is what I'm going to do.\nFirst I'm going to...\nI'm going to...\nI probably will say...\nWait, Joseph's got...\nYou know Joseph, King.\nI probably would say...\nHe talked, so it's like wait I got to give my opinion too.\nAll right, I'll go up.\nAll of them go up except for that one I think.\nJoseph, brother I would not be surprised if you had like a talk show.\nIn twenty years, be like late night with...\nWith Joseph.\nOkay, Joseph so share with us why you made your choice.\nI chose...\nOkay, so I like Joseph's response.\nBy the way there is no wrong answer you just have to justify your answers.\nSo Joseph says he chose D because He noticed it was only point with a negative co-ordinate x.\nExcellent, all right so...\nOkay, not to be outdone.\nTell us...\nTell us why you chose...\nTell us...\nWhy you chose C?\nI think...\nI chose C because all it went up.\nI don't know.\nExcept for that one.\nIn my opinion.\nI like it.\nSo King said he chose C because It's the only point that...\nThat is not above.\nThe X axis.\nI'm also giving you...\nThe star for you is very, Very good.\nAll right so...\nGuys, I don't remember these terms.\nI do not remember these terms.\nCan one of you in his own words explain to me...\nSo...\nWhat an ordered pair is and would the other one of you explain to me...\nWhat do you mean by coordinate plane?\nSo who's gonna explain to me what ordered pair means and... Who is going to explain it?\nHe asked me what the problem was.\nWhat the coordinate plane is.\nAn ordered pair.\nOrdered pair means...\nThe two points that you are given on the coordinate plane.\nThat's right.\nThat's right.\nSo what I'm hearing...\nJoseph said, you got to correct me if I misspeak.\nSo you're saying...\nAn ordered pair.\nIt corresponds to a point.\nIn the coordinate plane.\nAnd we call the...\nPair ordered because the first number out of The two.\nAlways corresponds to the...\nInput value or the X axis.\nAnd the second number in The pair.\nAlways corresponds to the output value or...\nThe range of Y axis.\nAnd together...\nBetween those two inputs and outputs, you can always find exactly where in the coordinate plane a point is.\nJoseph, did I miss anything or...\nDo you want to clarify anything?\nYou sound pretty correct to me.\nAlright, so Joseph says Mr. Muhammad...\nHere's your half a slice of bread for the day.\nNow get back to work.\nJoseph, for real man?\nYou gonna do me like that ?\nOkay, so\nOkay, it's up to you brother.\nWhat is the coordinate plane?\nCan you repeat that?\nYes, sir.\nIn your own words.\nCan you please explain to us what the coordinate plane is?\nDang, why's your costume so loud ?\nOh no, man I can hear some of the stuff that's going on in your classroom.\nI should give both of you bonus points, not only for logging in but paying any attention with all the ruckus that's happening.\nI'll hook you up by the end of class.\nSo what's coordinate plane, King?\nWhat does that mean ?\nDo I just read the definition or?\nI don't know.\nIt's fine.\nI would prefer in your own words, because if you can put this in your own word then i know you got it.\nThe X axis and...\nThe Y axis.\nLet's call it, King, in my own words.\nYou know, brother?\nI don't actually like the...\ndefinition on this page.\nBut think about what...\nJoseph taught us.\nJoseph said an ordered pair...\nGives you the exact location on...\nThe coordinate plane.\nAny point.\nCharacterized by the...\nX value.\nAnd the Y value.\nThank you.\nCorresponding to the X and Y.\nAxes making up...\nCoordinate plane.\nSo based on what Joseph said, What's another way of thinking about the coordinate plane?\nIt's all the infinite number of...\nHow many points make up the coordinate plane?\nTwelve.\nHold on.\nHow many points are there in the coordinate plane?\nJust two, just five.\nJust ten billions hundreds of...\nBillions or infinitely many?\nSo let me ask you this, is the point one billion?\nFive billion.\nIn the coordinate plane, give me a thumbs up or a thumbs down.\nBoth of you.\nI don't see no thumbs.\nAll right, maybe I am being unfair.\nMaybe I'm being unfair.\nSo I'm just gonna...\nI'm just gonna write something based on what Joseph taught me.\nThe coordinate plane.\nThe coordinate plane.\nIs a two...\nDimensional...\nOf all possible...\nX, Y...\nThat together...\nGenerate.\nAnd infinite.\nSo the coordinate plane...\nIs all of the possible X, Y values.\nWhere X and Y are just real numbers, like five seven.\nNegative three, negative five hundred.\nOne billion comma.\nFive billion.\nSo there is no end or limit to the number of points that make up a coordinate plane.\nAnd the center of a coordinate plane you guys taught me is called The Origin.\nAnd to help locate points on this infinite scale.\nIt's an infinite surface.\nWe refer to the X and Y axes.\nTo know what the X input value is and What The Y output value Is.\nLet me ask you one last question or rather two Last questions, someone tell Me\nYou see the difference between\nThe horizontal axis.\nAnd the vertical axis.\nWhat I'm going...\nI think what...\nI'm going up and down at what...\nWhich one goes up and down?\nPull up.\nYes, so the vertical axis goes straight up and down.\nThat's The red one...\nWhat about the horizontal axis, where does that go?\nThat's shot to shot at the...\nExcellent, very good.\nAll right man...\nSo here is the challenge.\nI'm even going to make this a little bit more straightforward for you guys because...\nSome people did not like this.\nSo I'm going to say look at Columbus, Ohio...\nAnd let's just say that one hundred and five PM central standard time.\nSo we're gonna...\nJust change that.\nSo let's say that...\nAnd for...\nCharleston, South Carolina.\nLet's change that to...\neleven over...\nfive PM central standard time.\nNow the two of you...\nWhat I want you guys to do...\nIs finish...\nSo you don't need slide four anymore.\nThis just shows You the time zones, different times zones\nIn the United States.\nLet me actually...\nOh, I don't have it either.\nOkay, my bad.\nSo slide four just shows you the different time zones in The United States, but we're not going to deal with that.\nWe're not going to deal with that, so you can do slide four.\nAnd five is related to the stuff that you did on slide three.\nI'm sorry, not slide four in fact let's get rid of this...\nDelete slide four.\nSo now you're looking at slide three.\nSlide four.\nAnd slide five, and they're all related.\nAll slide five is a place for you to put your team data.\nSo I need a volunteer for team captain.\nTo motivate everybody to...\nStay focused and...\nWork hard.\nWho's going to be team captain?\nWho's going to be team captain?\nYou okay to see what happens when you...\nWhen you're quiet, other people make the decision for ya.\nSo, King you have been elected team captain.\nThat means it's just you and...\nJoseph right now, if anyone else comes in late.\nYou have to explain what we're doing.\nAnd Joseph, both of you are super hard working guys.\nSo I'm not concerned about this but...\nGenerally you want to make sure that everyone is participating, right King?\nSo let me just lock this.\nDon't select...\nAnd I'm going to share...\nWait, i'm gonna add a hint here.\nHow does the information...\nIn the middle?\nLine of text?\nLast lines.\nOf text?\nRather finish.\nThe green...\nAlright, so this is critical for you guys.\nOkay, so...\nWe are looking specifically, not specific well...\nCritical information is here.\nAnd I'm even gonna...\nOkay, guys.\nI'm gonna sit the rest of this out.\nIt's all on you.\nIf guys can finish this by the end of class day, I will make sure to get prizes\nI'm sorry, i was just sending the information to...\nUgh.\nKing, what happened to your teammate?\nNo, my teammate just disappeared.\nI think he's intimidated by the competition.\nHe is like, oh no!\nMe and King, I got to bring my AK.\nMy brother is too competitive.\nSo King, you know what?\nWhile waiting for him to come back.\nWhy don't You just read...\nAll of the lines, one two and three.\nAnd tell me what you're thinking about?\nWhat's this scenario About?\nWhat's happening in it?\nAnd do you see anything that's super important?\nUh, a high school... A high school?\nA high school soccer team is traveling from China.\nI don't know what that is.\nIt's charged in...\nI don't know.\nI don't know.\nSouth Carolina.\nSouth Carolina.\nI'm controlling by airplane, By car?\nWhat?\nOkay, good.\nThey're taking a train for...\nWe don't have the map anyway, but I'm in Chicago.\nIn the middle of the country.\nTo South Carolina, that's closer to you, Baltimore.\nOn the East Coast.\nOkay, got you.\nAnd they're taking a train.\nOkay, read the next one.\nThe total death...\nYou got it?\nYou got it?\nDistance.\nThis is the T.\nWhere's Mr. Muhammad?\nWhat is my city called ?\nUm...\nThat used to be a candy bar.\nWhat's that word, Chris?\nCharleston by train is one hundred and ninety-two miles and the trip will take fifteen hours.\nI don't know.\nThe train...\nYou got it scheduled?\nScheduled by showing the stop that train will make.\nBetween the two cities\nOkay, good.\nI want to show you something here brother\nSo, look at this.\nLook at what's the total distance between Chicago and Baltimore?\nAnd Charleston, how many miles?\nOne thousand and ninety-two.\nOne thousand ninety-two, right?\nOkay, so that's important.\nSo you got the distance...\nIs one thousand and ninety-two miles.\nHow long does it take you to travel a thousand and ninety two miles by train?\nFifteen hours.\nOkay, very good.\nSo the amount of time is fifteen hours and...\nRead the last line.\nComplete the table to show time and hours, distance in miles at each stop.\nAssume.\nAssume that the train...\nTravels at a...\nCross the speed.\nGood, okay.\nVery, very good.\nBy the way, King what does it mean?\nTo travel at a constant speed.\nNot this speed.\nWhat speed?\nAt the same speed, like it don't change.\nOkay, very good.\nSo constant speed means the speed doesn't change\nDo you remember a formula for speed?\nHow do you calculate speed?\nI don't remember a formula.\nSo constant speed S.\nEquals...\nI think you're going to remember this.\nI think he might have seen in the past couple of years?\nOkay, let's go.\nIt's the distance you travel.\nThe distance in the miles.\n-D?\nWhat time is it enough?\nLet's say King...\nTwo miles.\nIn...\nMan, I don't know how long it takes you to walk a mile.\nLet's say King walks two miles in...\nI can jog a mile, it's not hard.\nOkay, how long does it take you to jog a mile.\nAt least like...\nSix minutes.\nKing's...\nIs constant.\nQuestion is how?\nHe jog.\neighteen minutes.\nSo, King.\nTell me what you think.\nSo, You jog...\nA mile and six minutes.\nHow far do you go if your speed is constant?\nIn eighteen minutes.\nAnd I push the divider?\nIs it?\nWhy do you six divided by eight?\nNo.\nSo I want you to look at the formula that You built for me.\nYou said S.\nYes, that's right.\nHe's...\nEqual to distance D.\nDivided by time, the amount of Time it takes you to travel a certain distance.\nSo you tell me.\nWhat's the time you're looking at?\nSix minutes.\n- Yeah, I see.\nTime equals eighteen minutes.\nDo you know the distance or is that what You're trying to find?\nWe don't know the distance.\nIt equals question.\nAnd your speed, we should say constant Speed.\nSo the constant speed...\nIs the distance you traveled earlier divided by The time it took You to travel that distance Earlier.\nSo look at the yellow.\nAll the distance and the speed.\nSo let's do this a mile in six minutes.\nLet's put that in yellow.\nAnd gold.\nThat doesn't work, does it?\nNope.\nLet's do a mile.\nIn six minutes, let's put that in blue.\nCan I press one of these buttons?\nEarlier speeds.\nOkay, so according to the blue...\nHow far did you go?\nAnd how much time did it take you to get there?\nSix minutes.\nIt's...\nSo the time... Is this a Time to go on The bottom or at the top?\nThe bottom.\nSo it's six minutes.\nOkay, hold it.\nThat would be three.\nOkay, so...\nWell, what was your distance?\nHow far did you go in six minutes ?\nHow many miles did you go in six minutes?\nOne mile.\nThat's all you gotta do\nThat's how you like it.\nOkay, so your speed...\nIt's one mile...\nIn six minutes.\nSo then...\nWhatever that is, and I think you can use a calculator to turn it into decimal like one...\nDivided by six.\nI got zero point six.\nOkay, so you can say your speed.\nI'm going to read.\nIt's zero point one...\nSo what would you round that six up to?\nWould You say it's one point seven or...\nI'm sorry, .seventeen Or .sixteen Which is better ?\nOh, that's...\nHold up.\nWould it be zero point one six or .seventeen?\nGot it.\nzero point one six\nMic check.\nOkay, so what's closer?\nTo the actual answer, zero point one six or zero point one seven?\nzero point one seven\nSo because the extra six thousandths of a mile...\nPuts you closer to zero point one seven than zero point one six of a mile, right?\nZero point one seven.\nmiles per minute.\nAll right.\nMm-hmm.\nSo your constant speed is around zero point one seven miles per minute.\nSo the question is, what's your distance now that you know the constant speed and you know your time?\nWhat can you do to this equation here?\nWhat can you do to this equation?\nTo get distance by itself.\nSo you're already dividing distance by time.\nWhat's the inverse operation for dividing by time?\nNot locations.\nAnd what you multiply one side by, What have you got to do the other side?\nYou got to...\nDo you do different things to this?\nThank you.\nNo, you do the same thing.\nOkay, very good.\nSo what am I going to multiply both sides of this equation by?\nHold on.\nSo check it out.\nWhat's in the denominator?\nWe just want to change the formula around so that we get D all by itself.\nSo what do I do to get D all by itself?\nYou've actually already told me.\nPut some multiplying both sides.\nWhat letter?\nVery good.\nThe inverse operation of dividing by time is...\nmultiplied by time, so then you get...\nYour original S.\nNow it's multiplied by time.\nIt's multiplied by time.\nAnd that equals...\nThe fraction...\nWith distance in the numerator, time is denominator.\nMultiplied by time.\nWhat happens to the two times on the right?\nIt gets us up.\nThe numerator and the denominator are same, they cancel out.\nGive me the formula for...\nfinding distance when I know the constant speed and...\nthe denominator.\nEquals...\nSg.\nTimes T. I'm sorry, S times t\nOh, I guess i could write it this way.\nParenthesis S, parentheses...\nOkay, if you know the constant speed...\nAnd you know how long it takes to get someplace...\nWhat else can you easily find?\nThat's good.\nThe distance?\nYou got it, brother.\nShut up.\nYou did it, you should feel proud of yourself.\nFrom the expression or equation that constant speed is equal to distance traveled divided by amount of time it takes you get there...\nYou use inverse operations to show me that the distance...\nBetween two places...\nIs equal to the constant speed you travel at between two places.\nTimes the time it takes you to get from the original place...\nTo the final place.\nSo we should put this in red because...\nThis is super simple.\nSuper important.\nNot only are we going to put it there...\nWe're going to put it down here.\nAll right.\nI want you to put the times from The table above.\nThat it takes to get each of these cities here.\nAnd then figure out...\nHow long it took to get each city if you originally left Chicago at eight hundred and five AM.\nThat's what you want.\nWhat else you want me to do?\nVery good.\nYou put the times of arrival, tell us how long it took to get from Chicago... To each of these cities?\nHow many hours did it take to get from Chicago?\nIf you left Chicago at eight or five AM...\nAnd you arrived in Columbus at one of five PM and so on... For Knoxville, Charleston.\nKing, if you leave Chicago at eight o'clock in the morning..."
+}

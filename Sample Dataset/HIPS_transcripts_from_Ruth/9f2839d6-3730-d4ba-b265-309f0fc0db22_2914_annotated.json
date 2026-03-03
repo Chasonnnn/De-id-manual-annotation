@@ -1,0 +1,700 @@
+{
+  "distinct_pii": {
+    "NAME": [
+      "Tony",
+      "Jaafar",
+      "Richard",
+      "Craig",
+      "Castillo",
+      "Daniel",
+      "Okafor",
+      "Ugochukwu",
+      "Delphine",
+      "Opeyemi",
+      "Shaikh"
+    ],
+    "LOCATION": [],
+    "SCHOOL": [],
+    "DATE": [],
+    "AGE": [],
+    "PHONE": [],
+    "EMAIL": [],
+    "URL": [],
+    "MISC_ID": []
+  },
+  "pii_occurrences": [
+    {
+      "start": 4,
+      "end": 8,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 247,
+      "end": 251,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 265,
+      "end": 269,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 338,
+      "end": 344,
+      "text": "Jaafar",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 490,
+      "end": 496,
+      "text": "Jaafar",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 894,
+      "end": 898,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 2002,
+      "end": 2006,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 2116,
+      "end": 2120,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 2291,
+      "end": 2295,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 2982,
+      "end": 2989,
+      "text": "Richard",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 3005,
+      "end": 3010,
+      "text": "Craig",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 3186,
+      "end": 3193,
+      "text": "Richard",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 3203,
+      "end": 3208,
+      "text": "Craig",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 3554,
+      "end": 3558,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 3759,
+      "end": 3766,
+      "text": "Richard",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 3870,
+      "end": 3875,
+      "text": "craig",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 3886,
+      "end": 3893,
+      "text": "Richard",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 3950,
+      "end": 3954,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 3992,
+      "end": 3999,
+      "text": "Richard",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 4027,
+      "end": 4035,
+      "text": "Castillo",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 4100,
+      "end": 4104,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 4186,
+      "end": 4190,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 4231,
+      "end": 4237,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 4270,
+      "end": 4277,
+      "text": "Richard",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 4280,
+      "end": 4287,
+      "text": "Richard",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 4336,
+      "end": 4343,
+      "text": "Richard",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 4437,
+      "end": 4443,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 4471,
+      "end": 4476,
+      "text": "Craig",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 4622,
+      "end": 4628,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 4975,
+      "end": 4984,
+      "text": "Ugochukwu",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 4989,
+      "end": 4995,
+      "text": "Okafor",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 5104,
+      "end": 5113,
+      "text": "Ugochukwu",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 5155,
+      "end": 5161,
+      "text": "Okafor",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 5204,
+      "end": 5213,
+      "text": "Ugochukwu",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 5520,
+      "end": 5529,
+      "text": "Ugochukwu",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 5552,
+      "end": 5561,
+      "text": "Ugochukwu",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 5947,
+      "end": 5955,
+      "text": "Delphine",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 6004,
+      "end": 6012,
+      "text": "Delphine",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 6723,
+      "end": 6732,
+      "text": "Ugochukwu",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 7046,
+      "end": 7055,
+      "text": "Ugochukwu",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 7132,
+      "end": 7141,
+      "text": "Ugochukwu",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 7784,
+      "end": 7793,
+      "text": "Ugochukwu",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8136,
+      "end": 8142,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8160,
+      "end": 8167,
+      "text": "Opeyemi",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8304,
+      "end": 8310,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8345,
+      "end": 8352,
+      "text": "Opeyemi",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8383,
+      "end": 8387,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8445,
+      "end": 8451,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8511,
+      "end": 8515,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8596,
+      "end": 8602,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8801,
+      "end": 8805,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8914,
+      "end": 8920,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8975,
+      "end": 8979,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 9040,
+      "end": 9046,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 9093,
+      "end": 9100,
+      "text": "Opeyemi",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 9102,
+      "end": 9108,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 9314,
+      "end": 9318,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 9551,
+      "end": 9557,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 9738,
+      "end": 9742,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 9752,
+      "end": 9758,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 9924,
+      "end": 9930,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 9994,
+      "end": 10003,
+      "text": "Ugochukwu",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 10028,
+      "end": 10032,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 10399,
+      "end": 10408,
+      "text": "Ugochukwu",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 10529,
+      "end": 10533,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 10684,
+      "end": 10690,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 10913,
+      "end": 10919,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 10948,
+      "end": 10952,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 10976,
+      "end": 10982,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 11182,
+      "end": 11186,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 11219,
+      "end": 11223,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 11452,
+      "end": 11459,
+      "text": "Opeyemi",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 11935,
+      "end": 11939,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 12306,
+      "end": 12310,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 12312,
+      "end": 12316,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 12378,
+      "end": 12384,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 12592,
+      "end": 12596,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 12743,
+      "end": 12749,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 12968,
+      "end": 12975,
+      "text": "opeyemi",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 13223,
+      "end": 13227,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 13439,
+      "end": 13443,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 13551,
+      "end": 13557,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 13699,
+      "end": 13705,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 13975,
+      "end": 13981,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 14256,
+      "end": 14262,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 14359,
+      "end": 14365,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 14410,
+      "end": 14416,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 14474,
+      "end": 14478,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 14611,
+      "end": 14615,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 14670,
+      "end": 14674,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 14688,
+      "end": 14694,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 14761,
+      "end": 14767,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 14841,
+      "end": 14847,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 14903,
+      "end": 14907,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 14919,
+      "end": 14925,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 15066,
+      "end": 15072,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 15138,
+      "end": 15142,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 15239,
+      "end": 15243,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 15509,
+      "end": 15513,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 15723,
+      "end": 15729,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 15773,
+      "end": 15782,
+      "text": "Ugochukwu",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 15792,
+      "end": 15801,
+      "text": "ugochukwu",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 15802,
+      "end": 15811,
+      "text": "Ugochukwu",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 16703,
+      "end": 16707,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 16838,
+      "end": 16842,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 16903,
+      "end": 16907,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 16941,
+      "end": 16947,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 16949,
+      "end": 16955,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 17030,
+      "end": 17034,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 17140,
+      "end": 17146,
+      "text": "Daniel",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 17167,
+      "end": 17171,
+      "text": "Tony",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 17345,
+      "end": 17349,
+      "text": "Tony",
+      "pii_type": "NAME"
+    }
+  ],
+  "transcript": "Hi, Tony.\nGood morning.\nI don't know.\nI love your hat.\nIs that a hoodie?\nIt's a hitty.\nGood morning.\nThat's what I'm saying.\nSeems like it didn't upload.\nOkay, give me one second and then we're going to do a do now.\nThank you.\nGive me one second, Tony.\nOne second.\nTony, for your do now.\nI want you to work on number seven.\nI don't know.\nJaafar creates a paint using seven cups of brown paint and four cups white.\nWhich of the following mixes of paint will be a lighter shade of brown than Jaafar's mix?\nSelect each correct answer.\nSo there are going to multiple answers for this one, and I want you do as best that can because again This is me understanding where your at\nAnd we're going to check after this, so I'll give you guys.\nI'll give you to like nine forty-five a. m and then\nAnd then we can check, okay?\nI don't know\nLet's see.\nWhenever we're saying, okay?\nCan you give me the ratio, Tony?\nOf what the paint mix is to brown page white paint.\nCan you tell me verbally?\nCan you tell me verbally?\nWhat's the ratio between brown page white paint, The original one?\nDid you just?\nDid you just wake up buddy?\nI don't know.\n7:4\nseven to four, yes?\nSo whenever we're doing...\nI was...\nI was listening to\nC shanty medley and then while I was doing this.\nOh, well right now I want you to actively listen To me Right Now.\nAll right.\nMaking bracelets, I would send you one but i don't know where You live.\nOkay, so let's\nSo let's\nI live pretty far.\nI don't want you to get distracted, so do your best at least for now.\nAll right.\nPay attention to what I'm saying.\nHold on.\nSo again, as you said seven-four can You put that?\nSince no one's here, I'll let you do it on my screen seven to four.\nCan you do that as a calculator?\nCan you hear me?\nCan you hear me?\nCan you?\nGive me the computation on\ndoing the same thing that we did yesterday.\nDo it all of them, A B C D.\nI want you to do all the mixes, okay?\nSo then.\nThen I'll check your answers.\nThen I'll check your answers after.\nOkay, one second.\nOkay, Tony.\nThat's a nice song\nThanks, it's just my background music.\nSo if we know that there is one point seven five, Tony I know you got this yesterday so i just want You to understand\nI want you to understand\nseven to four is going To give me one point seventy-five, correct?\nEight to four, Tony is going To give me two.\nThis Is a?\nThis is going to give me one point five for B.\nOne point four for C.\nAnd two point three on.\nWhich of the following mixes Of paint?\nWill be a lighter shade of black?\nOf brown?\nIf we know that this is the original one, it has to be less.\nOne point four?\nThank you.\nOne point five.\nSee, you got it.\nYou got it.\nSo what were you confused on?\nI wasn't confused.\nOh, you said You didn't know what to do.\nOkay, so again it is going to be B and C. Yes good job So we're gonna Be doing a lot of practice.\nPractice problems on this because I feel like you understand You have a good foundation when it comes to comparing ratios.\nSo for this one.\nReady to go?\nRichard and his cousin Craig rode their skateboards around Their neighborhood.\nThe distance they traveled over time are shown in the tables below\nBased on the circle ratios right here, as you can see for Richard and also Craig this one.\nThis one.\nWho skateboarded faster?\nYou know what to do on this.\nSo can you Do that for me?\nUse your calculation and answer I'll give you a couple minutes.\nThe vision.\nto check.\nI'm going\nforty-four divided by twenty\ndo it by twenty\nWelcome.\nThank you for joining us today.\nSo I thought it would be fun.\nhi\nI thought it was going to be Tony today.\nAfter this, I just want you to follow along.\nWe're Just comparing ratios as what we've been doing for the last couple of minutes\nof weeks.\nWe're basically just computing the difference between Richard, which is forty-four.\nJust going to write this down.\nWhich is forty-four over twenty, and then this is craig's thirty.\nRichard skated faster because 2.2 is greater than 1.5\nSo I told Tony to compute this.\nThis is going to be Richard's, and\nThis is going to be Castillo, so he was just computing it.\nSo which one?\nis that right\nIs It Tony?\nB, ABCD.\nSo whenever...\nSo whenever we're doing...\nWhile you figuring that out, Tony.\nWhenever we're doing comparing ratios, Daniel.\nWe are doing a lot of division Richard B\nRichard B\nIt is B because when the times were The same, Richard's distance was greater.\nLet's go, I got it right.\nAs you guys can see here... Do You See it, Daniel?\nThat Is two point two\nAnd Craig has one point five.\nDoes that make sense?\nThat's how we're going to be doing a lot of comparing ratios, so on your own board I want you do...\nhi Daniel\nThis one, can you?\nPlease do this on your own because I want you guys to get comfortable.\nAll right.\nWe're doing things by yourself.\nSo do this on your own board.\nAnd then I'll get back with you and i'll read it in a second, but please.\nyes lets do this\nby yourself.\nBy yourself right now and i'm going to help you guys out.\nAs you guys can see, Ugochukwu and Okafor...\nWant to see who can wash dishes the fastest.\nThe ratio of dishes washed two minutes is twenty to ten per Ugochukwu, and the ratio of dishes two minutes for Okafor is eighteen-fifteen.\nHow many dishes this Ugochukwu washed in thirty minutes?\nThe ratio two dishes, I just want you guys to understand.\nSorry i'm bringing\nYou guys, back on.\nDishes.\nTwo washed minutes.\nTwo minutes.\nOkay, whatever is here Is how many dishes they did.\nWhatever is here.\nIs how many minutes they did.\nIf we know that there's ten minutes for...\nUgochukwu...\nEvery ten minutes, Ugochukwu does he Does twenty dishes.\nGuys basically it's asking how many will He do if He does thirty?\nIf he does thirty?\nthirty, I want you guys to see.\nWhat's the relationship between twenty and ten?\nOr what's the relationship between ten and twenty?\nYou get what I mean guys?\nOh, ten divided by...\nI'm sorry.\nTen times what?\nmrs I was almost done\nOopsie ten x-two.\nI was just explaining for Delphine\nI want you guys to figure that out by yourself.\nDelphine, do you need help or are You somewhat understand?\noh ok\nI'm ok \nOk, again?\nAgain, I want you to do A B and C.\nI'm going to check.\nhi hi hi hi\naround nine fifty five where everyone's at or nine fifty six.\nhi\nhi\nhi\nhi\nAgain, I just want to see how you guys comprehend word problems by yourself without my help?\n5\n5\n5\n5\n5\ni know i gave You a little Help but\nBut what do you really Do this independently and\nAgain, it's totally okay if you are confused so please.\nPlease put your.\nAnswers on the screen so I can see and also your work, please.\nSo I'll give you like nine hundred and fifty-six, nine hundred and fifty-seven to do this by yourself.\nWhat is the relationship between twenty and ten?\nTwenty to ten for Ugochukwu.\nAgain, guys he washes twenty dishes in ten minutes\ntwenty divided by two is ten.\nSo what if I do thirty minutes?\nOkay, one more time.\nI'm going to do One More Time Sorry\nWhat if again, twenty is how many dishes right here?\nI want you guys to see dishes dish.\ntwenty is dish, ten Is minutes.\nHow many dishes does Ugochukwu wash in thirty minutes?\nThirty is my minutes.\nWe don't know how many dishes Ugochukwu washes.\nAgain, what is the relationship between twenty and ten?\nWe're going to do the same thing here.\nWhat is the relationship between ten and twenty times two?\nOh times two or divide by two?\nI don't know.\nSo I want you guys to really figure it out.\nSorry I want you guys to do this by yourself now.\nnine hundred and fifty-seven, guys.\nI want at least...\nAt least...\nA and B done.\nOkay, nine hundred and fifty-seven.\nI'll give you guys five minutes.\nOkay, it seems like you guys are confused.\nI'm going to do one with\nyou guys right now.\nI want you to always remember.\nCan you please tell me what's the ratio of dishes washed to minutes for Ugochukwu?\nMrs stop \nWhat do you mean?\nI know you guys.\nI know you got this.\nI want you guys to understand this by yourself without me helping.\nCan you just tell me the ratio?\nMm-hmm.\nFor usos?\nVerbally?\nI just want a lot of active participation guys, because again we don't learn math by listening.\nWe learned math by\ninteracting with each other.\nAnd Daniel, can you tell me Opeyemi's ratio to...\ndoing that I was working on it and you where bringing us back to your board\nI'm just going to do A for you guys, okay?\nSo Daniel can You tell me the ratio between Opeyemi's dishes two minutes and also Tony Tell Me.\nUsos.\nDishes two minutes.\nIn this word problem.\nDaniel, can you tell me?\nFor yours?\nOkay, twenty to ten.\nGood job Tony\nI'm just going to write that out.\nDon't say the next one, please because I want Daniel to tell me.\nNo, it's more like I want everybody to understand what we're doing and do it in a timely manner because...\nWe can't spend so much time on a problem if we're stuck on something, okay?\nSo Tony, I appreciate that and i'll keep That in mind next time.\nOkay?\nAt least you guys can do B independently.\nSo Daniel, do you know what it is?\nI'm confused on b\nVery good, Tony.\nSo when we're doing twenty to ten this is what I'm asking, Daniel.\nI want you to read the word problem.\nAnd for Opeyemi, Daniel look I want you to read eighteen to fifteen.\nDo You see it?\nEighteen to fifteen, right?\nRight here.\nEighteen to fifteen, I underlined it.\nDo you see It now?\nEighteen to fifteen.\nSo eighteen to fifteen.\nSo Tony, can you tell me what does twenty represent?\nWhat does twenty represent?\nTwenty represents dishes.\nTwenty again, look twenty represents how many dishes are washed dishes?\nWatched.\nWhat about ten?\nTen is?\nYeah, minutes.\nGood job!\nSo Daniel can you tell me what does eighteen represent in this problem?\nLook, it basically shows It to us.\nI want you To always read the word problem The ratio of dishes two minutes\nThanks, Tony\nNo more.\nDaniel, can you tell me what does eighteen represent?\nIs it minutes?\nThe dish is washed.\n18 represents dishes \neighteen represents dishes.\nAnd what does fifteen represent, Daniel?\nGood job!\nmin\nSo if we are looking at A,\nHow many dishes does Ugochukwu wash in thirty minutes?\nTony, can you tell me?\nWhat is the relationship between them?\nWhat is the relationship between them?\nIf we know, guys.\nIf we know...\nIf we know that We're trying to find thirty.\nWe're trying to find thirty, you guys.\nWe are Trying To Find Thirty When You Are Trying To Find That!\nSorry, I just want to ask you guys differently.\nIf we're trying to find thirty minutes for Ugochukwu, How many dishes can you watch?\nWhat's the...\nWhat's the pattern here?\nWhat is The relationship between ten and thirty, Tony Tell me.\nWhat's the relationship between ten and thirty?\nWhat am I multiplying with?\nOkay, three.\nSorry I did not see that Ten times three is thirty.\nDaniel Whatever happens on the right side Happens to left Side And whatever happens To The Left Side Happens To Right.\nIf we know that We are multiplying by three here.\nWe're going to do what?\nThe same thing.\nThe same thing.\nSo, Daniel What am I multiplying with?\nTony, please don't do that.\nDaniel, can you tell me What am I multiplying with?\nWhen I...\n2\nGot to be careful.\nWhat did I multiply here?\nThree, so I'm going to be multiplying three here too.\n3\nSo with that in mind, how much is it now Tony?\nI mean yes.\nHow Much Is It Now Tony?\ntwenty times three.\nSo we're going to have sixty dishes.\nSo I want you guys to do the same thing.\nI want you to do this independently, guys.\nI want to see if you guys understand how To compare ratios.\nNow, how many dishes does Opeyemi wash in thirty minutes?\nDo the same thing that I just did.\nOr B?\nOr B?\nDo the same thing.\nI'll give you guys...\nI'll give you guys till ten oh five.\nOr ten oh seven.\nOkay, you guys I'm looking at...\nI'm looking at everyone's screen right now, and it seems like no one is doing anything.\nSo I want to know what everyone's thought process is.\nI forgot\nSo I want you to do this by yourself.\nI will make your guys's table.\nThat way you can figure this out by yourself, okay?\nSo, Tony I'm going to do your table first so that way you can find the missing value.\nAnd I feel like that might help you guys.\nLike a lot.\nSo I'm going to do...\nWe're trying to find...\neighteen and fifteen, And now we're looking for how many dishes?\nThat's my missing value.\nThirty minutes.\nSo, again find the relationship between that.\nAnd can you do that by yourself now, Tony?\nTony can you do that by yourself?\nAll right.\nGive me a nod.\nOkay, Daniel I'm going to help you out real quick.\nSo I'm going to go ahead.\nSo I'm going to make your table.\nYou know what you're doing.\nSo for this one, it's also so much easier I want\nDO WHAT MS\nI want you to find X, Tony.\nFind the missing value again whatever you do on\nYou're going to do on the left side.\nSo you could do that.\nI know You got this!\nSo for this one, Daniel This is going to be eighteen.\nAnd this is going to be fifteen.\nWe're looking for how many dishes he made.\nIn thirty minutes.\nAgain, hopefully this helps you do things independently because...\nI want you to understand.\nopeyemi can wash 32 dishes in 30 min\nhmm\nhmm\nOkay, let's see what you said.\nSorry\nLet's multiply that again.\nI want you to tell me the relationship between...\nBetween these.\nSo let's multiply it again, okay?\nAnd then after that...\nI know you got this.\nSo Tony, again.\nI'll give you guys a couple of minutes after.\nHow many dishes will we do?\nFor thirty minutes.\nOkay, I'll give you guys more hints.\nWe really have to work on this independently\nAnd I want you to tell me, Tony What's the relationship between them?\nI want you to do the same thing here.\nAnd you will find your answer.\nDaniel, I want you to find the relationship between this...\nWhat am I multiplying with?\nI want you to do the same thing here.\nDoes that make sense, Daniel?\nI want you to do that by yourself.\nAnd then we will do a...\nExit ticket after this.\nAll right, you guys it seems like...\nWe are not understanding.\nHow to find the missing values with ratio?\nSo I want to really, Really understand this with you guys.\nSo tell me.\nAgain, Daniel Can you tell me the ratio of dishes to minutes?\nFor ocoyas in general is what?\nCan you tell me the ratio of dishes to minutes?\nCan you tell me the ratio of dishes to minutes?\nWhat is his original?\nAll right.\nRatio of dishes to minutes.\nThe one in red.\nThe one in red.\nOkay, Daniel Can you tell me please?\nI'm looking for the ratio...\nI want to...\nI want you to tell me, again, Daniel The ratio of dishes\nI want\nCan you tell me, Daniel?\nIt is...\nIt is what?\nRight here I underlined it in red.\nTony, can you help?\nWhat is the ratio of dishes?\nGuys, what Is The Ratio Of Dishes?\nTwo minutes for ocoyas.\nWhat is it?\nCan you tell me, Tony in the chat.\neighteen to fifteen.\nGood job, thank you Tony for helping.\nDaniel I want You To Tell Me What Can I Multiply Here?\nTo get to thirty, Daniel What can I multiply here?\nTimes what?\nfifteen times blank equals thirty.\nDaniel Can you tell me?\nIn the chat box, what can I multiply?\nTony Let's give Daniel a chance.\nOkay, I don't want\nJust hold that thought.\nI love it, though\nI love that you...\nThat you know the answer to it, but I want To ask Daniel.\nTwo, yes.\n2\nSo fifteen times two is going to give me thirty now Tony\nWhat am I going to multiply here, then?\nWhat am I going to multiply here then?\nCan you tell me, Tony What am I going to multiply?\nAll right.\nSince I multiplied by two on this side,\nWhat am I going to multiply here?\nTimes what?\nLook, I multiplied two on the other side.\nSo i'm going to do this same thing\nOn this side, okay?\nTimes two.\nSo eighteen times two is what, Tony?\nTell me.\nEighteen times two is what?\nDo you know?\nAll right, so let's look at the picture for now.\nEighteen times two is thirty-six, so my missing value Is thirty-six and for this one it's going to be sixty.\nDaniel, can you tell me who washes dishes faster?\nUgochukwu or Koye?\nugochukwu\nUgochukwu, because again it is larger.\nHe has sixty\nIs greater than thirty-six.\nOkay, you guys?\nThank you so much for coming in today.\nI wanted that as also an exit ticket,\nI think we really struggled finding...\nThe missing values.\nAnd ratios and I feel like...\nWe definitely have to work on that more, but it's totally okay.\nI know It is really hard To transition especially...\nDistance learning and being home, it's more difficult to stay.\nBut I really appreciate you guys for trying your best and interacting with me.\nBut...\nI just want to let you guys know, thank You so much for coming in today and this is the last session For This Year.\nSo i will not see you Guys till next year.\nby\nTill January.\nI know i won't see you guys till January.\nSo I really appreciate you guys for coming in today, and i will see You Guys next year.\nAWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW MAN!\nWe advance next year.\nTony what class do we have next\nAll right, guys.\nBye, everybody.\nbye\nI'll see you next year !\nHave a fantastic break !\nWALKER\nBye, bye Tony !\nThank you.\nWAIT\nHe left.\nI haven't left yet.\nBut goodbye, Tony.\nI NEED TO TELL\nYou need to tell Daniel, Daniel's not here anymore.\nDo you have something ?\nDo you have something to say, Tony?\nBefore I end the session ?\nTHE CODE TO WALKERS\nWell, don't you have his email ?\nYou could...\nTalk to...\nDaniel, maybe ?\nAll right, Tony.\nI appreciate you .\nI'll see you.\nCAN I SEE YOUR DOG\nMy dog is not here.\nHe is downstairs.\nAnd I'm inside my office right now.\nMaybe next year, okay ?\nMaybe next year.\nBye, Tony.\nAWWW DANG IT\nYou have a fantastic break .\nI'll see you next year okay ?\nBye, dude.\nBY 67\nMm-hmm"
+}

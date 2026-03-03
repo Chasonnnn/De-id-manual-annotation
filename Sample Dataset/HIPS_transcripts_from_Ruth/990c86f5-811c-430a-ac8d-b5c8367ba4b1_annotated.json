@@ -1,0 +1,157 @@
+{
+  "distinct_pii": {
+    "NAME": [
+      "Pedro",
+      "Ana",
+      "Kim",
+      "Kyle",
+      "Amanda",
+      "Rebecca",
+      "Carlos",
+      "Padilla"
+    ],
+    "LOCATION": [],
+    "SCHOOL": [],
+    "DATE": [],
+    "AGE": [],
+    "PHONE": [],
+    "EMAIL": [],
+    "URL": [],
+    "MISC_ID": []
+  },
+  "pii_occurrences": [
+    {
+      "start": 25,
+      "end": 30,
+      "text": "Pedro",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 1174,
+      "end": 1177,
+      "text": "Ana",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 1529,
+      "end": 1532,
+      "text": "Kim",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 3917,
+      "end": 3920,
+      "text": "Ana",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 5027,
+      "end": 5031,
+      "text": "Kyle",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8415,
+      "end": 8421,
+      "text": "AMANDA",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8448,
+      "end": 8454,
+      "text": "AMANDA",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8731,
+      "end": 8735,
+      "text": "Kyle",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8804,
+      "end": 8810,
+      "text": "AMANDA",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 11024,
+      "end": 11027,
+      "text": "Ana",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 11251,
+      "end": 11255,
+      "text": "Kyle",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 11443,
+      "end": 11446,
+      "text": "Ana",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 11597,
+      "end": 11600,
+      "text": "Ana",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 11734,
+      "end": 11737,
+      "text": "Ana",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 12030,
+      "end": 12033,
+      "text": "Ana",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 12165,
+      "end": 12168,
+      "text": "Ana",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 12253,
+      "end": 12256,
+      "text": "Ana",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 12364,
+      "end": 12367,
+      "text": "Ana",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 12379,
+      "end": 12385,
+      "text": "AMANDA",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 12713,
+      "end": 12716,
+      "text": "Ana",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 13706,
+      "end": 13710,
+      "text": "Kyle",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 15191,
+      "end": 15198,
+      "text": "Rebecca",
+      "pii_type": "NAME"
+    }
+  ],
+  "transcript": "All right, good morning, Pedro.\nI'm assuming you're not by yourself.\nI'm going to go ahead and get started because we got a lot to go through today.\nOur agenda for today, we're going to talk a little bit about slope intercept equation which you already are familiar with or should be.\nAt this point We're gonna do A Little Bit of Slopes\nPractice with a critical thinking test, and then you have your assessment today.\nSo we're going to be going over those few things, but for your opening of the six.\nSports that you see up here, I want you to tell me which one would You prefer To be the next Olympic sport?\nI know we had breakdancing.\nLast year, and that did not.\nGo so well, So what would you like to see next at the Olympics?\nThe cycle mode?\nWhat was the difference between football and regular football?\nI don't know.\nI don't know.\nThere's no physical contact.\nThere is, but not like\nI don't know.\nI don't know.\nYou have to steer the flag.\nMm-hmm\nYou can't tackle it.\nIt makes me anxious to tell you all.\nMy sister plays football here, so I would like to see that team go through the next Olympics sport.\nRight, right.\nThank you, You taught me something new today.\nHi, Ana.\nWe're going to go ahead into our opening if you could choose the next Olympic sport of The six on the page one.\nWhich one would you choose, or will there be a different one that\nIf you would choose the sign on page.\nThe ball is popular today.\nI didn't mean to say play football.\nSo thank you guys for participating in that quick opening.\nLike I told Kim, we have an assessment today so i do want to make sure You all Have time For That\nOur objective today is to be able To graph and write equations in slope intercept form.\nWe're going to go ahead and do the math.\nSomething that I did want to mention To you all.\nWe actually have taken notes on all of this already, so nobody should need to take notes On This in particular.\nBut we're going to be looking at Y equals MX plus B again today.\nFinding the slope of a line on A graph.\nFinding the Y intercept of a line on A graph, as well As determining what kind Of slope we want.\nWe're actually seeing on the graph as well.\nSo there's all information that you All should be able to\nHave as it is.\nThere are four different types of slopes, and this is where your actual slope.\nThis is where your actual notes are going to be coming from.\nSo I'm Going To give you guys time\nDo that, but for slope you're going to have.\nFour different types of slope that's going to be positive or negative, which is just...\nSorry, I'm so sorry.\nBless you.\nThank you so much.\nBonus points.\nAll right.\nSo we're going to have four different types of slope.\nPositive and negative are two that kind of should already be familiar with.\nYou can tell whether or not a slope is positive Or negative, then there Are Two other slopes That we're looking at And that's going to Be zero and undefined\nA zero slope is when?\nThere's no actual slope in the equation.\nIt'S just Y being equal to a number, why could be equal To three?\nWhy Could Be equal to eight?\nWhy could be equal to negative six?\nY is just equal To a number that's going\nLeave you with a zero slope.\nThen there's a slope that's undefined, okay?\nSlope is undefined.\nWhen Y isn't even in the equation.\nIt's just X equals a number.\nAnd so that's going to be what an undefined slope looks like.\nAs well.\nSo I'm going to give you all a chance.\nTo copy down.\nLittle sketches of these graphs, the graphs don't have to be perfect.\nYou just have to draw, you know?\nA line going up.\nFrom left to right, that's positive.\nA line going down from Left To Right That'S negative.\nAnd just examples of what the zero and undefined slope look like as well.\nI want to give you guys about four minutes To copy this down, and then we're going\nI actually moved to some practice before.\nYour assessment.\nAll right, everybody good to go?\nYou guys are ready to move To the next page?\nAna always needs extra time\nNo, just give me like twenty minutes.\nAll right, you got twenty seconds.\nAs a matter of fact, you got thirty Let's see how this goes.\nDo, do, Elmo's world.\nAll right, so what we're going to do next.\nJust so.\nAll right, so that was thirty seconds.\nReady to move on?\nAll right, so\nWe're going to do a little bit of an activity before you guys go into your.\nAssessment for today.\nFor this activity, I have a question for you all.\nThere's a way that we discussed.\nThere's a way that we actually discussed\nFinding slope of a graph.\nThere's a weight of support.\nThere's a couple of different ways to find slope, but there is A way specifically To Find slope Of a graph.\nAnybody remember?\nHow you find the slope of a graph?\nThe slope on a graph, rather?\nAm I going up?\nI don't know.\nI don't know.\nWhat is that called?\nOh my God, I got to take myself off.\nDid she just say She got to take her?\nOkay.\nYou have to go\nYou talked about her because she's not in uniform.\nI don't know.\nIt's off.\nWhich way is time to start thinking about slope?\n- You're not in uniform.\nThank you for clarifying, Kyle.\nBecause I was a little concerned.\nAlright, so what is that called?\nHow far up you go, how far to the left do You Go?\nWhat is that actually called?\nI don't know why.\nI don't know.\nWhat is this?\nIt is the slope, but there's a name for it.\nSomething over something.\nOne intercept.\nNo slope, you're right.\nIt's something over something.\nFew hard words.\nTwo R words.\nSomething over something.\nDoes anybody remember what that is?\nNobody remembers?\nIt's called rise over run.\nYou guys remember that?\nRise over run.\nI'm not really familiar with that.\nI forgot.\nShut up.\nYou said you're not familiar with it?\nThat's fine, you'll get familiar with it.\nThank you very much.\nWe've done rise over run.\nRise over run is basically asking\nhow far up or down did you go?\nOver how far left to right did you go?\nThat's what rise over run is.\nIf you want to copy that down in your notebook,\nMight be necessary.\nRise over run is saying how far up or down did you go versus How far left to right Did You Go?\nFrom point to Point?\nFor an example, I'm going to do this as an example and then let you guys try it on your own because i'm sure You are capable of doing This On Your Own.\nAll right.\nLet's say for rise over run.\nYou want to find the rise over run for?\nLine A.\nYou're going to pick two points on line A.\nTwo points on line A.\nAnd you're going to say, How far do I have To go up or down?\nAnd how far do I have To go left to right?\nTo get from point\nTo point, okay.\nWhy my lines are like?\nThe coordinates minus two and three.\nSay it again?\nI mean, coordinates minus two and three.\nWhere is it?\nMinus four.\nSo, my Y is forty.\nWhen you do rise over run, the answer is up.\nSo, I'm on that top.\nI don't know.\nAll right.\nWhen you actually do rise over run, the coordinates aren't actually what You're paying attention to.\nFor rise over run, that's not really what The solution says.\nWhat you're paying attention to is, again.\nWhere should I go?\nI'll go up and down.\nWe are dead.\nDid I have to go on this from Point To point?\nHow far up again did I have to go?\nHow many?\nOr from left To right, Did i Have\nI'm going to have to go.\nThat's what I'm talking about.\nThe line A is in blue.\nWhat is that?\n- Well, maybe two points.\nOn line A, I'm going to say this again.\nI want you to step on your example.\nI'm going to tell you guys how to do this once, and then i'm gonna expect for You Guys To Be Able To Do It On Your Own.\nAnd how are you going to wrap it?\nBecause...\nYou're gonna start at your origin, and then go there.\nI'm doing this exactly one time.\nI'm doing it.\nYou're gonna go.\nSo for line A, we're going to do our rise over run.\nYou want To see how far up and down?\nDid I have to go?\nAnd how far?\nAnd how far right did I have to go?\nTo get from point to Point?\nTo get from the first blue point to second Blue Point?\nHow far?\nHow far?\nHow far up or down did you have to go?\nHow far?\nHow far up or down?\nSo we brought the linear function.\nYep, there's two blocks.\nHow far left to right did you have?\nHow many blocks did you go left to right?\nSo we're going to go left or right first depending on...\nIs it right?\nSo your rise was two...\nYes, you're right.\nYour rise was going to be two, you went up Two squares.\nYour run was three squares, so you went...\nYou ran three, so your rise is two.\nYour run is three.\nSo your slope from line A is actually going to be two over three.\nSo good job on that one, AMANDA.\nThe slope of line B.\nAnd AMANDA, you're going to do the slope of line C.\nAgain, I just showed you an example.\nSo if you weren't paying attention that's on You\nBecause...\nI literally just\nWalked everybody through.\nAnd for those, if you did pay attention...\nAll right, so you're on your individual pages.\nNow, Kyle You're going to find the slope of line B doing what we just did and AMANDA...\nYou're gonna find the slope of line C again.\nDoing what we just did, finding two points and doing that rise of one.\nAll right.\nIf I see that you're having trouble...\nI'll probably come and ask you what's going on.\nAll right.\nBut remember, pick out two points on your line and then find Your rise over one.\nSo you guys have about three minutes to do that before we need To get...\nFinish this off and go to our assessment.\nIt's interesting.\nA minute and a half has passed, And I don't see anything on anybody's page which is concerning to me.\nBecause if somebody has a question, that questions you.\nBut we have to write it on there.\nI was writing in my book...\nYes, please write it on your page.\nI can't see Your notebook so yes you need to Write It On Your Page\nAlways on your page.\nYou at least need to write your answer.\nIf your answer is incorrect, then I can tell you we Can figure out what happened.\nBut I just need your answer.\nYour work is one thing, i need your Answer\nI think it'll be confusing.\nIt's what you're gonna see.\nAll right, so twenty seconds left.\nIf you're having trouble, write something on your page so I know You're Having Trouble.\nAnd FYI, once again...\nI have not discussed this before.\nTelling me that you have a phone problem.\nIf I get a message saying that you've been on your phone.\nThat's your warning.\nIf you end up on your phone again, whether I catch it or Whether someone else catches It.\nYour grade will officially drop.\nFor the day.\nSo please, if you are on your phone Please put it away.\nAll right, so does anybody?\nNobody actually wrote a slope on their page.\nSo I'm kind of curious On if Anybody found Their Slope Did Anybody Actually Find The Slope Of the Line They Were Assigned\nWhy is that?\nWhat was the trouble with finding slope?\nCan you hear me now?\nI was saying that i Was having trouble with it.\nThat's why i was using my book to see if could load My notes\nI know where you're having trouble with.\nFor Line B, I had\nPut it over and I gave three.\nAnd I had six.\nBut I couldn't\nI couldn't quite\nFigure out what my answer was going to be.\nSo I Was writing in My book, see if i could figure\nOkay, so I think we did this together already but i'll do it again.\nBecause Ana and I think just did this, but i'll try to do it one more time.\nJust so we're all on the same page.\nYou don't need to go all the way out, you can but that's not necessary.\nYou can find the closest.\nPoint again, so like for Kyle's line there is a point at x equals negative three.\nThere Is also A point where y equals positive three So we can use those two points now find the rise over run between Those Two Points Ana you're very close\nYou're close in some regard.\nBut let me\nAgain, you're going to choose two points.\nWhich I think you probably chose two good points, Ana because\nYou got your rise correct.\nBut you're run.\nBecause what needs a little bit of help.\nSo if we choose two points on your line, Ana.\nAnd then we do our rise over run don't know why my laptop keeps doing that.\nThis is actually quite frustrating\nThere we go.\nYour rise was four.\nAnd the way you can check that is, You Can Say Okay.\nAnd the length.\nWhat number did I start at for my rise?\nWhat number did I end at for my rise?\nAna, for your question and For Your line You started at positive two.\nFor Your Rise.\nYou ended at positive six, so your rise was four.\nAna, what was your run?\nWhat was your run?\nHow many blocks did you have to go over?\nSo, Ana you have that green line C.\nYou rose four.\nHow many did you run?\nIt wasn't two.\nSo right here is your run, Ana.\nYou're on AMANDA.\nHow much did you run?\nA few minutes ago.\nHow many know who the job situation was?\nIt's September and it is.\nBetter than expected, let's get this ready.\nWhere are you getting five from?\nGood job.\nWhere do you see five?\nSo, wait a second because I think that you're looking at this in an interesting way.\nI drew you two points, Ana.\nI drew you two points.\nI drew.\nBetween the two points that I drew.\nYour rise was four.\nWhat was your run between those two points?\nThat was the second.\nGood job.\nAfter the summer.\nIs that seven?\nSo, your...\nMm-hmm.\nSo your run, let's just be clear.\nYour run.\nStarted at one.\nAnd ended at two.\nIs that seven?\nIs an increase of seven between one and two.\nHow many does it take to get from one and two?\nYou probably need to look at your slope again as well.\nHow many does it take to get from one and two?\nYou start at one and you get to two.\nIt only takes one.\nI want to take someone.\nYour run was one.\nYour run was one.\nYour rise was four.\nThat's correct, I think you had that from the get-go\nYour run.\nWas one.\nYou only had to run one.\nI didn't have that.\nPlease do not make this more complicated for yourself because I don't want you guys to be confused.\nYou're just looking at how many blocks or squares that I actually have to run.\nSo your rise over run should have been four over one.\nKyle, for your B line.\nHow much did you rise?\nHow much did you rise?\nWhere do you see a five at between those two points and the line?\nNever mind.\nI think it's good enough.\nI'm going to go down here and give you a moment.\nYour rise was what?\nYour rise is from here to\nthis is your rise.\nRun from one to three, I only raised two.\nSo your rise is two.\nYour rise is two, what's your run?\nIs it four?\nIt's four, but you're close.\nSo it's still three.\nIt's three.\nSo your rise should be two.\nYour run should be three, so I mean you're slope\nWhich is a two over three.\nAll right.\nIt should be two over three.\nAll right.\nSo let's hope that this goes well because you all have your other.\nYour assessment to do\nAnd we're going to go ahead.\nAnd again, put your code in.\nHopefully you guys can see that code.\nIf not, I'll rewrite it because i do think\nSo everybody go to Kahoot.\nit\nAnd put in the code on The page.\nI think Indiana right now.\nI can bring the redistricting page.\nOkay, so I'm going to go ahead and bring the redistricting page.\nAll right, so I have one person logged in.\nAll right, so that's good.\nEverybody should be getting logged\nSo we can go ahead and take this assessment.\nAll right.\nWe're going to go ahead and start.\nThank you.\nSo some of these questions are not graded.\nSome of them are I'm not telling you which is, do your best.\nWe're actually going to skip this question just because we don't have the time.\nSo don't answer this question.\nThere we go\nAll right.\nSo now Rebecca has ten dollars in her account.\nShe saves five dollars every week How would you write the equation for The amount of money she saves after X weeks again?\nShe already she starts off with ten dollars in her account, that should tell you something.\nShe saves five dollars every week.\nYou're writing your Y equals MX plus B equation.\nWhat is Your slope in this question?\nWhat is your Y intercept?\nThat should help you write your answer.\nYou both were very close, but I think you got your numbers flipped.\nShe's saving five dollars every week.\nFive is your slope\nShe started off with ten dollars, so that's going to be your Y intercept.\nYour equation should have been y equals five x\nAll right.\nNobody on the board yet, but we're going to keep going.\nSo now...\nThis is a true or false for the equation, Y equals three fourths x minus six.\nThe graph is going to have a positive slope.\nLook at the slope in The equation, tell me if your graph is going to be positive.\nOr a negative slope.\nI don't see it.\nYou don't see what?\nThe picture of the slope.\nYou want to just get those?\nThere's no picture, you have to pull it from here.\nLook at the slope in The equation, tell me.\nIf the slope will be positive or not?\nThe slope is going to be positive.\nIf your slope in the equation Is positive...\nYour slope on the graph will be positive, so three over four is a positive number.\nThat should have been true.\nWhat is the Y intercept of this line?\nY intercept, Of course Is where The line crosses the y axis.\nThat's all I'm going to say, you guys should know after this.\nThat's all I'm going to say.\nIt would have been three, Y intercept is wherever the line crosses The y axis.\nWhat is the slope of this equation?\nDo do do do.\nThank you.\nMm-hmm.\nWhat is your slope?\nOf this equation?\nYour slope is going to be positive three.\nYour slope Is always your M value that Y equals MX plus B slope is your m.\nIt's always attached to your X.\nSo three should have been your slope.\nGood job on that one.\nIf M is negative four and B Is positive four, what is the equation of The line?\nThis where you just plug in these numbers Where they belong In the equation.\nBeautiful, negative four X plus Four.\nWell done.\nAlright, for the equation Y equals seven.\nMm-hmm.\nIs your slope going to be positive, negative zero or undefined?\nYou guys just took notes on this.\nSo when Y equals a number, what's your slope?\nWhat type of slope do you have?\nIf Y is equal to a number.\nYour slope should be zero, we literally talked about this on This page.\nWhen Y is equal to a number.\nThat means your slope is going to be zero.\nAlright, so maybe I'll need to retake these notes on this page because that was a freebie.\nBut that's alright.\nWhat is the slope of The line?\nIs it going to be positive, negative undefined or zero.\nWhat kind of slope is this?\nJust focus on to be negative, good.\nAnd last question.\nWhat is the Y intercept of this line?\nWhat kind of line is it?\nWhat is the Y intercept of this line?\nThe latest.\nIt is positive two, where you guys got negative four from Is beyond me.\nIf you look at the graph, it crosses The Y axis At positive two wasn't even a negative in\nThat's all right.\nAll right, so good job on that.\nWe are now going to go into your soft close, give yourself a rating On A scale of one To five for how you actually participated and\nengaged in today's lesson.\nAnd then you have ten to spend.\nTell me.\nWould spend it.\nWell, congratulations if you think we got a five.\nI'm happy for You\nAll right, for two I might as well go to check the keys of course\nFor three, I'm picking a prize.\nfour and picking nachos.\nI'm sorry, nachos and what?\nLet me tell that guy.\nI said pizza, fries and cookies.\nYou said pizza, fries and cookies.\nThat's not what you said, but that is now future problems.\nI chose\nI would go.\npizza, fries and some more.\nInteresting combination.\nActually, I get extra money.\nI don't want no bacon mix.\nI already said, i wanted everything but those that are named.\nI get extra money just so i could that.\nYes, we are.\nOkay, sorry.\nSee you later.\nAll right.\nWell, I'm here.\nThere you go.\nYou guys are not released yet.\nI don't know who told y'all, but you all could just disappear\nif you do log off without permission, that drops your grade so y'all can stop waving.\nThat's what I'm saying.\nOh, my God.\nBut you guys can go ahead and log off.\nI don't believe in any\nClimb it down.\nkind of thing."
+}

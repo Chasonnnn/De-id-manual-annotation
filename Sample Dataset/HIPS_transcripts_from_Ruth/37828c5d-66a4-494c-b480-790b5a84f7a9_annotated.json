@@ -1,0 +1,28 @@
+{
+  "distinct_pii": {
+    "NAME": [
+      "Diaz",
+      "Chris",
+      "Dominguez"
+    ],
+    "LOCATION": [],
+    "SCHOOL": [],
+    "DATE": [],
+    "AGE": [],
+    "PHONE": [],
+    "EMAIL": [],
+    "URL": [
+      "https://rodriguez.com/since"
+    ],
+    "MISC_ID": []
+  },
+  "pii_occurrences": [
+    {
+      "start": 478,
+      "end": 505,
+      "text": "https://rodriguez.com/since",
+      "pii_type": "URL"
+    }
+  ],
+  "transcript": "Welcome in.\nYou're just going to be doing start testing today.\nMm-hmm\nYou have the link on screen.\nYou can just.\nI'll paste that into.\nA different tab, username password.\nAnd then once you're in your click on the test and it should ask you maybe for another password\nThen just use admin For that\nLet me know if you need help with anything or If You've gotten into the test\nYou told me to look up what?\nJust use that link in a different tab.\nI can also send it in the saga chat.\nhttps://rodriguez.com/since\nSo I'll just repeat.\nFrom here.\nWe're having you do start testing, so copy the link either from chat or You can double click on The text box\nIt's special.\nI don't know\nif you want to do it.\nAnd you should be able to copy the link from there.\nPaste it into the URL in a new tab.\nI'm there with talking.\nAnd then you have your username and password that You can use to sign in.\nAnd after you sign in, You'll have a test that you can click on to open.\nAnd once you click on the test, it'll ask for a monitor code or monitor password and You use admin.\nAll our case.\nLet's go to the back.\nThank you\nI'm going to wait for him.\nLet's see.\nOh yeah, I see it.\nI don't know if it's working.\nVery difficult.\nI don't know.\nI'm trying.\nMm-hmm.\nI hope part of it's not working.\nIt's not letting me copy it.\nIf you double click the text box.\nAll right.\nIs it what you...\nLike change what's in the text box?\nI don't\nOkay, so from there you should be able to highlight just the link.\nAnd then hold control C.\nAnd then if you go to a new tab, Go To The URL You Should Be Able To Paste It.\nI did it.\nAnd then you have your...\nThat's great.\nI don't think so.\nIt's not working.\nYour phone couldn't read.\nI don't know.\nIf you're having trouble, You could also copy the link from chat.\nWhen are you gonna take?\nOh, wait I think i'm in there.\nYeah, a minute.\nYou made it?\nAnd then you have the username and password.\nThen you have...\nI'm sure you can hear in the background, but your username is...\nThe first letter of Your First Name and then.\nThe last three digits of your student ID.\nI don't know.\nSo I should have the correct username for each of you also on your...\nLet me... Yeah.\nIn the password, ABC.\nJust ABC.\nOkay, I'm in there.\nNice, now you should be able to click on the test.\nJust like that.\nCan you get into the test or is it asking for another password?\nOkay, I'm about to start.\nGood luck on the test.\nOkay, thank you.\nNo problem."
+}

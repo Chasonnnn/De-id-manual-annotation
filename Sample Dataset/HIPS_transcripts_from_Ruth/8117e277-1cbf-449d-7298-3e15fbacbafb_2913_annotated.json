@@ -1,0 +1,125 @@
+{
+  "distinct_pii": {
+    "NAME": [
+      "Francisco",
+      "Jennifer",
+      "Tim",
+      "Nizam",
+      "Yong",
+      "Ibrahim"
+    ],
+    "LOCATION": [],
+    "SCHOOL": [],
+    "DATE": [],
+    "AGE": [],
+    "PHONE": [],
+    "EMAIL": [],
+    "URL": [],
+    "MISC_ID": []
+  },
+  "pii_occurrences": [
+    {
+      "start": 36,
+      "end": 45,
+      "text": "Francisco",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 132,
+      "end": 141,
+      "text": "Francisco",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 224,
+      "end": 232,
+      "text": "Jennifer",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 233,
+      "end": 241,
+      "text": "Jennifer",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 242,
+      "end": 250,
+      "text": "Jennifer",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 251,
+      "end": 259,
+      "text": "Jennifer",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 260,
+      "end": 268,
+      "text": "Jennifer",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 269,
+      "end": 277,
+      "text": "Jennifer",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 278,
+      "end": 286,
+      "text": "Jennifer",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 287,
+      "end": 295,
+      "text": "Jennifer",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 296,
+      "end": 304,
+      "text": "Jennifer",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 314,
+      "end": 322,
+      "text": "Jennifer",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 469,
+      "end": 472,
+      "text": "Tim",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 506,
+      "end": 511,
+      "text": "Nizam",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 765,
+      "end": 769,
+      "text": "Yong",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 843,
+      "end": 848,
+      "text": "Nizam",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 877,
+      "end": 882,
+      "text": "Nizam",
+      "pii_type": "NAME"
+    }
+  ],
+  "transcript": "Well, your camera at all.\nI'm aware Francisco.\nAlright, let's go.\nIt will be fixed in time.\nThat doesn't mean turn off your camera, Francisco.\nIt just means I'm going to fix mine\nin a moment.\nGirl, he can't see you.\nMm.\nMm.\nJennifer Jennifer Jennifer Jennifer Jennifer Jennifer\nJennifer Jennifer Jennifer.\nBecause Jennifer always thinks somebody's wrong.\nHe knows, it is not that .\nI told you, i will fix it.\nIt's going to be okay.\nYou're going to have to get injured.\nTim, how are you?\nAwesome sauce.\nMr. Nizam?\n-Mm.\nI'm doing great today.\nWell, that is awesome to hear.\nAll right.\nI'm going to stay here.\nDuh duh duh duh duh\nMm-hmm.\nI need to fix one quick thing.\nMr., what is it called?\nYou got to add data in here.\nAll right.\nMm.\nYes, I heard you.\nYou know who Yong is?\nYou're the best rapper.\nYou know.\nIn the world that's something.\nMr. Nizam is the best rapper, too\nMr. Nizam?\nI'll be right back, guys."
+}

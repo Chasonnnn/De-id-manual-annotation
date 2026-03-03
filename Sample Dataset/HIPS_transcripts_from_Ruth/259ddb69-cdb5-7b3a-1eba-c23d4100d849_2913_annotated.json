@@ -1,0 +1,33 @@
+{
+  "distinct_pii": {
+    "NAME": [
+      "Diaz",
+      "Smith",
+      "Hassan",
+      "Anne"
+    ],
+    "LOCATION": [],
+    "SCHOOL": [],
+    "DATE": [],
+    "AGE": [],
+    "PHONE": [],
+    "EMAIL": [],
+    "URL": [],
+    "MISC_ID": []
+  },
+  "pii_occurrences": [
+    {
+      "start": 85,
+      "end": 89,
+      "text": "Diaz",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 480,
+      "end": 484,
+      "text": "Diaz",
+      "pii_type": "NAME"
+    }
+  ],
+  "transcript": "Hey, sorry about that.\nThought Connects kicked me without knowing...\nYou guys there?\nDiaz?\nHey, how was it?\nHow's the start?\nWhat did you say?\nHow did the star assessment go?\nIt's good.\nGive me one pro and con about it.\nWhat was one thing that's good about it?\nOne thing That Was bad About It.\nThe one thing is good, like I done my test and the bad thing Is i can feel some person in the test.\nYou compete with someone in the class?\nDon't ask her what's happening.\nHow about you, Diaz?\nWhat was one good thing About it and One bad Thing About the star assessment.\nAbout what?\nThe star assessment that you guys took.\n- A good thing is that I got a Good score and the bad Thing Is That it was wrong.\nYeah, okay.\nWhat was a problem that you found Was easy and one problem That You Found Was very hard?\nI don't think i remember every problem in the test.\nHow about you, D?\nAny problems that were good or any problems That Were particularly easy Or what problem Was Particularly hard.\nFair enough.\nLet's see here.\nUnfortunately, because of what happened with Saga We don't have time for activity and we end in five minutes Would you guys like to do a quick game of book it?\nQuickly, join the Google Meet Center that is in chat.\nI can't get in.\nIs it not letting you in?\nI copied it and pasted It says something went wrong and valid video call name.\nCan you try refreshing?\nI do.\nGive me a second.\nCan you go to meet.\ngoogle.\ncom and type this in?\nLet me know if that works.\nThere we go.\nCan you help B out as well?"
+}

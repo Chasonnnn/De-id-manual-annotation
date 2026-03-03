@@ -1,0 +1,281 @@
+{
+  "distinct_pii": {
+    "NAME": [
+      "Khan",
+      "Kevin",
+      "Roberto",
+      "Claudia",
+      "Jessica",
+      "Zapata"
+    ],
+    "LOCATION": [],
+    "SCHOOL": [],
+    "DATE": [],
+    "AGE": [],
+    "PHONE": [],
+    "EMAIL": [],
+    "URL": [],
+    "MISC_ID": []
+  },
+  "pii_occurrences": [
+    {
+      "start": 0,
+      "end": 4,
+      "text": "Khan",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 21,
+      "end": 25,
+      "text": "khan",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 68,
+      "end": 72,
+      "text": "Khan",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 143,
+      "end": 148,
+      "text": "Kevin",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 165,
+      "end": 169,
+      "text": "Khan",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 401,
+      "end": 406,
+      "text": "Kevin",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 429,
+      "end": 434,
+      "text": "Kevin",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 609,
+      "end": 616,
+      "text": "Roberto",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 641,
+      "end": 648,
+      "text": "Roberto",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 663,
+      "end": 670,
+      "text": "Roberto",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 1023,
+      "end": 1030,
+      "text": "Roberto",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 1032,
+      "end": 1039,
+      "text": "Roberto",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 1155,
+      "end": 1162,
+      "text": "Roberto",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 1191,
+      "end": 1198,
+      "text": "Claudia",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 1330,
+      "end": 1337,
+      "text": "Roberto",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 1398,
+      "end": 1405,
+      "text": "Roberto",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 1573,
+      "end": 1580,
+      "text": "Roberto",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 3827,
+      "end": 3834,
+      "text": "Roberto",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 3875,
+      "end": 3882,
+      "text": "Roberto",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 3987,
+      "end": 3994,
+      "text": "Roberto",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 4639,
+      "end": 4646,
+      "text": "Roberto",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 4695,
+      "end": 4702,
+      "text": "Roberto",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 5140,
+      "end": 5144,
+      "text": "Khan",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 5339,
+      "end": 5346,
+      "text": "Roberto",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 5348,
+      "end": 5355,
+      "text": "Roberto",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 6000,
+      "end": 6007,
+      "text": "Claudia",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 6214,
+      "end": 6221,
+      "text": "Roberto",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 6302,
+      "end": 6306,
+      "text": "Khan",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8299,
+      "end": 8306,
+      "text": "Jessica",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8319,
+      "end": 8326,
+      "text": "Claudia",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8347,
+      "end": 8354,
+      "text": "Claudia",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8437,
+      "end": 8444,
+      "text": "Claudia",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8484,
+      "end": 8491,
+      "text": "Claudia",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8676,
+      "end": 8680,
+      "text": "Khan",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8731,
+      "end": 8735,
+      "text": "Khan",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8791,
+      "end": 8795,
+      "text": "Khan",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8835,
+      "end": 8839,
+      "text": "Khan",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 8937,
+      "end": 8941,
+      "text": "Khan",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 9016,
+      "end": 9020,
+      "text": "Khan",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 9250,
+      "end": 9254,
+      "text": "Khan",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 9979,
+      "end": 9986,
+      "text": "Roberto",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 10541,
+      "end": 10545,
+      "text": "Khan",
+      "pii_type": "NAME"
+    },
+    {
+      "start": 11016,
+      "end": 11023,
+      "text": "Roberto",
+      "pii_type": "NAME"
+    }
+  ],
+  "transcript": "Khan, how's it going khan?\nMy sound coming through on your end.\nHey Khan, can I get you to throw that camera and mic on for me?\nIs your friend Kevin in class today, Khan?\nHey, what's up?\nHow is it going man.\nWhat's up?\nCan you throw the camera out for me?\nTurn it on.\nYeah, please.\nAppreciate it.\nI appreciate it.\nYou had a good day so far, happy Tuesday.\nSounds good.\nGood to see you.\nIs your friend Kevin in class today?\nYeah, Kevin M.\nIs that what you can do?\nHe's right there.\nOkay, can you get him to log on?\nWe're going to play Kahoot today once you guys do our warm up or opening.\nLooks like we've got Roberto joining us too.\nIs that Roberto?\nYeah, we got Roberto in here.\nHe's easy.\nHe don't like light.\nI've heard you guys had some bad weather, so what's normally a rainy day activity?\nYou guys do.\n- What's typically a rainy day?\nWhat do you doing?\nWhat do you doing when it's raining outside?\nDon't come to school normally.\nDo you walk to school?\nIs that why?\nNo, I catch a bus.\nOkay, I got you.\nWhat about you, Roberto?\nRoberto, he's talking to you.\nWhat do you think?\nHe right here.\nStay safe.\nHold up!\nEasy, man.\nNo need to yell!\nYou there, Roberto?\nYou're welcome.\nOf course, Claudia.\nThank you.\nGood to see you.\nI'm gonna unmute you.\nHuh, you said what?\nThere you go.\nThere you go, now I can hear.\nYou were muted.\nRoberto, what do you normally say?\nWhen it's raining?\nYou're right.\nRoberto, thank you.\nWhat do you do?\nI'm not going to go this way.\nI fall asleep.\nYeah, yeah.\nIs that what I'm talking about?\nThank you\nSo do you guys remember the...\nCome on, Roberto.\nCome on\nWhat did you say?\n- Appreciate you.\nWhat the hell?\nLet's keep the headphones on, I appreciate it.\nThank you.\nSo why don't you guys, I'm going to type out.\nSome answers here and I want you guys to...\nPut them in the right spot.\nI'm going to type out the one, two three and four.\nWhy don't you guys go ahead do this?\nI'm going to do this.\nAnd then we'll get to the fun, We will do it together.\nThis is not fun.\nYou are under arrest\nGood, good.\nThis is not a game, this word.\nIt's not fun.\nI know it's not.\nWe're getting to the fun.\nI got to work again.\nWe will.\nCan you hear me?\nCan you hear me?\nGood luck, this is it.\nYeah, so...\nJust answer this, then we'll go to the hoop really quick.\nThe phones are passing out.\nAll right.\nWhen are we going to go?\ntwenty-two point two\nYeah, so just drag the...\nDrag them wherever you think they go.\nI don't know.\nNot bad.\nWait, I understand this.\nWhat's up with the L?\nThis is the one thing you get in this piece.\nI'm going to be the same, I'll let you be massive.\nAnybody, he just said that.\nHe just said that.\nYou have not said anything.\nLast time, you said nothing.\nHe said\nIt makes no sense, bro.\nYou guys got A already?\nThere's a whole play.\nThank you.\nI'm not understanding.\nThank you.\nBro, I can get her.\nLet's go.\nThis is correct here.\nAnd C is correct, too.\nWhat's going on, man?\nWhat's going on?\nIf you want me on the touch, I'm going.\nAll right.\nNot quite.\nNot quite there.\nI want to speak.\n- Yep, that's right.\nThen this is that, the way I want it.\nD is two.\nWhat do you mean?\nMm-hmm\nOh, it must have gotten deleted.\nYou know, I don't.\nI know it's easy.\nOh, my God.\n- I don't understand.\nI know.\nIs it just not letting you move?\nYeah, because I'm controlling all of them.\n- Yeah, because I can pull it all the time.\nMy finger.\nThank you.\nI don't understand.\nWhat's this for?\nYou got this one, two.\nI got another straight one.\nThis and then we got this one .\nI'll bet you.\nYou can get the best way out by having one right click.\nWhere do you want to go?\nI'm really having a hard time hearing you guys over the background noise.\nIt's time.\nThat's enough.\nOkay, no questions.\nI'm sorry.\nI'm not understanding.\nWho is saying that?\nWho needs self understanding.\nHe is in your face.\nThank you.\nRoberto, okay.\nYou throw that camera on for me, Roberto.\nYay.\n- Okay, that's just right.\n- We are still here.\nOkay, appreciate that.\nYou say, let me see it.\nSo Roberto, what I want you to remember here is...\nLet me take a roll up...\n-...like, bro.\nWe know A is four.\n- How do you know how to say this?\nWe don't beat each other.\nAnd we know B is two.\n- It's like energy.\nYou remember learning these four quadrants?\nYou guys, three is the other one.\nThree is C.\nSee you later.\nYes, I won.\n-No, not quite.\nYeah, there's one and then...\nHe is one.\n- These three.\nYeah, that's right.\nSo coordinate, quadrant one...\nSorry not coordinate.\nKeep saying that all day.\nQuadrant run is when they're both positive\nI know.\nWe have positive x.\nThank you.\nIt's just a six degree.\nAnd plus y.\nOkay, so does that...\nAre you good, Roberto?\nOkay, let's see what...\nDo you understand this Roberto, now?\nOkay, cool.\nI'm going to have you guys go ahead and join that cahoot.\nNo, wait.\nIf You Go To Your Saga Bookmarks, It Should Be Good.\nThank you.\nWhoa.\nYou're gonna be me.\nWhat do I have?\nWhere did...\nWhat happened there?\nOh, you're back.\nOkay cool\nYeah, I had...\nYeah, you're good.\nIt is loud in there today.\nI can't understand.\nOkay, we're back.\nAll right.\nAppreciate it.\nGood restraint there.\nLet's see.\nGood to see you.\nIt's the Khan of Team.\nEverybody needs to be getting together.\nI love you.\nLetting you guys in.\nSee you guys.\nOkay, cool.\nYeah, there's no...\nThere you go\nYou want me to do that?\nI see that.\nWaiting for you, Roberto.\nRoberto, join.\nHow many minutes do you have in the class?\nI'm gonna hold the negative one.\nI'm gonna sit back.\nI mess around and drown her.\nAll right.\nAll I do, all i do, la-la-la me\nI don't know.\nLet's go to the beach.\nYou guys can sit wherever.\nOkay, all right.\nI'm going to show you the curve.\nHow am I supposed to...\nAll right.\nYou guys ready to start?\nNegative one for eating, even though I have two on my daycare.\nGood evening.\nI'm going to go ahead and start.\nI'm going to go for eating.\nMm-hmm\n- So what do you want me to eat?\n- So this is not based on speed at all.\nSpeed doesn't get you points?\n- I'm jaded all the way.\ni love that\njaded and Claudia got it.\nI got a four for doing what exactly?\nI got a four.\nOne of the people he has met.\nDo you guys see the question?\nWho has an...\nWho has an answer?\nWho has an answer?\nWho has a...\nYou're holding us up, Roberto.\nI can help you if need it.\nAnswer the question.\nMm-hmm.\nWe don't need to yell, Khan.\nI know, you're good.\nI've been messaging him.\nYou can't see it because he's on the thing.\nYeah, we're good.\nThat's just the first question\nDon't say all across your room and he don't got no answer.\nI am going to put a timer now on these questions.\nI think that's better.\nI quit.\nDo you see the negative and what happened when you switched them up there?\nYou want us to ask you like try and get the answer right?\nI did the tutorial, everything else.\nI'm tired.\nThey're pretty easy, so if you guys want...\nHold on.\nIf you guys want...\n- There they are.\nLike, I know.\nI'm looking at a different point.\nI know.\nIt's just it technically has to be math, otherwise would be something else.\nSee you guys.\nYou guys can answer them if you want, but we're just going to kind of flip.\nYou guys have to answer them.\nIt's whether or not you...\nOh, grab who I lost.\nOh, yes.\nYeah, I'm getting out.\nAll right.\nHold back.\nYeah, I'm going to get this wrong.\nI'm not good with breath, so.\nThis should be pretty easy.\nIt's just mashing up the points\nI didn't do that.\nI'm ready to go home.\nI'm ready to go in my bed.\nI can't wait till the end of day either.\nOh, well.\nNice question.\nNow we got some easy ones.\nI don't know.\nI don't think it's that easy, sorry.\nYeah, all right.\nIt's just one point.\nGet a fly.\nAll right.\nIt's a little tricky.\nIt's a little tricky.\nI don't know.\nAre you calling your retard?\nI didn't say anything, man.\nI want to talk with you.\nI want you to treat yourself.\nI don't know what we did.\nI don't know what we did.\nI don't know.\nOh, come on.\nIt's...\nIt's so...\nI thought one of you guys had it.\nWhat did we get transferred?\n- Remember X comma Y guys, you will get it.\nI don't know.\nI'm going to be a two way.\n- That helped, but we're okay.\nRemember X comma Y guys.\nThe last one.\nX comma Y.\nThank you.\n- Remember which is our X axis and Which Is Our Y axis.\nI'm still on him?\nOkay, because I put this on your work.\nAHHH!\nThere we go, good job guys.\nJust one more test.\nThat's please, Jessica.\nThank you, Claudia.\nYeah, sure.\nFreaky Claudia.\nIt would be nice.\nI almost have a problem.\nWhy are you trying to laugh at Freaky Claudia?\nWhy are you trying to laugh at Freaky Claudia?\nYou actually have T.\nHey, let's go.\nLet's not name call.\nAll right.\nOne time with A.\nThat's close\nI thought it was ten.\nYou guys got your...\nThat's fine, okay.\nX and Y next up again.\nKhan can you hear me?\nYou guys?\nLet me go freeze that.\nKhan, can you hear me?\nI just want... Yo, stop me now.\nHey, Khan.\nHey, can you hear me?\nCan you hear me Khan?\non astral function?\n- Let me get my free.\nLet me know if you do it.\nDo good.\nI'm too good.\nHey, Khan.\nLet me see.\nAre you crazy?\nHe look at a watch he don't got on his wrist.\nKhan? Is my headphone muted?\nAll right.\nYou don't want to know what sound that is?\n- Yes, you know.\nThat's the only sound I think about when i do that.\nThat's the only...\nI swear.\nThat's the only sound I think about.\nCan you hear me?\nKhan, can you throw that headset for me?\nWhere is he?\nWhy is she calling my name again?\nMind you, I'm doing a cahoot.\nWhy do i need to have my mic on?\nMy camera's on.\nWhat happened?\nYou got to have the headset.\nYou can't hear me.\nYeah, look at the next one.\nand so you can hear me.\nYou're my friend\nSo you hear me.\nOkay, that's...\nOkay, that's why.\nBecause you were saying things and...\nI'm so glad i got a personal remark.\nWhat's that?\nI got my style, you know.\nWhat about Mathia Skye?\nI got my style, you know.\n- To what?\nI just need to have that headset on because you were...\n- Yeah, I just need...\nNot exactly focused on the screen, which is okay.\nBut I just want to keep the other students from being distracted.\nGood job, Roberto.\nYou got that.\nThe other students from being distracted.\nEverybody's distracted in here, I don't know...\nI don't know...\nI really need you to stop yelling too, and that's why.\nHow am I...\nAm I yelling?\nEven everybody in the class saying I'm not yelling.\nAlright, now.\nLet's see the solution.\nHow am I...\nHow am I yelling?\nIt just sounds like your voice is being raised, especially when you were talking about what...\nSo everybody in my classroom saying I'm not yelling.\nYou got to calm down.\nYou got to calm down.\nThank you.\nI see\nI just need you relax, Khan.\nAll right.\nYou're good.\nExcuse me, has anybody been interrupted by anything I said during this class?\nYes, a lot of people have.\nI don't know.\nI'll be back.\nAll right.\nIt doesn't matter.\nIt doesn't matter.\nThe point is that we're just...\nI just want to be in the whole room.\nWe...\nWe can't have people...\nOkay, bye.\n- Being distracted through each other.\nBecause that's not yelling.\nYou got it.\nAre you okay?\nWhat is that sound?\nI appreciate you keeping the camera on, Roberto.\ncan hear me, but.\nI'm in the room.\nI don't know.\nThank you.\nI'm watching that other video.\nI'll be back.\nCan you do that?\nGood job, good job.\nI don't know.\nDo you have a record?\nAloha.\nThat was the question he asked for today.\nThank you.\nDon't go to the bathroom.\nHow's that?\nI don't know.\nWe're fine.\nThank you.\nI don't know\nI don't know.\nOkay, I'm good to go.\nI don't know.\nI don't know.\nYou are not any kind of person, you should be doing better.\nI hope that you see to do better .\nSo did you guys?\nI don't know.\nOh, okay.\nI don't know.\nOh, okay.\nI don't know.\nI didn't get that.\nI don't know.\nUsing process of elimination, this should be pretty easy.\nIf you guys are still listening to me.\nCome on.\ntwelve minutes, twelve minutes.\nTwo people.\nBe my life.\nNo, I did it.\nOr maybe not.\nI don't know.\nBut only because we have eight points.\nWho missed out?"
+}

@@ -1,0 +1,18 @@
+[project]
+name = "annotation-tool-backend"
+version = "0.1.0"
+description = "Local Transcript Annotation Comparator backend"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "openai",
+    "scikit-learn",
+    "python-multipart",
+    "pydantic",
+    "pytest",
+    "httpx",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
