@@ -6,8 +6,9 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi",
     "uvicorn",
-    "openai",
+    "litellm",
     "scikit-learn",
+    "scipy",
     "python-multipart",
     "pydantic",
     "pytest",

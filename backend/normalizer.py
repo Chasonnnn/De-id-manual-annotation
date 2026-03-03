@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
-from pathlib import Path
 
 from models import CanonicalDocument, CanonicalSpan, UtteranceRow
 
@@ -13,6 +11,42 @@ PII_TYPE_MAP = {
 
 def _map_label(raw: str) -> str:
     return PII_TYPE_MAP.get(raw.upper(), raw.upper())
+
+
+def _collect_label_set(*label_lists: list[str]) -> list[str]:
+    labels: set[str] = set()
+    for values in label_lists:
+        for label in values:
+            if label:
+                labels.add(_map_label(label))
+    return sorted(labels)
+
+
+def _dedup_spans(spans: list[CanonicalSpan]) -> list[CanonicalSpan]:
+    seen: set[tuple[int, int, str]] = set()
+    result: list[CanonicalSpan] = []
+    for s in spans:
+        key = (s.start, s.end, s.label)
+        if key not in seen:
+            seen.add(key)
+            result.append(s)
+    return result
+
+
+def _build_utterances(full_text: str) -> list[UtteranceRow]:
+    rows: list[UtteranceRow] = []
+    offset = 0
+    for line in full_text.split("\n"):
+        rows.append(
+            UtteranceRow(
+                speaker="unknown",
+                text=line,
+                global_start=offset,
+                global_end=offset + len(line),
+            )
+        )
+        offset += len(line) + 1  # +1 for newline
+    return rows
 
 
 def _detect_format(data: dict) -> str:
@@ -30,7 +64,10 @@ def _detect_format(data: dict) -> str:
 
 
 def parse_hips_v1(data: dict, filename: str, doc_id: str) -> CanonicalDocument:
-    full_text = data["transcript"]
+    full_text = data.get("transcript") or data.get("text")
+    if not isinstance(full_text, str):
+        raise ValueError("HIPS v1 payload must include transcript text")
+
     spans = [
         CanonicalSpan(
             start=p["start"],
@@ -40,15 +77,17 @@ def parse_hips_v1(data: dict, filename: str, doc_id: str) -> CanonicalDocument:
         )
         for p in data.get("pii_occurrences", [])
     ]
+    deduped = _dedup_spans(spans)
+    labels_from_distinct = list(data.get("distinct_pii", {}).keys())
+    labels_from_spans = [s.label for s in deduped]
     return CanonicalDocument(
         id=doc_id,
         filename=filename,
         format="hips_v1",
-        full_text=full_text,
-        utterances=[
-            UtteranceRow(speaker="unknown", text=full_text, global_start=0, global_end=len(full_text))
-        ],
-        gold_spans=spans,
+        raw_text=full_text,
+        utterances=_build_utterances(full_text),
+        pre_annotations=deduped,
+        label_set=_collect_label_set(labels_from_distinct, labels_from_spans),
     )
 
 
@@ -63,15 +102,17 @@ def parse_hips_v2(data: dict, filename: str, doc_id: str) -> CanonicalDocument:
         )
         for p in data.get("pii", [])
     ]
+    deduped = _dedup_spans(spans)
+    labels_from_distinct = list(data.get("distinct_pii", {}).keys())
+    labels_from_spans = [s.label for s in deduped]
     return CanonicalDocument(
         id=doc_id,
         filename=filename,
         format="hips_v2",
-        full_text=full_text,
-        utterances=[
-            UtteranceRow(speaker="unknown", text=full_text, global_start=0, global_end=len(full_text))
-        ],
-        gold_spans=spans,
+        raw_text=full_text,
+        utterances=_build_utterances(full_text),
+        pre_annotations=deduped,
+        label_set=_collect_label_set(labels_from_distinct, labels_from_spans),
     )
 
 
@@ -115,13 +156,16 @@ def parse_jsonl_record(data: dict, filename: str, doc_id: str) -> CanonicalDocum
         offset = global_end
 
     full_text = "\n".join(parts)
+    deduped = _dedup_spans(spans)
+    labels_from_spans = [s.label for s in deduped]
     return CanonicalDocument(
         id=doc_id,
         filename=filename,
         format="jsonl",
-        full_text=full_text,
+        raw_text=full_text,
         utterances=utterances,
-        gold_spans=spans,
+        pre_annotations=deduped,
+        label_set=_collect_label_set(labels_from_spans),
     )
 
 
@@ -136,7 +180,8 @@ def parse_file(raw_bytes: bytes, filename: str, doc_id: str) -> list[CanonicalDo
                 continue
             data = json.loads(line)
             rid = f"{doc_id}_line{i}"
-            docs.append(parse_jsonl_record(data, filename, rid))
+            record_name = f"{filename}#record-{i}"
+            docs.append(parse_jsonl_record(data, record_name, rid))
     else:
         data = json.loads(text)
         fmt = _detect_format(data)
