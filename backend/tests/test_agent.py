@@ -266,7 +266,7 @@ class TestRunLLM:
         run_llm_with_metadata(
             text="text",
             api_key="k",
-            model="openai/gpt-5.2-codex",
+            model="openai.gpt-5.3-codex",
             reasoning_effort="xhigh",
         )
         call_kwargs = mock_completion.call_args
@@ -278,41 +278,114 @@ class TestRunLLM:
         run_llm_with_metadata(
             text="text",
             api_key="k",
-            model="anthropic/claude-opus-4-6",
+            model="anthropic.claude-4.6-opus",
             anthropic_thinking=True,
             anthropic_thinking_budget_tokens=2048,
         )
         call_kwargs = mock_completion.call_args
         assert call_kwargs.kwargs["thinking"]["type"] == "enabled"
         assert call_kwargs.kwargs["thinking"]["budget_tokens"] == 2048
+        assert call_kwargs.kwargs["max_tokens"] > call_kwargs.kwargs["thinking"]["budget_tokens"]
 
     @patch("agent.completion")
-    def test_fallback_retries_without_advanced_params(self, mock_completion):
+    def test_unsupported_advanced_params_raise_error(self, mock_completion):
         mock_completion.side_effect = [
             Exception("Unsupported parameter: reasoning_effort"),
+        ]
+        with pytest.raises(Exception, match="Unsupported parameter"):
+            run_llm_with_metadata(
+                text="text",
+                api_key="k",
+                model="openai.gpt-5.2-chat",
+                reasoning_effort="xhigh",
+            )
+
+    @patch("agent.completion")
+    def test_api_base_retries_with_v1_suffix(self, mock_completion):
+        mock_completion.side_effect = [
+            Exception("404 Not Found"),
             _mock_completion_response("[]"),
         ]
         result = run_llm_with_metadata(
             text="text",
             api_key="k",
-            model="openai/gpt-5.2-chat-latest",
-            reasoning_effort="xhigh",
+            api_base="https://api.example.com",
+            model="openai.gpt-5.2-chat",
         )
         assert result.spans == []
-        assert len(result.warnings) == 1
-        assert "retried without them" in result.warnings[0]
-
         first_call = mock_completion.call_args_list[0].kwargs
         second_call = mock_completion.call_args_list[1].kwargs
-        assert "reasoning_effort" in first_call
-        assert "reasoning_effort" not in second_call
+        assert first_call["api_base"] == "https://api.example.com"
+        assert second_call["api_base"] == "https://api.example.com/v1"
+        assert any("succeeded after retrying" in warning for warning in result.warnings)
+
+    @patch("agent.completion")
+    def test_chat_model_omits_custom_temperature(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response("[]")
+        result = run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            model="openai.gpt-5.2-chat",
+            temperature=0.0,
+        )
+        assert result.spans == []
+        call_kwargs = mock_completion.call_args
+        assert "temperature" not in call_kwargs.kwargs
+        assert any("default temperature" in warning for warning in result.warnings)
+
+    @patch("agent.completion")
+    def test_gateway_dot_model_uses_openai_provider_format(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response("[]")
+        run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            api_base="https://proxy.example.com",
+            model="google.gemini-3.1-pro-preview",
+        )
+        call_kwargs = mock_completion.call_args
+        assert call_kwargs.kwargs["model"] == "openai/google.gemini-3.1-pro-preview"
+
+    @patch("agent.completion")
+    def test_gateway_reasoning_passed_via_extra_body(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response("[]")
+        run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            api_base="https://proxy.example.com",
+            model="openai.gpt-5.3-codex",
+            reasoning_effort="xhigh",
+        )
+        call_kwargs = mock_completion.call_args
+        assert "reasoning_effort" not in call_kwargs.kwargs
+        assert call_kwargs.kwargs["extra_body"]["reasoning_effort"] == "xhigh"
+
+    @patch("agent.completion")
+    def test_gateway_thinking_passed_via_extra_body(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response("[]")
+        result = run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            api_base="https://proxy.example.com",
+            model="anthropic.claude-4.6-opus",
+            anthropic_thinking=True,
+            anthropic_thinking_budget_tokens=2048,
+            temperature=0.0,
+        )
+        call_kwargs = mock_completion.call_args
+        assert "thinking" not in call_kwargs.kwargs
+        assert call_kwargs.kwargs["temperature"] == 1.0
+        assert call_kwargs.kwargs["extra_body"]["thinking"]["type"] == "enabled"
+        assert (
+            call_kwargs.kwargs["extra_body"]["max_tokens"]
+            > call_kwargs.kwargs["extra_body"]["thinking"]["budget_tokens"]
+        )
+        assert any("requires temperature=1" in warning for warning in result.warnings)
 
 
 def test_model_presets_include_requested_options():
     model_ids = {preset["model"] for preset in MODEL_PRESETS}
-    assert "openai/gpt-5.2-codex" in model_ids
-    assert "openai/gpt-5.2-chat-latest" in model_ids
-    assert "anthropic/claude-opus-4-6" in model_ids
-    assert "anthropic/claude-opus-4-6-20260210" in model_ids
-    assert "gemini/gemini-3-pro-preview" in model_ids
-    assert "ollama/llama3" in model_ids
+    assert "openai.gpt-5.3-codex" in model_ids
+    assert "openai.gpt-5.2-chat" in model_ids
+    assert "anthropic.claude-4.6-opus" in model_ids
+    assert "google.gemini-3.1-pro-preview" in model_ids
+    assert "google.gemini-3-flash-preview" in model_ids

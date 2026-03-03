@@ -5,14 +5,16 @@ import os
 import uuid
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
+import httpx
 from fastapi import FastAPI, HTTPException, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from models import CanonicalDocument, CanonicalSpan, AgentOutputs
 from normalizer import parse_file
-from agent import MODEL_PRESETS, run_regex, run_llm_with_metadata
+from agent import MODEL_PRESETS, SYSTEM_PROMPT, run_regex, run_llm_with_metadata
 from metrics import compute_metrics
 
 app = FastAPI(title="Annotation Tool")
@@ -30,16 +32,8 @@ SESSIONS_DIR = BASE_DIR / "sessions"
 CONFIG_PATH = BASE_DIR / "config.json"
 
 DEFAULT_CONFIG = {
-    "system_prompt": (
-        "You are a PII de-identification expert. Analyze the transcript and identify ALL PII instances.\n"
-        "Return ONLY a JSON array where each element has:\n"
-        '- "text": exact text as it appears\n'
-        '- "label": one of NAME, LOCATION, SCHOOL, DATE, AGE, PHONE, EMAIL, URL, MISC_ID\n'
-        '- "confidence": 0.0-1.0\n\n'
-        "PII types: NAME (personal names), LOCATION (addresses, cities), SCHOOL (institutions),\n"
-        "DATE (specific dates), AGE (ages/birth years), PHONE, EMAIL, URL, MISC_ID (IDs, case numbers)"
-    ),
-    "model": "openai/gpt-5.2-codex",
+    "system_prompt": SYSTEM_PROMPT,
+    "model": "openai.gpt-5.3-codex",
     "temperature": 0.0,
     "api_base": "",
     "reasoning_effort": "xhigh",
@@ -186,6 +180,55 @@ def _save_config(cfg: dict):
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
 
 
+def _normalize_gateway_base(api_base: str) -> str:
+    base = api_base.rstrip("/")
+    if base.endswith("/v1"):
+        return base
+    return f"{base}/v1"
+
+
+def _fetch_gateway_model_ids(api_base: str, api_key: str) -> list[str]:
+    base = _normalize_gateway_base(api_base)
+    url = f"{base}/models"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "x-litellm-api-key": api_key,
+    }
+    try:
+        resp = httpx.get(url, headers=headers, timeout=15.0)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to query gateway models endpoint ({url}): {exc}",
+        ) from exc
+    if resp.status_code != 200:
+        snippet = resp.text[:300]
+        raise HTTPException(
+            status_code=502,
+            detail=f"Gateway model list request failed ({resp.status_code}) at {url}: {snippet}",
+        )
+    try:
+        payload = resp.json()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Gateway returned non-JSON response for model list at {url}.",
+        ) from exc
+    data = payload.get("data", [])
+    if not isinstance(data, list):
+        raise HTTPException(
+            status_code=502,
+            detail=f"Gateway model list format unexpected at {url}.",
+        )
+    model_ids: list[str] = []
+    for item in data:
+        if isinstance(item, dict):
+            value = item.get("id")
+            if isinstance(value, str) and value:
+                model_ids.append(value)
+    return model_ids
+
+
 # --- Routes ---
 
 
@@ -305,9 +348,35 @@ async def run_agent(doc_id: str, body: AgentRunBody):
                 ),
             )
         model = body.model or cfg.get("model", DEFAULT_CONFIG["model"])
+        if "." in model and "/" not in model and not api_base:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Model '{model}' is a gateway model ID. Set api_base (or LITELLM_BASE_URL) "
+                    "to use gateway-routed models."
+                ),
+            )
+        if api_base:
+            gateway_models = _fetch_gateway_model_ids(api_base, api_key)
+            if model not in gateway_models:
+                preview = ", ".join(gateway_models[:15])
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Model '{model}' is not available for this API key on {api_base}. "
+                        f"Pick a model from /v1/models. Examples: {preview}"
+                    ),
+                )
         system_prompt = body.system_prompt or cfg.get(
             "system_prompt", DEFAULT_CONFIG["system_prompt"]
         )
+        if (
+            isinstance(system_prompt, str)
+            and "confidence" in system_prompt
+            and '"start"' not in system_prompt
+        ):
+            # Migrate older local config prompt schema to offset-based schema.
+            system_prompt = SYSTEM_PROMPT
         temperature = (
             body.temperature
             if body.temperature is not None
@@ -327,17 +396,32 @@ async def run_agent(doc_id: str, body: AgentRunBody):
             else cfg.get("anthropic_thinking_budget_tokens")
         )
 
-        llm_result = run_llm_with_metadata(
-            text=doc.raw_text,
-            api_key=api_key,
-            api_base=api_base or None,
-            model=model,
-            system_prompt=system_prompt,
-            temperature=temperature,
-            reasoning_effort=reasoning_effort,
-            anthropic_thinking=anthropic_thinking,
-            anthropic_thinking_budget_tokens=anthropic_thinking_budget_tokens,
-        )
+        try:
+            llm_result = run_llm_with_metadata(
+                text=doc.raw_text,
+                api_key=api_key,
+                api_base=api_base or None,
+                model=model,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                reasoning_effort=reasoning_effort,
+                anthropic_thinking=anthropic_thinking,
+                anthropic_thinking_budget_tokens=anthropic_thinking_budget_tokens,
+            )
+        except Exception as exc:
+            message = str(exc).strip() or exc.__class__.__name__
+            if len(message) > 800:
+                message = f"{message[:800]}..."
+            detail = f"LLM request failed: {message}"
+            if api_base:
+                parsed = urlparse(api_base)
+                path = parsed.path.rstrip("/")
+                if not path.endswith("/v1"):
+                    detail += (
+                        " Hint: this gateway may require an OpenAI-compatible '/v1' path; "
+                        "the backend also retries with '/v1' automatically."
+                    )
+            raise HTTPException(status_code=502, detail=detail) from exc
         spans = _normalize_and_validate_spans(llm_result.spans, doc.raw_text)
         _save_sidecar(doc_id, "agent.llm", spans, session_id)
         enriched = _enrich_doc(doc, session_id)

@@ -16,7 +16,16 @@ async function request<T>(
   const res = await fetch(`${BASE}${path}`, init);
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`${res.status}: ${body}`);
+    let detail = body;
+    try {
+      const parsed = JSON.parse(body) as { detail?: unknown };
+      if (parsed?.detail !== undefined) {
+        detail = String(parsed.detail);
+      }
+    } catch {
+      // Keep plain-text body
+    }
+    throw new Error(`${res.status}: ${detail}`);
   }
   return res.json() as Promise<T>;
 }

@@ -148,6 +148,10 @@ def test_agent_llm_uses_litellm_env_key_and_base(client, monkeypatch):
         captured.update(kwargs)
         return SimpleNamespace(spans=[], warnings=[])
 
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.2-chat"],
+    )
     monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
     monkeypatch.setenv("LITELLM_API_KEY", "litellm-key")
     monkeypatch.setenv("LITELLM_BASE_URL", "https://proxy.example.com/v1")
@@ -161,7 +165,7 @@ def test_agent_llm_uses_litellm_env_key_and_base(client, monkeypatch):
 
     resp = client.post(
         f"/api/documents/{doc_id}/agent",
-        json={"mode": "llm", "model": "openai/gpt-5.2-chat-latest"},
+        json={"mode": "llm", "model": "openai.gpt-5.2-chat"},
     )
     assert resp.status_code == 200
     assert captured["api_key"] == "litellm-key"
@@ -175,6 +179,10 @@ def test_agent_llm_request_overrides_env_key_and_base(client, monkeypatch):
         captured.update(kwargs)
         return SimpleNamespace(spans=[], warnings=[])
 
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.2-chat"],
+    )
     monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
     monkeypatch.setenv("LITELLM_API_KEY", "litellm-env-key")
     monkeypatch.setenv("LITELLM_BASE_URL", "https://env.example.com/v1")
@@ -186,7 +194,7 @@ def test_agent_llm_request_overrides_env_key_and_base(client, monkeypatch):
         f"/api/documents/{doc_id}/agent",
         json={
             "mode": "llm",
-            "model": "openai/gpt-5.2-chat-latest",
+            "model": "openai.gpt-5.2-chat",
             "api_key": "request-key",
             "api_base": "https://request.example.com/v1",
         },
@@ -194,6 +202,73 @@ def test_agent_llm_request_overrides_env_key_and_base(client, monkeypatch):
     assert resp.status_code == 200
     assert captured["api_key"] == "request-key"
     assert captured["api_base"] == "https://request.example.com/v1"
+
+
+def test_agent_llm_returns_actionable_error_details(client, monkeypatch):
+    def fake_run_llm_with_metadata(**kwargs):
+        raise Exception("Upstream 404 from proxy")
+
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.2-chat"],
+    )
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    resp = _upload(client)
+    doc_id = resp.json()["id"]
+
+    resp = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "llm",
+            "model": "openai.gpt-5.2-chat",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com",
+        },
+    )
+    assert resp.status_code == 502
+    detail = resp.json()["detail"]
+    assert "LLM request failed" in detail
+    assert "Upstream 404 from proxy" in detail
+    assert "/v1" in detail
+
+
+def test_agent_llm_rejects_model_not_in_gateway_catalog(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["google.gemini-3.1-pro-preview"],
+    )
+
+    resp = _upload(client)
+    doc_id = resp.json()["id"]
+
+    resp = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "llm",
+            "model": "openai.gpt-5.3-codex",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com",
+        },
+    )
+    assert resp.status_code == 400
+    assert "not available for this API key" in resp.json()["detail"]
+
+
+def test_agent_llm_gateway_model_requires_api_base(client):
+    resp = _upload(client)
+    doc_id = resp.json()["id"]
+
+    resp = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "llm",
+            "model": "google.gemini-3.1-pro-preview",
+            "api_key": "request-key",
+        },
+    )
+    assert resp.status_code == 400
+    assert "gateway model ID" in resp.json()["detail"]
 
 
 def test_metrics(client):
@@ -255,4 +330,4 @@ def test_model_presets_endpoint(client):
     data = resp.json()
     assert "presets" in data
     model_ids = {p["model"] for p in data["presets"]}
-    assert "openai/gpt-5.2-codex" in model_ids
+    assert "openai.gpt-5.3-codex" in model_ids

@@ -56,16 +56,16 @@ ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh"]
 
 MODEL_PRESETS: list[dict[str, Any]] = [
     {
-        "label": "OpenAI: GPT-5.2 Codex (xhigh)",
-        "model": "openai/gpt-5.2-codex",
+        "label": "OpenAI: Codex 5.3 (xhigh)",
+        "model": "openai.gpt-5.3-codex",
         "provider": "openai",
         "supports_reasoning_effort": True,
         "supports_anthropic_thinking": False,
         "default_reasoning_effort": "xhigh",
     },
     {
-        "label": "OpenAI: GPT-5.2 Chat Latest (xhigh)",
-        "model": "openai/gpt-5.2-chat-latest",
+        "label": "OpenAI: ChatGPT 5.2 (xhigh)",
+        "model": "openai.gpt-5.2-chat",
         "provider": "openai",
         "supports_reasoning_effort": True,
         "supports_anthropic_thinking": False,
@@ -73,32 +73,24 @@ MODEL_PRESETS: list[dict[str, Any]] = [
     },
     {
         "label": "Anthropic: Claude Opus 4.6 (thinking)",
-        "model": "anthropic/claude-opus-4-6",
+        "model": "anthropic.claude-4.6-opus",
         "provider": "anthropic",
         "supports_reasoning_effort": False,
         "supports_anthropic_thinking": True,
         "default_reasoning_effort": "none",
     },
     {
-        "label": "Anthropic: Claude Opus 4.6 (snapshot 20260210)",
-        "model": "anthropic/claude-opus-4-6-20260210",
-        "provider": "anthropic",
-        "supports_reasoning_effort": False,
-        "supports_anthropic_thinking": True,
-        "default_reasoning_effort": "none",
-    },
-    {
-        "label": "Google: Gemini 3 Pro Preview",
-        "model": "gemini/gemini-3-pro-preview",
+        "label": "Google: Gemini 3.1 Pro Preview",
+        "model": "google.gemini-3.1-pro-preview",
         "provider": "gemini",
         "supports_reasoning_effort": False,
         "supports_anthropic_thinking": False,
         "default_reasoning_effort": "none",
     },
     {
-        "label": "Ollama: Llama 3",
-        "model": "ollama/llama3",
-        "provider": "ollama",
+        "label": "Google: Gemini 3 Flash",
+        "model": "google.gemini-3-flash-preview",
+        "provider": "gemini",
         "supports_reasoning_effort": False,
         "supports_anthropic_thinking": False,
         "default_reasoning_effort": "none",
@@ -148,7 +140,16 @@ def _supports_anthropic_thinking(model: str, provider: str) -> bool:
     preset = MODEL_PRESET_BY_ID.get(model)
     if preset is not None:
         return bool(preset["supports_anthropic_thinking"])
-    return provider == "anthropic" and "claude-opus-4-6" in model
+    return provider == "anthropic" and (
+        "claude-opus-4-6" in model or "claude-4.6-opus" in model
+    )
+
+
+def _supports_custom_temperature(model: str) -> bool:
+    # GPT-5 family generally supports default temperature only.
+    if model.startswith("openai.gpt-5") or model.startswith("openai/gpt-5"):
+        return False
+    return True
 
 
 def _parse_spans_from_response(resp: Any) -> list[CanonicalSpan]:
@@ -170,18 +171,14 @@ def _parse_spans_from_response(resp: Any) -> list[CanonicalSpan]:
     ]
 
 
-def _is_unsupported_param_error(exc: Exception) -> bool:
-    msg = str(exc).lower()
-    markers = [
-        "unsupported",
-        "unexpected keyword",
-        "unknown argument",
-        "reasoning_effort",
-        "thinking",
-        "not allowed",
-        "invalid param",
-    ]
-    return any(m in msg for m in markers)
+def _build_api_base_candidates(api_base: str | None) -> list[str | None]:
+    if not api_base:
+        return [None]
+    normalized = api_base.rstrip("/")
+    candidates: list[str | None] = [normalized]
+    if not normalized.endswith("/v1"):
+        candidates.append(f"{normalized}/v1")
+    return candidates
 
 
 def run_llm_with_metadata(
@@ -199,26 +196,42 @@ def run_llm_with_metadata(
     provider = _infer_provider(model)
     supports_reasoning = _supports_reasoning_effort(model, provider)
     supports_thinking = _supports_anthropic_thinking(model, provider)
+    use_openai_gateway_format = bool(api_base) and "/" not in model and "." in model
 
     warnings: list[str] = []
-    advanced_param_keys: list[str] = []
+    extra_body: dict[str, Any] = {}
+    effective_temperature: float | None = temperature
 
-    request_kwargs: dict[str, Any] = {
-        "model": model,
+    if anthropic_thinking and supports_thinking:
+        if temperature != 1.0:
+            warnings.append(
+                f"Model '{model}' requires temperature=1 when thinking is enabled; adjusted automatically."
+            )
+        effective_temperature = 1.0
+    elif not _supports_custom_temperature(model):
+        effective_temperature = None
+
+    base_request_kwargs: dict[str, Any] = {
+        "model": f"openai/{model}" if use_openai_gateway_format else model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": text},
         ],
-        "temperature": temperature,
         "api_key": api_key,
     }
-    if api_base:
-        request_kwargs["api_base"] = api_base
+    if effective_temperature is not None:
+        base_request_kwargs["temperature"] = effective_temperature
+    elif temperature != 1.0:
+        warnings.append(
+            f"Model '{model}' only supports default temperature; custom value ignored."
+        )
 
     if reasoning_effort != "none":
         if supports_reasoning:
-            request_kwargs["reasoning_effort"] = reasoning_effort
-            advanced_param_keys.append("reasoning_effort")
+            if use_openai_gateway_format:
+                extra_body["reasoning_effort"] = reasoning_effort
+            else:
+                base_request_kwargs["reasoning_effort"] = reasoning_effort
         else:
             warnings.append(
                 f"Model '{model}' does not support reasoning_effort; ignored."
@@ -229,32 +242,48 @@ def run_llm_with_metadata(
             thinking: dict[str, Any] = {"type": "enabled"}
             if anthropic_thinking_budget_tokens is not None:
                 thinking["budget_tokens"] = anthropic_thinking_budget_tokens
-            request_kwargs["thinking"] = thinking
-            advanced_param_keys.append("thinking")
+                if use_openai_gateway_format:
+                    extra_body["max_tokens"] = max(
+                        anthropic_thinking_budget_tokens + 256, 4096
+                    )
+                else:
+                    base_request_kwargs["max_tokens"] = max(
+                        anthropic_thinking_budget_tokens + 256, 4096
+                    )
+            if use_openai_gateway_format:
+                extra_body["thinking"] = thinking
+            else:
+                base_request_kwargs["thinking"] = thinking
         else:
             warnings.append(f"Model '{model}' does not support anthropic thinking; ignored.")
+    if extra_body:
+        base_request_kwargs["extra_body"] = extra_body
 
-    try:
-        resp = completion(**request_kwargs)
-        spans = _parse_spans_from_response(resp)
-        return LLMRunResult(spans=spans, warnings=warnings)
-    except Exception as exc:
-        # Retry once without advanced parameters if provider rejects them.
-        if not advanced_param_keys or not _is_unsupported_param_error(exc):
+    api_base_candidates = _build_api_base_candidates(api_base)
+    last_exc: Exception | None = None
+
+    for idx, candidate in enumerate(api_base_candidates):
+        request_kwargs = dict(base_request_kwargs)
+        if candidate:
+            request_kwargs["api_base"] = candidate
+
+        try:
+            resp = completion(**request_kwargs)
+            spans = _parse_spans_from_response(resp)
+            if idx > 0:
+                warnings.append(
+                    f"Primary api_base failed; succeeded after retrying with '{candidate}'."
+                )
+            return LLMRunResult(spans=spans, warnings=warnings)
+        except Exception as exc:
+            last_exc = exc
+            if idx < len(api_base_candidates) - 1:
+                continue
             raise
 
-        downgraded = ", ".join(sorted(set(advanced_param_keys)))
-        fallback_kwargs = {
-            k: v
-            for k, v in request_kwargs.items()
-            if k not in {"reasoning_effort", "thinking"}
-        }
-        resp = completion(**fallback_kwargs)
-        spans = _parse_spans_from_response(resp)
-        warnings.append(
-            f"Provider rejected advanced parameters ({downgraded}); retried without them."
-        )
-        return LLMRunResult(spans=spans, warnings=warnings)
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("LLM request failed unexpectedly without exception")
 
 
 def run_llm(

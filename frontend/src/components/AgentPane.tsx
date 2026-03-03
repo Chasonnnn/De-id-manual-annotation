@@ -14,7 +14,7 @@ interface Props {
   onScroll: (scrollTop: number) => void;
 }
 
-const MODEL_GROUPS = ["OpenAI", "Anthropic", "Google Gemini", "Ollama"] as const;
+const MODEL_GROUPS = ["OpenAI", "Anthropic", "Google Gemini"] as const;
 const REASONING_EFFORT_OPTIONS = ["none", "low", "medium", "high", "xhigh"] as const;
 
 const AgentPane = forwardRef<HTMLDivElement, Props>(
@@ -34,9 +34,9 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
     const [configOpen, setConfigOpen] = useState(true);
     const [mode, setMode] = useState<"rule" | "llm">("rule");
     const [systemPrompt, setSystemPrompt] = useState(
-      "Identify all PII in the transcript. Label each span with: NAME, LOCATION, SCHOOL, DATE, AGE, PHONE, EMAIL, URL, or MISC_ID.",
+      "You are a PII annotation assistant. Return ONLY a JSON array of objects with start (0-based), end (exclusive), label, and text for each PII span.",
     );
-    const [model, setModel] = useState("openai/gpt-5.2-codex");
+    const [model, setModel] = useState("openai.gpt-5.3-codex");
     const [customModel, setCustomModel] = useState("");
     const [temperature, setTemperature] = useState(0);
     const [reasoningEffort, setReasoningEffort] = useState<
@@ -164,9 +164,7 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
                     const value = e.target.value;
                     setModel(value);
                     const preset = value === "__custom__" ? undefined : getModelPreset(value);
-                    if (preset?.defaultReasoningEffort) {
-                      setReasoningEffort(preset.defaultReasoningEffort);
-                    }
+                    setReasoningEffort(preset?.defaultReasoningEffort ?? "none");
                   }}
                 >
                   {MODEL_GROUPS.map((group) => (
@@ -185,7 +183,7 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
                     type="text"
                     value={customModel}
                     onChange={(e) => setCustomModel(e.target.value)}
-                    placeholder="provider/model-name (e.g., ollama/llama3)"
+                    placeholder="provider.model-name (e.g., openai.gpt-5.3-codex)"
                     style={{ marginTop: 4 }}
                   />
                 )}
