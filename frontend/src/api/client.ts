@@ -13,6 +13,10 @@ import type {
   SessionExportBundle,
   SessionImportResult,
   SessionProfile,
+  PromptLabDocResult,
+  PromptLabRunCreateRequest,
+  PromptLabRunDetail,
+  PromptLabRunSummary,
 } from "../types";
 
 const BASE = "/api";
@@ -109,6 +113,33 @@ export async function getAgentCredentialStatus(): Promise<AgentCredentialStatus>
 export async function getAgentMethods(): Promise<AgentMethodOption[]> {
   const data = await request<{ methods: AgentMethodOption[] }>("/agent/methods");
   return data.methods;
+}
+
+export async function createPromptLabRun(
+  payload: PromptLabRunCreateRequest,
+): Promise<PromptLabRunDetail> {
+  return request("/prompt-lab/runs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function listPromptLabRuns(): Promise<PromptLabRunSummary[]> {
+  const data = await request<{ runs: PromptLabRunSummary[] }>("/prompt-lab/runs");
+  return data.runs;
+}
+
+export async function getPromptLabRun(runId: string): Promise<PromptLabRunDetail> {
+  return request(`/prompt-lab/runs/${runId}`);
+}
+
+export async function getPromptLabDocResult(
+  runId: string,
+  cellId: string,
+  docId: string,
+): Promise<PromptLabDocResult> {
+  return request(`/prompt-lab/runs/${runId}/cells/${cellId}/documents/${docId}`);
 }
 
 export async function getMetrics(

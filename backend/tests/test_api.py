@@ -5,7 +5,7 @@ from typing import Literal
 import pytest
 from fastapi.testclient import TestClient
 
-from server import app, _session_docs
+from server import app, _prompt_lab_runs, _session_dir, _session_docs
 from models import CanonicalSpan, LLMConfidenceMetric
 
 
@@ -19,6 +19,7 @@ def clean_sessions(tmp_path, monkeypatch):
     monkeypatch.setattr("server.CONFIG_PATH", tmp_path / "config.json")
     monkeypatch.setattr("server.PROFILE_PATH", tmp_path / "session_profile.json")
     _session_docs.clear()
+    _prompt_lab_runs.clear()
     yield
 
 
@@ -46,6 +47,17 @@ def _upload(client, data=None, filename="test.json"):
         files={"file": (filename, data, "application/json")},
     )
     return resp
+
+
+def _wait_for_prompt_lab_terminal(client: TestClient, run_id: str, attempts: int = 30):
+    payload = None
+    for _ in range(attempts):
+        resp = client.get(f"/api/prompt-lab/runs/{run_id}")
+        assert resp.status_code == 200
+        payload = resp.json()
+        if payload["status"] in ("completed", "completed_with_errors", "failed"):
+            return payload
+    raise AssertionError("Prompt Lab run did not reach a terminal status in time")
 
 
 def _mock_confidence_metric(
@@ -155,7 +167,7 @@ def test_session_export_import_roundtrip(client):
     assert export_resp.status_code == 200
     bundle = export_resp.json()
     assert bundle["format"] == "annotation_tool_session"
-    assert bundle["version"] == 2
+    assert bundle["version"] == 3
     assert "project" in bundle
     assert "compatibility" in bundle
     assert len(bundle["documents"]) == 1
@@ -171,7 +183,7 @@ def test_session_export_import_roundtrip(client):
     )
     assert import_resp.status_code == 200
     imported = import_resp.json()
-    assert imported["bundle_version"] == 2
+    assert imported["bundle_version"] == 3
     assert imported["imported_count"] == 1
     assert imported["skipped_count"] == 0
 
@@ -372,6 +384,39 @@ def test_agent_rule(client):
     assert result["agent_outputs"]["llm"] == []
     assert result["agent_run_warnings"] == []
     assert result["agent_run_metrics"]["llm_confidence"] is None
+
+
+def test_agent_combined_excludes_method_outputs(client):
+    resp = _upload(client)
+    doc_id = resp.json()["id"]
+
+    from server import _save_sidecar
+
+    _save_sidecar(
+        doc_id,
+        "agent.rule",
+        [CanonicalSpan(start=0, end=5, label="NAME", text="Hello")],
+    )
+    _save_sidecar(
+        doc_id,
+        "agent.llm",
+        [CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+    )
+    _save_sidecar(
+        doc_id,
+        "agent.method.default",
+        [CanonicalSpan(start=17, end=20, label="NAME", text="Sue")],
+    )
+
+    doc_resp = client.get(f"/api/documents/{doc_id}")
+    assert doc_resp.status_code == 200
+    payload = doc_resp.json()
+
+    combined = payload["agent_annotations"]
+    assert {(s["start"], s["end"]) for s in combined} == {(0, 5), (6, 10)}
+
+    method_spans = payload["agent_outputs"]["methods"]["default"]
+    assert {(s["start"], s["end"]) for s in method_spans} == {(17, 20)}
 
 
 def test_agent_llm_response_includes_llm_confidence_metrics(client, monkeypatch):
@@ -956,3 +1001,332 @@ def test_agent_credentials_status(client, monkeypatch):
     assert "OPENAI_API_KEY" in data["api_key_sources"]
     assert data["has_api_base"] is True
     assert "LITELLM_BASE_URL" in data["api_base_sources"]
+
+
+def test_prompt_lab_run_completes_and_falls_back_to_pre(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_llm_with_metadata(**kwargs):
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(confidence=0.91, band="high"),
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    create_resp = client.post(
+        "/api/prompt-lab/runs",
+        json={
+            "name": "fallback-check",
+            "doc_ids": [doc_id],
+            "prompts": [
+                {
+                    "id": "p1",
+                    "label": "Baseline",
+                    "system_prompt": "Detect pii spans as strict JSON",
+                }
+            ],
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "reference_source": "manual",
+                "fallback_reference_source": "pre",
+            },
+            "concurrency": 4,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+
+    final = _wait_for_prompt_lab_terminal(client, run_id)
+    assert final["status"] == "completed"
+    assert final["matrix"]["cells"][0]["completed_docs"] == 1
+    assert final["matrix"]["cells"][0]["failed_docs"] == 0
+    assert final["matrix"]["cells"][0]["micro"]["f1"] == pytest.approx(1.0)
+
+    cell_id = final["matrix"]["cells"][0]["id"]
+    detail_resp = client.get(
+        f"/api/prompt-lab/runs/{run_id}/cells/{cell_id}/documents/{doc_id}"
+    )
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert detail["reference_source_used"] == "pre"
+    assert len(detail["hypothesis_spans"]) == 1
+    assert not (_session_dir() / f"{doc_id}.agent.llm.json").exists()
+
+
+def test_prompt_lab_run_handles_mismatch_metrics_without_crashing(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_llm_with_metadata(**kwargs):
+        return SimpleNamespace(
+            spans=[],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(confidence=0.62, band="low"),
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    create_resp = client.post(
+        "/api/prompt-lab/runs",
+        json={
+            "name": "mismatch-check",
+            "doc_ids": [doc_id],
+            "prompts": [
+                {
+                    "id": "p1",
+                    "label": "Baseline",
+                    "system_prompt": "Detect pii spans as strict JSON",
+                }
+            ],
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "reference_source": "manual",
+                "fallback_reference_source": "pre",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+
+    final = _wait_for_prompt_lab_terminal(client, run_id)
+    assert final["status"] == "completed"
+    cell = final["matrix"]["cells"][0]
+    assert cell["completed_docs"] == 1
+    assert cell["micro"]["f1"] == pytest.approx(0.0)
+
+
+def test_prompt_lab_enforces_variant_limits(client):
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    prompts = [
+        {
+            "id": f"p{idx}",
+            "label": f"Prompt {idx}",
+            "system_prompt": "Detect pii spans as strict JSON",
+        }
+        for idx in range(1, 8)
+    ]
+
+    resp = client.post(
+        "/api/prompt-lab/runs",
+        json={
+            "doc_ids": [doc_id],
+            "prompts": prompts,
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "reference_source": "manual",
+                "fallback_reference_source": "pre",
+            },
+            "concurrency": 4,
+        },
+    )
+    assert resp.status_code == 400
+    assert "between 1 and 6" in resp.json()["detail"]
+
+
+def test_prompt_lab_completed_with_errors_when_some_cells_fail(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_llm_with_metadata(**kwargs):
+        prompt = kwargs.get("system_prompt", "")
+        if isinstance(prompt, str) and "force-fail" in prompt:
+            raise RuntimeError("Simulated run failure")
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(confidence=0.85, band="medium"),
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    create_resp = client.post(
+        "/api/prompt-lab/runs",
+        json={
+            "doc_ids": [doc_id],
+            "prompts": [
+                {
+                    "id": "ok",
+                    "label": "ok",
+                    "system_prompt": "normal run",
+                },
+                {
+                    "id": "bad",
+                    "label": "bad",
+                    "system_prompt": "force-fail",
+                },
+            ],
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "reference_source": "manual",
+                "fallback_reference_source": "pre",
+            },
+            "concurrency": 2,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+
+    final = _wait_for_prompt_lab_terminal(client, run_id)
+    assert final["status"] == "completed_with_errors"
+    error_cells = [cell for cell in final["matrix"]["cells"] if cell["failed_docs"] > 0]
+    assert len(error_cells) == 1
+
+
+def test_prompt_lab_export_import_remaps_doc_ids(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_llm_with_metadata(**kwargs):
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(confidence=0.93, band="high"),
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    original_doc_id = upload_resp.json()["id"]
+
+    create_resp = client.post(
+        "/api/prompt-lab/runs",
+        json={
+            "name": "portable-run",
+            "doc_ids": [original_doc_id],
+            "prompts": [{"id": "p1", "label": "Baseline", "system_prompt": "normal run"}],
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "reference_source": "manual",
+                "fallback_reference_source": "pre",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    original_run_id = create_resp.json()["id"]
+    _wait_for_prompt_lab_terminal(client, original_run_id)
+
+    export_resp = client.get("/api/session/export")
+    assert export_resp.status_code == 200
+    bundle = export_resp.json()
+    assert len(bundle["prompt_lab_runs"]) >= 1
+
+    import_resp = client.post(
+        "/api/session/import",
+        files={
+            "file": (
+                "session_bundle.json",
+                json.dumps(bundle).encode(),
+                "application/json",
+            )
+        },
+    )
+    assert import_resp.status_code == 200
+    imported = import_resp.json()
+    assert imported["imported_prompt_lab_runs"] >= 1
+    new_doc_id = imported["imported_ids"][0]
+    assert new_doc_id != original_doc_id
+
+    runs_resp = client.get("/api/prompt-lab/runs")
+    assert runs_resp.status_code == 200
+    runs = runs_resp.json()["runs"]
+    imported_run = next((row for row in runs if row["id"] != original_run_id), None)
+    assert imported_run is not None
+
+    detail_resp = client.get(f"/api/prompt-lab/runs/{imported_run['id']}")
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert new_doc_id in detail["doc_ids"]

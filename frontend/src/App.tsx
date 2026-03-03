@@ -41,6 +41,7 @@ import MethodPane from "./components/MethodPane";
 import MetricsPanel from "./components/MetricsPanel";
 import DashboardPanel from "./components/DashboardPanel";
 import { computeDiff } from "./components/DiffOverlay";
+import PromptLabTab from "./components/PromptLabTab";
 
 // ---------------------------------------------------------------------------
 // 4.3: Error boundary to prevent white-screen crashes
@@ -119,6 +120,7 @@ function normalizePaneOrder(panes: PaneType[]): PaneType[] {
 // Main App
 // ---------------------------------------------------------------------------
 function AppContent() {
+  const [mainTab, setMainTab] = useState<"workspace" | "prompt_lab">("workspace");
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [doc, setDoc] = useState<CanonicalDocument | null>(null);
@@ -642,115 +644,141 @@ function AppContent() {
         savingProfile={savingProfile}
       />
       <div className="main-area">
-        {!doc && !loading && (
-          <div className="empty-state">
-            Select a document or upload a file to begin
-          </div>
-        )}
-        {loading && <div className="loading">Loading document...</div>}
-        {doc && (
+        <div className="main-tabbar">
+          <button
+            type="button"
+            className={mainTab === "workspace" ? "active" : ""}
+            onClick={() => setMainTab("workspace")}
+          >
+            Workspace
+          </button>
+          <button
+            type="button"
+            className={mainTab === "prompt_lab" ? "active" : ""}
+            onClick={() => setMainTab("prompt_lab")}
+          >
+            Prompt Lab
+          </button>
+        </div>
+        {mainTab === "prompt_lab" ? (
+          <PromptLabTab
+            documents={documents}
+            selectedDocumentId={selectedId}
+            onSelectDocument={setSelectedId}
+          />
+        ) : (
           <>
-            <Toolbar
-              visiblePanes={orderedVisiblePanes}
-              onTogglePane={handleTogglePane}
-              diffMode={diffMode}
-              onToggleDiff={() => setDiffMode(!diffMode)}
-              reference={reference}
-              onReferenceChange={setReference}
-              hypothesis={hypothesis}
-              onHypothesisChange={setHypothesis}
-              sourceOptions={sourceOptions}
-              matchMode={matchMode}
-              onMatchModeChange={setMatchMode}
-              saveStatus={saveStatus}
-            />
-            <DashboardPanel
-              dashboard={dashboard}
-              loading={dashboardLoading}
-              onRefresh={handleDashboardRefresh}
-              selectedId={selectedId}
-              onSelectDocument={setSelectedId}
-            />
-            <PaneContainer>
-              {allPanes.map((paneType) => {
-                const idx = paneIndex++;
-                switch (paneType) {
-                  case "raw":
-                    return (
-                      <RawPane
-                        key="raw"
-                        ref={registerPane(idx)}
-                        text={doc.raw_text}
-                        diffSpans={getDiffSpans("raw")}
-                        onScroll={handleScroll(idx)}
-                      />
-                    );
-                  case "pre":
-                    return (
-                      <PreAnnotationPane
-                        key="pre"
-                        ref={registerPane(idx)}
-                        text={doc.raw_text}
-                        spans={doc.pre_annotations}
-                        diffSpans={getDiffSpans("pre")}
-                        onScroll={handleScroll(idx)}
-                      />
-                    );
-                  case "manual":
-                    return (
-                      <ManualAnnotationPane
-                        key="manual"
-                        ref={registerPane(idx)}
-                        text={doc.raw_text}
-                        labels={doc.label_set?.length ? doc.label_set : PII_LABELS}
-                        spans={doc.manual_annotations}
-                        diffSpans={getDiffSpans("manual")}
-                        onSpansChange={handleManualChange}
-                        onScroll={handleScroll(idx)}
-                      />
-                    );
-                  case "agent":
-                    return (
-                      <AgentPane
-                        key="agent"
-                        ref={registerPane(idx)}
-                        text={doc.raw_text}
-                        spans={getAgentSpans()}
-                        activeOutput={agentView}
-                        onActiveOutputChange={setAgentView}
-                        diffSpans={getDiffSpans("agent")}
-                        onRunAgent={handleRunAgent}
-                        running={agentRunning}
-                        onScroll={handleScroll(idx)}
-                      />
-                    );
-                  case "methods":
-                    return (
-                      <MethodPane
-                        key="methods"
-                        ref={registerPane(idx)}
-                        text={doc.raw_text}
-                        spans={getMethodSpans()}
-                        methods={methodCatalog}
-                        activeMethod={methodView}
-                        onActiveMethodChange={setMethodView}
-                        diffSpans={getDiffSpans("methods")}
-                        onRunMethod={handleRunMethod}
-                        running={methodRunning}
-                        onScroll={handleScroll(idx)}
-                      />
-                    );
-                }
-              })}
-            </PaneContainer>
-            <MetricsPanel
-              reference={reference}
-              hypothesis={hypothesis}
-              matchMode={matchMode}
-              metrics={metrics}
-              loading={metricsLoading}
-              onRefresh={handleMetricsRefresh}
-            />
+            {!doc && !loading && (
+              <div className="empty-state">
+                Select a document or upload a file to begin
+              </div>
+            )}
+            {loading && <div className="loading">Loading document...</div>}
+            {doc && (
+              <>
+                <Toolbar
+                  visiblePanes={orderedVisiblePanes}
+                  onTogglePane={handleTogglePane}
+                  diffMode={diffMode}
+                  onToggleDiff={() => setDiffMode(!diffMode)}
+                  reference={reference}
+                  onReferenceChange={setReference}
+                  hypothesis={hypothesis}
+                  onHypothesisChange={setHypothesis}
+                  sourceOptions={sourceOptions}
+                  matchMode={matchMode}
+                  onMatchModeChange={setMatchMode}
+                  saveStatus={saveStatus}
+                />
+                <DashboardPanel
+                  dashboard={dashboard}
+                  loading={dashboardLoading}
+                  onRefresh={handleDashboardRefresh}
+                  selectedId={selectedId}
+                  onSelectDocument={setSelectedId}
+                />
+                <PaneContainer>
+                  {allPanes.map((paneType) => {
+                    const idx = paneIndex++;
+                    switch (paneType) {
+                      case "raw":
+                        return (
+                          <RawPane
+                            key="raw"
+                            ref={registerPane(idx)}
+                            text={doc.raw_text}
+                            diffSpans={getDiffSpans("raw")}
+                            onScroll={handleScroll(idx)}
+                          />
+                        );
+                      case "pre":
+                        return (
+                          <PreAnnotationPane
+                            key="pre"
+                            ref={registerPane(idx)}
+                            text={doc.raw_text}
+                            spans={doc.pre_annotations}
+                            diffSpans={getDiffSpans("pre")}
+                            onScroll={handleScroll(idx)}
+                          />
+                        );
+                      case "manual":
+                        return (
+                          <ManualAnnotationPane
+                            key="manual"
+                            ref={registerPane(idx)}
+                            text={doc.raw_text}
+                            labels={doc.label_set?.length ? doc.label_set : PII_LABELS}
+                            spans={doc.manual_annotations}
+                            diffSpans={getDiffSpans("manual")}
+                            onSpansChange={handleManualChange}
+                            onScroll={handleScroll(idx)}
+                          />
+                        );
+                      case "agent":
+                        return (
+                          <AgentPane
+                            key="agent"
+                            ref={registerPane(idx)}
+                            text={doc.raw_text}
+                            spans={getAgentSpans()}
+                            activeOutput={agentView}
+                            onActiveOutputChange={setAgentView}
+                            diffSpans={getDiffSpans("agent")}
+                            onRunAgent={handleRunAgent}
+                            running={agentRunning}
+                            onScroll={handleScroll(idx)}
+                          />
+                        );
+                      case "methods":
+                        return (
+                          <MethodPane
+                            key="methods"
+                            ref={registerPane(idx)}
+                            text={doc.raw_text}
+                            spans={getMethodSpans()}
+                            methods={methodCatalog}
+                            activeMethod={methodView}
+                            onActiveMethodChange={setMethodView}
+                            diffSpans={getDiffSpans("methods")}
+                            onRunMethod={handleRunMethod}
+                            running={methodRunning}
+                            onScroll={handleScroll(idx)}
+                          />
+                        );
+                    }
+                  })}
+                </PaneContainer>
+                <MetricsPanel
+                  reference={reference}
+                  hypothesis={hypothesis}
+                  matchMode={matchMode}
+                  metrics={metrics}
+                  loading={metricsLoading}
+                  onRefresh={handleMetricsRefresh}
+                />
+              </>
+            )}
           </>
         )}
       </div>

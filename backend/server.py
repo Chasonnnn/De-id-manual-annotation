@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -50,9 +53,12 @@ CONFIG_PATH = BASE_DIR / "config.json"
 PROFILE_PATH = BASE_DIR / "session_profile.json"
 
 BUNDLE_FORMAT = "annotation_tool_session"
-BUNDLE_VERSION = 2
-SUPPORTED_BUNDLE_VERSIONS = {1, 2}
+BUNDLE_VERSION = 3
+SUPPORTED_BUNDLE_VERSIONS = {1, 2, 3}
 TOOL_VERSION = "2026.03.03"
+PROMPT_LAB_DIR_NAME = "prompt_lab"
+PROMPT_LAB_MAX_VARIANTS = 6
+PROMPT_LAB_DEFAULT_CONCURRENCY = 4
 
 DEFAULT_CONFIG = {
     "system_prompt": SYSTEM_PROMPT,
@@ -180,6 +186,8 @@ def _normalize_optional_llm_confidence(raw: object) -> LLMConfidenceMetric | Non
 
 # Session index management
 _session_docs: dict[str, list[str]] = {}
+_prompt_lab_runs: dict[str, list[str]] = {}
+_prompt_lab_lock = threading.Lock()
 
 
 def _load_session_index(session_id: str = "default") -> list[str]:
@@ -198,6 +206,291 @@ def _save_session_index(session_id: str = "default"):
     d = _session_dir(session_id)
     d.mkdir(parents=True, exist_ok=True)
     (d / "_index.json").write_text(json.dumps(_session_docs.get(session_id, [])))
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _prompt_lab_dir(session_id: str = "default") -> Path:
+    return _session_dir(session_id) / PROMPT_LAB_DIR_NAME
+
+
+def _prompt_lab_index_path(session_id: str = "default") -> Path:
+    return _prompt_lab_dir(session_id) / "_index.json"
+
+
+def _prompt_lab_run_path(run_id: str, session_id: str = "default") -> Path:
+    return _prompt_lab_dir(session_id) / f"{run_id}.json"
+
+
+def _load_prompt_lab_index(session_id: str = "default") -> list[str]:
+    if session_id in _prompt_lab_runs:
+        return _prompt_lab_runs[session_id]
+    index_path = _prompt_lab_index_path(session_id)
+    if index_path.exists():
+        ids = json.loads(index_path.read_text())
+        if isinstance(ids, list):
+            _prompt_lab_runs[session_id] = [str(item) for item in ids]
+            return _prompt_lab_runs[session_id]
+    _prompt_lab_runs[session_id] = []
+    return _prompt_lab_runs[session_id]
+
+
+def _save_prompt_lab_index(session_id: str = "default"):
+    d = _prompt_lab_dir(session_id)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "_index.json").write_text(json.dumps(_prompt_lab_runs.get(session_id, []), indent=2))
+
+
+def _load_prompt_lab_run(run_id: str, session_id: str = "default") -> dict | None:
+    path = _prompt_lab_run_path(run_id, session_id)
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text())
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _save_prompt_lab_run(run: dict, session_id: str = "default"):
+    run_id = str(run.get("id", "")).strip()
+    if not run_id:
+        raise ValueError("Prompt Lab run payload missing id")
+    d = _prompt_lab_dir(session_id)
+    d.mkdir(parents=True, exist_ok=True)
+    _prompt_lab_run_path(run_id, session_id).write_text(json.dumps(run, indent=2))
+
+
+def _is_terminal_prompt_lab_status(status: str) -> bool:
+    return status in {"completed", "completed_with_errors", "failed"}
+
+
+def _safe_float(value: object) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _serialize_metrics_payload(metrics: dict) -> dict:
+    payload = copy.deepcopy(metrics)
+    false_positives = payload.get("false_positives", [])
+    if isinstance(false_positives, list):
+        payload["false_positives"] = [
+            item.model_dump() if isinstance(item, CanonicalSpan) else item
+            for item in false_positives
+        ]
+    false_negatives = payload.get("false_negatives", [])
+    if isinstance(false_negatives, list):
+        payload["false_negatives"] = [
+            item.model_dump() if isinstance(item, CanonicalSpan) else item
+            for item in false_negatives
+        ]
+    return payload
+
+
+def _build_prompt_lab_cell_summary(cell: dict, total_docs: int) -> dict:
+    docs_raw = cell.get("documents", {})
+    documents = docs_raw if isinstance(docs_raw, dict) else {}
+    completed_docs = 0
+    failed_docs = 0
+    tp = 0
+    fp = 0
+    fn = 0
+    confidence_values: list[float] = []
+
+    for result in documents.values():
+        if not isinstance(result, dict):
+            continue
+        status = str(result.get("status", "pending"))
+        if status == "completed":
+            completed_docs += 1
+            metrics = result.get("metrics", {})
+            if isinstance(metrics, dict):
+                micro = metrics.get("micro", {})
+                if isinstance(micro, dict):
+                    tp += int(micro.get("tp", 0))
+                    fp += int(micro.get("fp", 0))
+                    fn += int(micro.get("fn", 0))
+            llm_confidence = result.get("llm_confidence")
+            if isinstance(llm_confidence, dict):
+                conf = _safe_float(llm_confidence.get("confidence"))
+                if conf is not None:
+                    confidence_values.append(conf)
+            continue
+        if status in {"failed", "unavailable"}:
+            failed_docs += 1
+
+    processed = completed_docs + failed_docs
+    micro = _prf_from_counts(tp, fp, fn) if completed_docs > 0 else _prf_from_counts(0, 0, 0)
+    if processed == 0:
+        status = "pending"
+    elif processed < total_docs:
+        status = "running"
+    elif failed_docs > 0:
+        status = "completed_with_errors"
+    else:
+        status = "completed"
+
+    return {
+        "id": cell.get("id"),
+        "model_id": cell.get("model_id"),
+        "model_label": cell.get("model_label"),
+        "prompt_id": cell.get("prompt_id"),
+        "prompt_label": cell.get("prompt_label"),
+        "status": status,
+        "total_docs": total_docs,
+        "completed_docs": completed_docs,
+        "failed_docs": failed_docs,
+        "error_count": failed_docs,
+        "micro": micro,
+        "mean_confidence": (
+            sum(confidence_values) / len(confidence_values) if confidence_values else None
+        ),
+    }
+
+
+def _build_prompt_lab_matrix(run: dict) -> dict:
+    total_docs = len(run.get("doc_ids", []))
+    prompts = run.get("prompts", [])
+    models = run.get("models", [])
+    cells_raw = run.get("cells", {})
+    cells_dict = cells_raw if isinstance(cells_raw, dict) else {}
+    summaries: list[dict] = []
+    for model in models:
+        model_id = str(model.get("id", ""))
+        for prompt in prompts:
+            prompt_id = str(prompt.get("id", ""))
+            cell_id = f"{model_id}__{prompt_id}"
+            cell = cells_dict.get(cell_id)
+            if not isinstance(cell, dict):
+                cell = {
+                    "id": cell_id,
+                    "model_id": model_id,
+                    "model_label": model.get("label", model_id),
+                    "prompt_id": prompt_id,
+                    "prompt_label": prompt.get("label", prompt_id),
+                    "documents": {},
+                }
+            summaries.append(_build_prompt_lab_cell_summary(cell, total_docs))
+    return {
+        "models": [{"id": str(item.get("id", "")), "label": str(item.get("label", ""))} for item in models],
+        "prompts": [{"id": str(item.get("id", "")), "label": str(item.get("label", ""))} for item in prompts],
+        "cells": summaries,
+    }
+
+
+def _build_prompt_lab_run_summary(run: dict) -> dict:
+    matrix = _build_prompt_lab_matrix(run)
+    cells = matrix["cells"]
+    completed = 0
+    failed = 0
+    total = len(run.get("doc_ids", [])) * len(run.get("models", [])) * len(run.get("prompts", []))
+    for cell in cells:
+        completed += int(cell.get("completed_docs", 0)) + int(cell.get("failed_docs", 0))
+        failed += int(cell.get("failed_docs", 0))
+    return {
+        "id": run.get("id"),
+        "name": run.get("name"),
+        "status": run.get("status"),
+        "created_at": run.get("created_at"),
+        "started_at": run.get("started_at"),
+        "finished_at": run.get("finished_at"),
+        "doc_count": len(run.get("doc_ids", [])),
+        "prompt_count": len(run.get("prompts", [])),
+        "model_count": len(run.get("models", [])),
+        "total_tasks": total,
+        "completed_tasks": completed,
+        "failed_tasks": failed,
+    }
+
+
+def _build_prompt_lab_run_detail(run: dict) -> dict:
+    summary = _build_prompt_lab_run_summary(run)
+    matrix = _build_prompt_lab_matrix(run)
+    return {
+        **summary,
+        "doc_ids": run.get("doc_ids", []),
+        "prompts": run.get("prompts", []),
+        "models": run.get("models", []),
+        "runtime": run.get("runtime", {}),
+        "concurrency": run.get("concurrency", PROMPT_LAB_DEFAULT_CONCURRENCY),
+        "warnings": run.get("warnings", []),
+        "errors": run.get("errors", []),
+        "matrix": matrix,
+        "progress": {
+            "total_tasks": summary["total_tasks"],
+            "completed_tasks": summary["completed_tasks"],
+            "failed_tasks": summary["failed_tasks"],
+        },
+    }
+
+
+def _export_prompt_lab_runs(session_id: str = "default") -> list[dict]:
+    with _prompt_lab_lock:
+        runs: list[dict] = []
+        for run_id in _load_prompt_lab_index(session_id):
+            payload = _load_prompt_lab_run(run_id, session_id)
+            if payload is None:
+                continue
+            runs.append(copy.deepcopy(payload))
+        return runs
+
+
+def _remap_prompt_lab_run_doc_ids(
+    run: dict,
+    doc_id_remap: dict[str, str],
+) -> tuple[dict, list[str]]:
+    remapped = copy.deepcopy(run)
+    warnings: list[str] = []
+
+    original_doc_ids = remapped.get("doc_ids", [])
+    if not isinstance(original_doc_ids, list):
+        original_doc_ids = []
+    mapped_doc_ids: list[str] = []
+    seen_doc_ids: set[str] = set()
+    for value in original_doc_ids:
+        old_id = str(value)
+        new_id = doc_id_remap.get(old_id, old_id)
+        if new_id not in seen_doc_ids:
+            mapped_doc_ids.append(new_id)
+            seen_doc_ids.add(new_id)
+        if old_id not in doc_id_remap:
+            warnings.append(
+                f"Referenced document '{old_id}' was not imported; marked as unavailable."
+            )
+    remapped["doc_ids"] = mapped_doc_ids
+
+    cells = remapped.get("cells", {})
+    if isinstance(cells, dict):
+        for cell in cells.values():
+            if not isinstance(cell, dict):
+                continue
+            documents = cell.get("documents", {})
+            if not isinstance(documents, dict):
+                cell["documents"] = {}
+                continue
+            updated_documents: dict[str, dict] = {}
+            for old_id, result in documents.items():
+                mapped_id = doc_id_remap.get(str(old_id), str(old_id))
+                if isinstance(result, dict):
+                    item = copy.deepcopy(result)
+                else:
+                    item = {"status": "failed", "error": "Invalid imported result payload"}
+                if str(old_id) not in doc_id_remap:
+                    item["status"] = "unavailable"
+                    item["error"] = "Referenced document was not imported."
+                updated_documents[mapped_id] = item
+            cell["documents"] = updated_documents
+
+    run_warnings = remapped.get("warnings", [])
+    if not isinstance(run_warnings, list):
+        run_warnings = []
+    run_warnings.extend(warnings)
+    remapped["warnings"] = run_warnings
+    if warnings:
+        remapped["status"] = "completed_with_errors"
+    return remapped, warnings
 
 
 def _enrich_doc(
@@ -232,10 +525,9 @@ def _enrich_doc(
         llm=llm_spans,
         methods=agent_methods,
     )
-    method_spans: list[CanonicalSpan] = []
-    for method_id in sorted(doc.agent_outputs.methods.keys()):
-        method_spans.extend(doc.agent_outputs.methods[method_id])
-    doc.agent_annotations = doc.agent_outputs.rule + doc.agent_outputs.llm + method_spans
+    # "Agent (combined)" must remain deterministic and limited to agent-native outputs.
+    # Method outputs are exposed separately under agent_outputs.methods.
+    doc.agent_annotations = doc.agent_outputs.rule + doc.agent_outputs.llm
     doc.agent_run_warnings = []
     doc.agent_run_metrics = AgentRunMetrics(llm_confidence=llm_confidence)
 
@@ -426,6 +718,8 @@ def _resolve_bundle_version(payload: dict) -> int:
         return 1
     if bundle_format == "annotation_tool_session_v2":
         return 2
+    if bundle_format == "annotation_tool_session_v3":
+        return 3
     if bundle_format == BUNDLE_FORMAT:
         if raw_version is None:
             return BUNDLE_VERSION
@@ -437,7 +731,7 @@ def _resolve_bundle_version(payload: dict) -> int:
         detail=(
             "Unsupported bundle format. Expected one of: "
             "'annotation_tool_session', 'annotation_tool_session_v1', "
-            "'annotation_tool_session_v2'."
+            "'annotation_tool_session_v2', 'annotation_tool_session_v3'."
         ),
     )
 
@@ -686,6 +980,343 @@ class SessionProfileBody(BaseModel):
     notes: str | None = None
 
 
+class PromptLabPromptInput(BaseModel):
+    id: str | None = None
+    label: str
+    system_prompt: str
+
+
+class PromptLabModelInput(BaseModel):
+    id: str | None = None
+    label: str
+    model: str
+    reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"] = "none"
+    anthropic_thinking: bool = False
+    anthropic_thinking_budget_tokens: int | None = None
+
+
+class PromptLabRuntimeInput(BaseModel):
+    api_key: str | None = None
+    api_base: str | None = None
+    temperature: float = 0.0
+    match_mode: Literal["exact", "overlap"] = "exact"
+    reference_source: Literal["manual", "pre"] = "manual"
+    fallback_reference_source: Literal["manual", "pre"] = "pre"
+
+
+class PromptLabRunCreateBody(BaseModel):
+    name: str | None = None
+    doc_ids: list[str]
+    prompts: list[PromptLabPromptInput]
+    models: list[PromptLabModelInput]
+    runtime: PromptLabRuntimeInput
+    concurrency: int = PROMPT_LAB_DEFAULT_CONCURRENCY
+
+
+def _resolve_prompt_lab_runtime(runtime: PromptLabRuntimeInput) -> dict[str, object]:
+    cfg = _load_config()
+    api_key = (
+        runtime.api_key
+        or os.environ.get("LITELLM_API_KEY", "")
+        or os.environ.get("OPENAI_API_KEY", "")
+        or os.environ.get("ANTHROPIC_API_KEY", "")
+        or os.environ.get("GEMINI_API_KEY", "")
+        or os.environ.get("GOOGLE_API_KEY", "")
+    )
+    api_base = (
+        runtime.api_base
+        or str(cfg.get("api_base", "") or "")
+        or os.environ.get("LITELLM_BASE_URL", "")
+    )
+    return {
+        "api_key": api_key,
+        "api_base": api_base,
+        "temperature": runtime.temperature,
+        "match_mode": runtime.match_mode,
+        "reference_source": runtime.reference_source,
+        "fallback_reference_source": runtime.fallback_reference_source,
+    }
+
+
+def _validate_prompt_lab_request(body: PromptLabRunCreateBody, session_id: str = "default"):
+    if not body.doc_ids:
+        raise HTTPException(status_code=400, detail="doc_ids is required")
+    if len(body.prompts) < 1 or len(body.prompts) > PROMPT_LAB_MAX_VARIANTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Prompt variants must be between 1 and {PROMPT_LAB_MAX_VARIANTS}",
+        )
+    if len(body.models) < 1 or len(body.models) > PROMPT_LAB_MAX_VARIANTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model variants must be between 1 and {PROMPT_LAB_MAX_VARIANTS}",
+        )
+    if body.concurrency < 1 or body.concurrency > PROMPT_LAB_MAX_VARIANTS:
+        raise HTTPException(status_code=400, detail="concurrency must be between 1 and 6")
+    if len(body.prompts) * len(body.models) > PROMPT_LAB_MAX_VARIANTS * PROMPT_LAB_MAX_VARIANTS:
+        raise HTTPException(status_code=400, detail="Matrix limit exceeded (max 6x6)")
+
+    known_ids = set(_load_session_index(session_id))
+    for doc_id in body.doc_ids:
+        if doc_id not in known_ids:
+            raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
+
+    prompt_ids_seen: set[str] = set()
+    for index, prompt in enumerate(body.prompts):
+        if not prompt.label.strip():
+            raise HTTPException(status_code=400, detail=f"Prompt label required at index {index}")
+        if not prompt.system_prompt.strip():
+            raise HTTPException(
+                status_code=400, detail=f"system_prompt required at prompt index {index}"
+            )
+        if "{" in prompt.system_prompt or "}" in prompt.system_prompt:
+            raise HTTPException(
+                status_code=400,
+                detail="Prompt variants must be plain system prompt text (templating is not supported)",
+            )
+        prompt_id = (prompt.id or "").strip() or f"prompt_{index + 1}"
+        if prompt_id in prompt_ids_seen:
+            raise HTTPException(status_code=400, detail=f"Duplicate prompt id: {prompt_id}")
+        prompt_ids_seen.add(prompt_id)
+
+    model_ids_seen: set[str] = set()
+    for index, model in enumerate(body.models):
+        if not model.label.strip():
+            raise HTTPException(status_code=400, detail=f"Model label required at index {index}")
+        if not model.model.strip():
+            raise HTTPException(status_code=400, detail=f"model required at index {index}")
+        model_id = (model.id or "").strip() or f"model_{index + 1}"
+        if model_id in model_ids_seen:
+            raise HTTPException(status_code=400, detail=f"Duplicate model id: {model_id}")
+        model_ids_seen.add(model_id)
+
+
+def _resolve_prompt_lab_reference(
+    doc: CanonicalDocument,
+    reference_source: Literal["manual", "pre"],
+    fallback_reference_source: Literal["manual", "pre"],
+) -> tuple[Literal["manual", "pre"], list[CanonicalSpan]]:
+    primary = doc.manual_annotations if reference_source == "manual" else doc.pre_annotations
+    if primary:
+        return reference_source, primary
+    fallback = (
+        doc.manual_annotations if fallback_reference_source == "manual" else doc.pre_annotations
+    )
+    return fallback_reference_source, fallback
+
+
+def _initialize_prompt_lab_run(
+    body: PromptLabRunCreateBody,
+    session_id: str,
+    runtime: dict[str, object],
+) -> dict:
+    run_id = str(uuid.uuid4())[:8]
+    now = _now_iso()
+    prompts: list[dict] = []
+    models: list[dict] = []
+    for index, item in enumerate(body.prompts):
+        prompt_id = (item.id or "").strip() or f"prompt_{index + 1}"
+        prompts.append(
+            {
+                "id": prompt_id,
+                "label": item.label.strip(),
+                "system_prompt": item.system_prompt,
+            }
+        )
+    for index, item in enumerate(body.models):
+        model_id = (item.id or "").strip() or f"model_{index + 1}"
+        models.append(
+            {
+                "id": model_id,
+                "label": item.label.strip(),
+                "model": item.model.strip(),
+                "reasoning_effort": item.reasoning_effort,
+                "anthropic_thinking": bool(item.anthropic_thinking),
+                "anthropic_thinking_budget_tokens": item.anthropic_thinking_budget_tokens,
+            }
+        )
+
+    cells: dict[str, dict] = {}
+    for model in models:
+        for prompt in prompts:
+            cell_id = f"{model['id']}__{prompt['id']}"
+            cells[cell_id] = {
+                "id": cell_id,
+                "model_id": model["id"],
+                "model_label": model["label"],
+                "prompt_id": prompt["id"],
+                "prompt_label": prompt["label"],
+                "documents": {
+                    doc_id: {"status": "pending", "updated_at": now} for doc_id in body.doc_ids
+                },
+            }
+
+    run = {
+        "id": run_id,
+        "name": (body.name or "").strip() or f"Prompt Lab {now}",
+        "status": "queued",
+        "created_at": now,
+        "started_at": None,
+        "finished_at": None,
+        "doc_ids": list(dict.fromkeys(body.doc_ids)),
+        "prompts": prompts,
+        "models": models,
+        "runtime": {
+            "temperature": runtime["temperature"],
+            "match_mode": runtime["match_mode"],
+            "reference_source": runtime["reference_source"],
+            "fallback_reference_source": runtime["fallback_reference_source"],
+            "api_base": runtime["api_base"],
+        },
+        "concurrency": body.concurrency,
+        "warnings": [],
+        "errors": [],
+        "cells": cells,
+        "session_id": session_id,
+    }
+    return run
+
+
+def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]):
+    api_key = str(runtime["api_key"])
+    api_base = str(runtime["api_base"])
+    temperature = float(runtime["temperature"])
+    match_mode = str(runtime["match_mode"])
+    reference_source = runtime["reference_source"]
+    fallback_reference_source = runtime["fallback_reference_source"]
+
+    with _prompt_lab_lock:
+        run = _load_prompt_lab_run(run_id, session_id)
+        if run is None:
+            return
+        run["status"] = "running"
+        run["started_at"] = _now_iso()
+        _save_prompt_lab_run(run, session_id)
+
+    tasks: list[tuple[str, str, str]] = []
+    for model in run.get("models", []):
+        for prompt in run.get("prompts", []):
+            cell_id = f"{model['id']}__{prompt['id']}"
+            for doc_id in run.get("doc_ids", []):
+                tasks.append((cell_id, str(doc_id), str(model["id"])))
+
+    model_by_id = {str(model["id"]): model for model in run.get("models", [])}
+    prompt_by_id = {str(prompt["id"]): prompt for prompt in run.get("prompts", [])}
+
+    def _execute_task(cell_id: str, doc_id: str, model_id: str) -> tuple[str, str, dict]:
+        cell = run.get("cells", {}).get(cell_id, {})
+        if not isinstance(cell, dict):
+            return cell_id, doc_id, {"status": "failed", "error": f"Unknown cell '{cell_id}'"}
+        prompt_id = str(cell.get("prompt_id", ""))
+        prompt = prompt_by_id.get(prompt_id)
+        model = model_by_id.get(model_id)
+        if prompt is None or model is None:
+            return cell_id, doc_id, {"status": "failed", "error": "Invalid model/prompt mapping"}
+
+        doc = _load_doc(doc_id, session_id)
+        if doc is None:
+            return cell_id, doc_id, {"status": "unavailable", "error": "Document no longer exists"}
+        enriched = _enrich_doc(doc, session_id)
+        requested_system_prompt = str(prompt["system_prompt"])
+        system_prompt = f"{requested_system_prompt}\n\n{FORMAT_GUARDRAIL}"
+        try:
+            llm_result = run_llm_with_metadata(
+                text=enriched.raw_text,
+                api_key=api_key,
+                api_base=api_base or None,
+                model=str(model["model"]),
+                system_prompt=system_prompt,
+                temperature=temperature,
+                reasoning_effort=str(model["reasoning_effort"]),  # type: ignore[arg-type]
+                anthropic_thinking=bool(model["anthropic_thinking"]),
+                anthropic_thinking_budget_tokens=model["anthropic_thinking_budget_tokens"],  # type: ignore[arg-type]
+            )
+            hypothesis_spans = _normalize_and_validate_spans(
+                normalize_method_spans(llm_result.spans),
+                enriched.raw_text,
+            )
+            resolved_reference_source, reference_spans = _resolve_prompt_lab_reference(
+                enriched,
+                reference_source,  # type: ignore[arg-type]
+                fallback_reference_source,  # type: ignore[arg-type]
+            )
+            metrics = _serialize_metrics_payload(
+                compute_metrics(reference_spans, hypothesis_spans, match_mode)
+            )
+            return cell_id, doc_id, {
+                "status": "completed",
+                "reference_source_used": resolved_reference_source,
+                "reference_spans": [span.model_dump() for span in reference_spans],
+                "hypothesis_spans": [span.model_dump() for span in hypothesis_spans],
+                "metrics": metrics,
+                "warnings": llm_result.warnings,
+                "llm_confidence": llm_result.llm_confidence.model_dump(),
+                "updated_at": _now_iso(),
+                "filename": enriched.filename,
+            }
+        except Exception as exc:
+            message = str(exc).strip() or exc.__class__.__name__
+            if len(message) > 800:
+                message = f"{message[:800]}..."
+            return cell_id, doc_id, {
+                "status": "failed",
+                "error": message,
+                "updated_at": _now_iso(),
+                "filename": enriched.filename,
+            }
+
+    try:
+        with ThreadPoolExecutor(max_workers=int(run.get("concurrency", 1))) as executor:
+            future_map = {
+                executor.submit(_execute_task, cell_id, doc_id, model_id): (cell_id, doc_id)
+                for cell_id, doc_id, model_id in tasks
+            }
+            for future in as_completed(future_map):
+                cell_id, doc_id = future_map[future]
+                try:
+                    _, _, result = future.result()
+                except Exception as exc:  # pragma: no cover - defensive fallback
+                    result = {
+                        "status": "failed",
+                        "error": str(exc),
+                        "updated_at": _now_iso(),
+                    }
+                with _prompt_lab_lock:
+                    latest = _load_prompt_lab_run(run_id, session_id)
+                    if latest is None:
+                        continue
+                    cells = latest.get("cells", {})
+                    if isinstance(cells, dict) and isinstance(cells.get(cell_id), dict):
+                        cells[cell_id]["documents"][doc_id] = result
+                    _save_prompt_lab_run(latest, session_id)
+    except Exception as exc:
+        with _prompt_lab_lock:
+            latest = _load_prompt_lab_run(run_id, session_id)
+            if latest is not None:
+                latest["status"] = "failed"
+                latest["finished_at"] = _now_iso()
+                errors = latest.get("errors", [])
+                if not isinstance(errors, list):
+                    errors = []
+                errors.append(f"Prompt Lab run failed: {exc}")
+                latest["errors"] = errors
+                _save_prompt_lab_run(latest, session_id)
+        return
+
+    with _prompt_lab_lock:
+        latest = _load_prompt_lab_run(run_id, session_id)
+        if latest is None:
+            return
+        summary = _build_prompt_lab_run_summary(latest)
+        latest["status"] = (
+            "completed_with_errors"
+            if int(summary.get("failed_tasks", 0)) > 0
+            else "completed"
+        )
+        latest["finished_at"] = _now_iso()
+        _save_prompt_lab_run(latest, session_id)
+
+
 @app.post("/api/documents/{doc_id}/agent")
 async def run_agent(doc_id: str, body: AgentRunBody):
     session_id = "default"
@@ -836,6 +1467,124 @@ async def run_agent(doc_id: str, body: AgentRunBody):
     raise HTTPException(status_code=400, detail=f"Unknown agent mode: {body.mode}")
 
 
+@app.post("/api/prompt-lab/runs")
+async def create_prompt_lab_run(body: PromptLabRunCreateBody):
+    session_id = "default"
+    _validate_prompt_lab_request(body, session_id)
+    runtime = _resolve_prompt_lab_runtime(body.runtime)
+    api_key = str(runtime["api_key"])
+    api_base = str(runtime["api_base"])
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "API key required for Prompt Lab runs. Set LITELLM_API_KEY "
+                "or provide runtime.api_key in request."
+            ),
+        )
+    for model in body.models:
+        _validate_gateway_model_access(model=model.model, api_base=api_base, api_key=api_key)
+
+    with _prompt_lab_lock:
+        run = _initialize_prompt_lab_run(body, session_id, runtime)
+        ids = _load_prompt_lab_index(session_id)
+        ids.append(str(run["id"]))
+        _save_prompt_lab_run(run, session_id)
+        _save_prompt_lab_index(session_id)
+
+    worker = threading.Thread(
+        target=_run_prompt_lab_job,
+        args=(str(run["id"]), session_id, runtime),
+        daemon=True,
+    )
+    worker.start()
+    return _build_prompt_lab_run_detail(run)
+
+
+@app.get("/api/prompt-lab/runs")
+async def list_prompt_lab_runs():
+    session_id = "default"
+    with _prompt_lab_lock:
+        ids = list(_load_prompt_lab_index(session_id))
+        results: list[dict] = []
+        for run_id in reversed(ids):
+            run = _load_prompt_lab_run(run_id, session_id)
+            if run is None:
+                continue
+            results.append(_build_prompt_lab_run_summary(run))
+        return {"runs": results}
+
+
+@app.get("/api/prompt-lab/runs/{run_id}")
+async def get_prompt_lab_run(run_id: str):
+    session_id = "default"
+    with _prompt_lab_lock:
+        run = _load_prompt_lab_run(run_id, session_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Prompt Lab run not found")
+        return _build_prompt_lab_run_detail(run)
+
+
+@app.get("/api/prompt-lab/runs/{run_id}/cells/{cell_id}/documents/{doc_id}")
+async def get_prompt_lab_document_detail(run_id: str, cell_id: str, doc_id: str):
+    session_id = "default"
+    with _prompt_lab_lock:
+        run = _load_prompt_lab_run(run_id, session_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Prompt Lab run not found")
+        cells = run.get("cells", {})
+        if not isinstance(cells, dict):
+            raise HTTPException(status_code=404, detail="Prompt Lab cell not found")
+        cell = cells.get(cell_id)
+        if not isinstance(cell, dict):
+            raise HTTPException(status_code=404, detail="Prompt Lab cell not found")
+        documents = cell.get("documents", {})
+        if not isinstance(documents, dict):
+            raise HTTPException(status_code=404, detail="Prompt Lab document result not found")
+        result = documents.get(doc_id)
+        if not isinstance(result, dict):
+            raise HTTPException(status_code=404, detail="Prompt Lab document result not found")
+        model = next(
+            (item for item in run.get("models", []) if str(item.get("id")) == str(cell.get("model_id"))),
+            None,
+        )
+        prompt = next(
+            (item for item in run.get("prompts", []) if str(item.get("id")) == str(cell.get("prompt_id"))),
+            None,
+        )
+        stored = copy.deepcopy(result)
+
+    doc = _load_doc(doc_id, session_id)
+    enriched = _enrich_doc(doc, session_id) if doc is not None else None
+    if enriched is None:
+        warnings = stored.get("warnings", [])
+        if not isinstance(warnings, list):
+            warnings = []
+        warnings.append("Referenced document is unavailable in current session.")
+        stored["warnings"] = warnings
+
+    return {
+        "run_id": run_id,
+        "cell_id": cell_id,
+        "doc_id": doc_id,
+        "status": stored.get("status", "pending"),
+        "error": stored.get("error"),
+        "warnings": stored.get("warnings", []),
+        "reference_source_used": stored.get("reference_source_used"),
+        "reference_spans": stored.get("reference_spans", []),
+        "hypothesis_spans": stored.get("hypothesis_spans", []),
+        "metrics": stored.get("metrics"),
+        "llm_confidence": stored.get("llm_confidence"),
+        "transcript_text": enriched.raw_text if enriched is not None else None,
+        "document": {
+            "id": doc_id,
+            "filename": enriched.filename if enriched is not None else stored.get("filename"),
+        },
+        "model": model,
+        "prompt": prompt,
+    }
+
+
 @app.get("/api/documents/{doc_id}/metrics")
 async def get_metrics(
     doc_id: str,
@@ -921,6 +1670,7 @@ async def export_session_bundle():
         },
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "documents": documents,
+        "prompt_lab_runs": _export_prompt_lab_runs(session_id),
         "config": _load_config(),
     }
 
@@ -966,6 +1716,7 @@ async def import_session_bundle(file: UploadFile = File(...)):
     ids = _load_session_index(session_id)
     existing_ids = set(ids)
     imported_ids: list[str] = []
+    doc_id_remap: dict[str, str] = {}
     skipped: list[dict[str, str | int]] = []
     warnings: list[str] = []
 
@@ -992,6 +1743,7 @@ async def import_session_bundle(file: UploadFile = File(...)):
         except Exception as exc:  # pragma: no cover - message can vary
             skipped.append({"index": idx, "reason": f"Invalid source document: {exc}"})
             continue
+        original_doc_id = doc.id
 
         manual_raw = item.get("manual_annotations", source_raw.get("manual_annotations"))
         agent_outputs = item.get("agent_outputs", source_raw.get("agent_outputs", {}))
@@ -1052,8 +1804,37 @@ async def import_session_bundle(file: UploadFile = File(...)):
         ids.append(new_id)
         existing_ids.add(new_id)
         imported_ids.append(new_id)
+        doc_id_remap[original_doc_id] = new_id
 
     _save_session_index(session_id)
+
+    raw_prompt_lab_runs = payload.get("prompt_lab_runs", [])
+    imported_prompt_lab_runs = 0
+    if raw_prompt_lab_runs is not None:
+        if not isinstance(raw_prompt_lab_runs, list):
+            warnings.append("Ignored prompt_lab_runs because it is not an array.")
+        else:
+            with _prompt_lab_lock:
+                prompt_run_ids = _load_prompt_lab_index(session_id)
+                existing_run_ids = set(prompt_run_ids)
+                for run_item in raw_prompt_lab_runs:
+                    if not isinstance(run_item, dict):
+                        warnings.append("Skipped malformed prompt_lab_runs item (not an object).")
+                        continue
+                    remapped_run, remap_warnings = _remap_prompt_lab_run_doc_ids(
+                        run_item,
+                        doc_id_remap,
+                    )
+                    warnings.extend(remap_warnings)
+                    run_id = str(remapped_run.get("id") or str(uuid.uuid4())[:8])
+                    while run_id in existing_run_ids:
+                        run_id = str(uuid.uuid4())[:8]
+                    remapped_run["id"] = run_id
+                    _save_prompt_lab_run(remapped_run, session_id)
+                    prompt_run_ids.append(run_id)
+                    existing_run_ids.add(run_id)
+                    imported_prompt_lab_runs += 1
+                _save_prompt_lab_index(session_id)
 
     return {
         "bundle_version": bundle_version,
@@ -1062,6 +1843,7 @@ async def import_session_bundle(file: UploadFile = File(...)):
         "skipped_count": len(skipped),
         "skipped": skipped,
         "warnings": warnings,
+        "imported_prompt_lab_runs": imported_prompt_lab_runs,
         "total_in_bundle": len(raw_documents),
     }
 

@@ -177,6 +177,7 @@ export interface SessionExportBundle {
     import_supported_versions?: number[];
   };
   exported_at: string;
+  prompt_lab_runs?: PromptLabRunExport[];
   documents: Array<{
     source: CanonicalDocument;
     manual_annotations: CanonicalSpan[];
@@ -196,6 +197,7 @@ export interface SessionImportResult {
   bundle_version?: number;
   imported_count: number;
   imported_ids: string[];
+  imported_prompt_lab_runs?: number;
   skipped_count: number;
   skipped: Array<{ index: number; reason: string }>;
   warnings?: string[];
@@ -238,6 +240,128 @@ export interface AgentCredentialStatus {
   api_key_sources: string[];
   has_api_base: boolean;
   api_base_sources: string[];
+}
+
+export type PromptLabRunStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "completed_with_errors"
+  | "failed";
+
+export interface PromptLabPromptInput {
+  id?: string;
+  label: string;
+  system_prompt: string;
+}
+
+export interface PromptLabModelInput {
+  id?: string;
+  label: string;
+  model: string;
+  reasoning_effort?: "none" | "low" | "medium" | "high" | "xhigh";
+  anthropic_thinking?: boolean;
+  anthropic_thinking_budget_tokens?: number | null;
+}
+
+export interface PromptLabRuntimeInput {
+  api_key?: string;
+  api_base?: string;
+  temperature: number;
+  match_mode: MatchMode;
+  reference_source: "manual" | "pre";
+  fallback_reference_source: "manual" | "pre";
+}
+
+export interface PromptLabRunCreateRequest {
+  name?: string;
+  doc_ids: string[];
+  prompts: PromptLabPromptInput[];
+  models: PromptLabModelInput[];
+  runtime: PromptLabRuntimeInput;
+  concurrency: number;
+}
+
+export interface PromptLabCellMicro {
+  precision: number;
+  recall: number;
+  f1: number;
+  tp: number;
+  fp: number;
+  fn: number;
+}
+
+export interface PromptLabMatrixCellSummary {
+  id: string;
+  model_id: string;
+  model_label: string;
+  prompt_id: string;
+  prompt_label: string;
+  status: PromptLabRunStatus | "pending";
+  total_docs: number;
+  completed_docs: number;
+  failed_docs: number;
+  error_count: number;
+  micro: PromptLabCellMicro;
+  mean_confidence: number | null;
+}
+
+export interface PromptLabRunSummary {
+  id: string;
+  name: string;
+  status: PromptLabRunStatus;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  doc_count: number;
+  prompt_count: number;
+  model_count: number;
+  total_tasks: number;
+  completed_tasks: number;
+  failed_tasks: number;
+}
+
+export interface PromptLabRunDetail extends PromptLabRunSummary {
+  doc_ids: string[];
+  prompts: PromptLabPromptInput[];
+  models: PromptLabModelInput[];
+  runtime: Omit<PromptLabRuntimeInput, "api_key"> & { api_base?: string };
+  concurrency: number;
+  warnings: string[];
+  errors: string[];
+  matrix: {
+    models: Array<{ id: string; label: string }>;
+    prompts: Array<{ id: string; label: string }>;
+    cells: PromptLabMatrixCellSummary[];
+  };
+  progress: {
+    total_tasks: number;
+    completed_tasks: number;
+    failed_tasks: number;
+  };
+}
+
+export interface PromptLabDocResult {
+  run_id: string;
+  cell_id: string;
+  doc_id: string;
+  status: "pending" | "completed" | "failed" | "unavailable";
+  error?: string | null;
+  warnings: string[];
+  reference_source_used?: "manual" | "pre";
+  reference_spans: CanonicalSpan[];
+  hypothesis_spans: CanonicalSpan[];
+  metrics: MetricsResult | null;
+  llm_confidence: LLMConfidenceMetric | null;
+  transcript_text: string | null;
+  document: { id: string; filename: string | null };
+  model?: PromptLabModelInput;
+  prompt?: PromptLabPromptInput;
+}
+
+export interface PromptLabRunExport {
+  id: string;
+  [key: string]: unknown;
 }
 
 export type PaneType = "raw" | "pre" | "manual" | "agent" | "methods";

@@ -410,6 +410,85 @@ def _strip_code_fences(content: str) -> str:
     return content
 
 
+def _extract_text_from_content_payload(value: Any) -> str:
+    """Best-effort extraction of model text payloads across provider shapes."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            extracted = _extract_text_from_content_payload(item)
+            if extracted.strip():
+                parts.append(extracted)
+        return "\n".join(parts)
+    if isinstance(value, dict):
+        block_type = str(value.get("type", "")).strip().lower()
+        if block_type in {"thinking", "reasoning", "redacted_thinking"}:
+            return ""
+
+        if "spans" in value:
+            try:
+                return json.dumps(value)
+            except Exception:
+                return str(value)
+
+        for key in ("text", "output_text", "content", "value", "arguments", "input"):
+            if key not in value:
+                continue
+            extracted = _extract_text_from_content_payload(value.get(key))
+            if extracted.strip():
+                return extracted
+        return ""
+
+    text_attr = getattr(value, "text", None)
+    if isinstance(text_attr, str):
+        return text_attr
+
+    content_attr = getattr(value, "content", None)
+    if isinstance(content_attr, (str, list, dict)):
+        extracted = _extract_text_from_content_payload(content_attr)
+        if extracted.strip():
+            return extracted
+
+    function_attr = getattr(value, "function", None)
+    if function_attr is not None:
+        arguments_attr = getattr(function_attr, "arguments", None)
+        if isinstance(arguments_attr, (str, list, dict)):
+            extracted = _extract_text_from_content_payload(arguments_attr)
+            if extracted.strip():
+                return extracted
+
+    return ""
+
+
+def _extract_response_content(resp: Any) -> str:
+    """Extract assistant textual output from LiteLLM responses."""
+    choices = getattr(resp, "choices", None)
+    if choices:
+        message = getattr(choices[0], "message", None)
+        if message is not None:
+            extracted = _extract_text_from_content_payload(getattr(message, "content", None))
+            if extracted.strip():
+                return extracted
+            tool_calls = getattr(message, "tool_calls", None)
+            if isinstance(tool_calls, (str, list, dict)):
+                extracted = _extract_text_from_content_payload(tool_calls)
+                if extracted.strip():
+                    return extracted
+
+    output_text = getattr(resp, "output_text", None)
+    if isinstance(output_text, (str, list, dict)):
+        extracted = _extract_text_from_content_payload(output_text)
+        if extracted.strip():
+            return extracted
+
+    return ""
+
+
 def _infer_provider(model: str) -> str:
     try:
         _, provider, _, _ = get_llm_provider(model=model)
@@ -487,7 +566,7 @@ def _compute_llm_confidence_metric(
     if not _is_openai_model(provider, model):
         return _build_unavailable_confidence_metric(provider, model, "unsupported_provider")
 
-    message_content = resp.choices[0].message.content or ""
+    message_content = _extract_response_content(resp)
     normalized_content = message_content.strip()
     logprob_container = getattr(resp.choices[0], "logprobs", None)
     token_logprobs = (
@@ -536,7 +615,7 @@ def _compute_llm_confidence_metric(
 
 
 def _parse_spans_from_response(resp: Any) -> list[CanonicalSpan]:
-    content = resp.choices[0].message.content or "[]"
+    content = _extract_response_content(resp) or "[]"
     content = _strip_code_fences(content)
 
     def _extract_json_candidate(text: str) -> str | None:
@@ -587,6 +666,258 @@ def _parse_spans_from_response(resp: Any) -> list[CanonicalSpan]:
         CanonicalSpan(start=s["start"], end=s["end"], label=s["label"], text=s["text"])
         for s in raw
     ]
+
+
+def _extract_finish_reason(resp: Any) -> str | None:
+    try:
+        reason = getattr(resp.choices[0], "finish_reason", None)
+    except Exception:
+        return None
+    if isinstance(reason, str):
+        normalized = reason.strip().lower()
+        return normalized or None
+    return None
+
+
+_COMMON_NON_NAME_WORDS: set[str] = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "at",
+    "be",
+    "because",
+    "but",
+    "for",
+    "from",
+    "go",
+    "good",
+    "got",
+    "had",
+    "has",
+    "have",
+    "he",
+    "her",
+    "here",
+    "him",
+    "his",
+    "i",
+    "in",
+    "is",
+    "it",
+    "its",
+    "just",
+    "look",
+    "line",
+    "me",
+    "minutes",
+    "my",
+    "no",
+    "not",
+    "number",
+    "of",
+    "ok",
+    "okay",
+    "on",
+    "or",
+    "our",
+    "out",
+    "she",
+    "so",
+    "that",
+    "the",
+    "their",
+    "them",
+    "there",
+    "they",
+    "this",
+    "to",
+    "up",
+    "us",
+    "we",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "why",
+    "with",
+    "you",
+    "your",
+}
+
+
+def _is_plausible_name_text(value: str) -> bool:
+    cleaned = value.strip(" \t\r\n.,!?;:\"'()[]{}")
+    if not cleaned:
+        return False
+    if "\n" in cleaned or "\t" in cleaned:
+        return False
+    if any(ch.isdigit() for ch in cleaned):
+        return False
+    letters = [ch for ch in cleaned if ch.isalpha()]
+    if len(letters) < 2:
+        return False
+
+    lowered = cleaned.lower()
+    tokens = [token for token in re.split(r"\s+", lowered) if token]
+    if len(tokens) > 3:
+        return False
+    if lowered in _COMMON_NON_NAME_WORDS:
+        return False
+    if any(token in _COMMON_NON_NAME_WORDS for token in tokens):
+        return False
+    if any(ch.isupper() for ch in cleaned):
+        return True
+    return True
+
+
+def _find_occurrences(text: str, needle: str) -> list[tuple[int, int]]:
+    if not needle:
+        return []
+    out: list[tuple[int, int]] = []
+    start = 0
+    while True:
+        idx = text.find(needle, start)
+        if idx < 0:
+            break
+        out.append((idx, idx + len(needle)))
+        start = idx + 1
+    return out
+
+
+def _overlaps(a: tuple[int, int], b: tuple[int, int]) -> bool:
+    return not (a[1] <= b[0] or b[1] <= a[0])
+
+
+def _pick_best_occurrence(
+    occurrences: list[tuple[int, int]],
+    hint_start: int | None,
+    taken_ranges: list[tuple[int, int]],
+) -> tuple[int, int] | None:
+    if not occurrences:
+        return None
+    available = [
+        occ
+        for occ in occurrences
+        if all(not _overlaps(occ, taken) for taken in taken_ranges)
+    ]
+    candidates = available or occurrences
+    if hint_start is None:
+        return candidates[0]
+    return min(candidates, key=lambda occ: (abs(occ[0] - hint_start), occ[0], occ[1]))
+
+
+def _resolve_offsets_from_text(
+    raw_text: str,
+    span_text: str,
+    hint_start: int | None,
+    taken_ranges: list[tuple[int, int]],
+) -> tuple[int, int] | None:
+    variants: list[str] = []
+    if span_text:
+        variants.append(span_text)
+    stripped = span_text.strip()
+    if stripped and stripped not in variants:
+        variants.append(stripped)
+    collapsed_ws = " ".join(stripped.split())
+    if collapsed_ws and collapsed_ws not in variants:
+        variants.append(collapsed_ws)
+
+    for variant in variants:
+        occurrence = _pick_best_occurrence(
+            _find_occurrences(raw_text, variant), hint_start, taken_ranges
+        )
+        if occurrence is not None:
+            return occurrence
+    return None
+
+
+def _repair_offset_mismatches(
+    raw_text: str,
+    spans: list[CanonicalSpan],
+) -> tuple[list[CanonicalSpan], list[str]]:
+    if not spans:
+        return spans, []
+
+    total = len(spans)
+    n = len(raw_text)
+    mismatched = 0
+    realigned = 0
+    dropped = 0
+    repaired: list[CanonicalSpan] = []
+    seen: set[tuple[int, int, str]] = set()
+    taken_ranges: list[tuple[int, int]] = []
+
+    for span in spans:
+        valid_offsets = 0 <= span.start < span.end <= n
+        matches_offsets = valid_offsets and raw_text[span.start : span.end] == span.text
+        had_mismatch = not matches_offsets
+        candidate = span
+
+        if had_mismatch:
+            mismatched += 1
+            hint_start = span.start if valid_offsets else None
+            resolved = _resolve_offsets_from_text(
+                raw_text, span.text, hint_start, taken_ranges
+            )
+            if resolved is not None:
+                rs, re_ = resolved
+                candidate = CanonicalSpan(
+                    start=rs,
+                    end=re_,
+                    label=span.label,
+                    text=raw_text[rs:re_],
+                )
+                realigned += 1
+            elif valid_offsets:
+                candidate = CanonicalSpan(
+                    start=span.start,
+                    end=span.end,
+                    label=span.label,
+                    text=raw_text[span.start : span.end],
+                )
+            else:
+                dropped += 1
+                continue
+
+        if had_mismatch and normalize_method_label(candidate.label) == "NAME":
+            if not _is_plausible_name_text(candidate.text):
+                dropped += 1
+                continue
+
+        key = (candidate.start, candidate.end, candidate.label)
+        if key in seen:
+            continue
+        seen.add(key)
+        repaired.append(candidate)
+        taken_ranges.append((candidate.start, candidate.end))
+
+    if mismatched == 0:
+        return spans, []
+
+    warnings = [
+        (
+            f"Detected {mismatched}/{total} LLM offset mismatch(es); "
+            f"realigned {realigned} span(s) using returned text."
+        )
+    ]
+    if dropped > 0:
+        warnings.append(f"Dropped {dropped} low-confidence span(s) after offset repair.")
+    return repaired, warnings
+
+
+def _drop_implausible_name_spans(
+    spans: list[CanonicalSpan],
+) -> tuple[list[CanonicalSpan], int]:
+    kept: list[CanonicalSpan] = []
+    dropped = 0
+    for span in spans:
+        if normalize_method_label(span.label) == "NAME" and not _is_plausible_name_text(span.text):
+            dropped += 1
+            continue
+        kept.append(span)
+    return kept, dropped
 
 
 def _is_unsupported_param_error(exc: Exception, param: str) -> bool:
@@ -1039,6 +1370,20 @@ def run_llm_with_metadata(
         try:
             resp = completion(**request_kwargs)
             spans = _parse_spans_from_response(resp)
+            spans, repair_warnings = _repair_offset_mismatches(text, spans)
+            warnings.extend(repair_warnings)
+            spans, dropped_name_spans = _drop_implausible_name_spans(spans)
+            if dropped_name_spans > 0:
+                warnings.append(
+                    f"Dropped {dropped_name_spans} implausible NAME span(s) from LLM output."
+                )
+            if not _extract_response_content(resp).strip():
+                warnings.append("LLM returned empty output content; interpreted as no spans.")
+            finish_reason = _extract_finish_reason(resp)
+            if finish_reason == "length":
+                warnings.append(
+                    "LLM output may be truncated (finish_reason=length); results can be incomplete."
+                )
             llm_confidence = _compute_llm_confidence_metric(resp, provider, model)
             if idx > 0:
                 warnings.append(
@@ -1056,6 +1401,20 @@ def run_llm_with_metadata(
                 try:
                     resp = completion(**fallback_kwargs)
                     spans = _parse_spans_from_response(resp)
+                    spans, repair_warnings = _repair_offset_mismatches(text, spans)
+                    warnings.extend(repair_warnings)
+                    spans, dropped_name_spans = _drop_implausible_name_spans(spans)
+                    if dropped_name_spans > 0:
+                        warnings.append(
+                            f"Dropped {dropped_name_spans} implausible NAME span(s) from LLM output."
+                        )
+                    if not _extract_response_content(resp).strip():
+                        warnings.append("LLM returned empty output content; interpreted as no spans.")
+                    finish_reason = _extract_finish_reason(resp)
+                    if finish_reason == "length":
+                        warnings.append(
+                            "LLM output may be truncated (finish_reason=length); results can be incomplete."
+                        )
                     llm_confidence = _compute_llm_confidence_metric(resp, provider, model)
                     warnings.append(
                         f"Model '{model}' rejected logprobs; retried without logprobs."

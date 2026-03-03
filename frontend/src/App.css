@@ -292,6 +292,496 @@ body {
   background: #fff;
 }
 
+.main-tabbar {
+  display: flex;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #ddd;
+  background: #fbfbfe;
+}
+
+.main-tabbar button {
+  border: 1px solid #cfd5e6;
+  background: #fff;
+  color: #31405f;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.main-tabbar button.active {
+  background: #2444d9;
+  border-color: #2444d9;
+  color: #fff;
+}
+
+.prompt-lab-tab {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px 12px;
+  overflow: auto;
+}
+
+.prompt-lab-run-form {
+  border: 1px solid #d7dbea;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #f7f9ff 0%, #f0f3fb 100%);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.prompt-lab-run-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.prompt-lab-run-header h3 {
+  font-size: 14px;
+  margin-right: auto;
+}
+
+.prompt-lab-estimate {
+  font-size: 12px;
+  color: #3c4766;
+}
+
+.prompt-lab-toggle-btn {
+  border: 1px solid #bac3df;
+  background: #f9fbff;
+  color: #2f3f64;
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.prompt-lab-form-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.prompt-lab-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.prompt-lab-field label {
+  font-size: 11px;
+  color: #58607a;
+  font-weight: 600;
+}
+
+.prompt-lab-field input,
+.prompt-lab-field select,
+.prompt-lab-field textarea {
+  border: 1px solid #bcc3db;
+  border-radius: 6px;
+  background: #fff;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.prompt-lab-inline {
+  justify-content: end;
+}
+
+.prompt-lab-section {
+  border: 1px solid #d5dbed;
+  background: #fff;
+  border-radius: 8px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.prompt-lab-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.prompt-lab-section-header span {
+  font-size: 12px;
+  font-weight: 700;
+  color: #2f3a59;
+}
+
+.prompt-lab-section-header small {
+  font-size: 11px;
+  color: #6a7391;
+}
+
+.prompt-lab-section-header button,
+.prompt-lab-actions button,
+.prompt-lab-history button,
+.prompt-lab-matrix-cell {
+  border: 1px solid #bac3df;
+  background: #f9fbff;
+  color: #2f3f64;
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.prompt-lab-section-header button:disabled,
+.prompt-lab-actions button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.prompt-lab-doc-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 6px;
+}
+
+.prompt-lab-doc-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #d4dbec;
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.prompt-lab-doc-option span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prompt-lab-card {
+  border: 1px solid #d2d9eb;
+  border-radius: 8px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.prompt-lab-card-header {
+  display: flex;
+  gap: 8px;
+}
+
+.prompt-lab-card-header input {
+  flex: 1;
+}
+
+.prompt-lab-card textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.prompt-lab-model-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.prompt-lab-model-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #3a4668;
+}
+
+.prompt-lab-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.prompt-lab-body {
+  display: grid;
+  grid-template-columns: 250px 1fr;
+  gap: 10px;
+  min-height: 0;
+  flex: 1;
+}
+
+.prompt-lab-history {
+  border: 1px solid #d4dbed;
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.prompt-lab-history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.prompt-lab-history h3 {
+  font-size: 13px;
+}
+
+.prompt-lab-history ul {
+  list-style: none;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.prompt-lab-history li button {
+  width: 100%;
+  text-align: left;
+}
+
+.prompt-lab-history li button.active {
+  background: #2142d4;
+  border-color: #2142d4;
+  color: #fff;
+}
+
+.prompt-lab-history-name {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.prompt-lab-history-meta {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.prompt-lab-main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.prompt-lab-empty-state,
+.prompt-lab-empty {
+  color: #6a7290;
+  font-size: 12px;
+  padding: 6px;
+}
+
+.prompt-lab-matrix {
+  border: 1px solid #d4dbed;
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px;
+  overflow: auto;
+}
+
+.prompt-lab-matrix-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.prompt-lab-matrix h3 {
+  font-size: 13px;
+}
+
+.prompt-lab-matrix-meta {
+  font-size: 12px;
+  color: #4d597b;
+}
+
+.prompt-lab-matrix table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.prompt-lab-matrix th,
+.prompt-lab-matrix td {
+  border: 1px solid #e1e6f4;
+  padding: 6px;
+  vertical-align: top;
+  font-size: 12px;
+}
+
+.prompt-lab-matrix-cell {
+  width: 100%;
+  text-align: left;
+  background: #fff;
+}
+
+.prompt-lab-matrix-cell.active {
+  border-color: #1f43dd;
+  box-shadow: 0 0 0 1px #1f43dd inset;
+}
+
+.prompt-lab-cell-status {
+  font-size: 11px;
+  color: #5a6484;
+}
+
+.prompt-lab-cell-f1 {
+  font-weight: 700;
+  margin: 3px 0;
+}
+
+.prompt-lab-cell-meta {
+  font-size: 11px;
+  color: #5a6484;
+}
+
+.prompt-lab-detail {
+  border: 1px solid #d4dbed;
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.prompt-lab-detail-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.prompt-lab-detail-header h3 {
+  font-size: 13px;
+}
+
+.prompt-lab-detail-meta {
+  font-size: 12px;
+  color: #4f597a;
+}
+
+.prompt-lab-detail-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.prompt-lab-detail-summary {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: #324160;
+}
+
+.prompt-lab-warning {
+  border: 1px solid #f2d6a2;
+  background: #fff6e7;
+  color: #7e5520;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.prompt-lab-error {
+  border: 1px solid #f1b9b9;
+  background: #fff0f0;
+  color: #8a2c2c;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.prompt-lab-loading {
+  font-size: 12px;
+  color: #5b6688;
+}
+
+.prompt-lab-detail-pane-container {
+  border: 1px solid #dfe5f5;
+  border-radius: 8px;
+  overflow: hidden;
+  height: 360px;
+}
+
+.prompt-lab-detail-pane-container .pane-container {
+  height: 100%;
+}
+
+.prompt-lab-compare-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.prompt-lab-pane-title {
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.prompt-lab-pane {
+  border: 1px solid #dfe5f5;
+  border-radius: 6px;
+  max-height: 280px;
+  overflow: auto;
+  padding: 8px;
+}
+
+.prompt-lab-json-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.prompt-lab-json-grid h4 {
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.prompt-lab-json-grid pre {
+  border: 1px solid #dce3f4;
+  border-radius: 6px;
+  background: #f8faff;
+  padding: 8px;
+  max-height: 220px;
+  overflow: auto;
+  font-size: 11px;
+}
+
+@media (max-width: 1100px) {
+  .prompt-lab-form-grid {
+    grid-template-columns: repeat(2, minmax(140px, 1fr));
+  }
+
+  .prompt-lab-doc-grid {
+    grid-template-columns: repeat(2, minmax(140px, 1fr));
+  }
+
+  .prompt-lab-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 800px) {
+  .prompt-lab-compare-grid,
+  .prompt-lab-json-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .prompt-lab-form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Pane container */
 .pane-container {
   flex: 1;

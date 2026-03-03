@@ -116,12 +116,17 @@ class TestStripCodeFences:
 # ---------------------------------------------------------------------------
 
 
-def _mock_completion_response(content: str, token_logprobs: list[float] | None = None):
+def _mock_completion_response(
+    content: object,
+    token_logprobs: list[float] | None = None,
+    finish_reason: str | None = None,
+):
     """Build a mock LiteLLM completion response (OpenAI format)."""
     message = MagicMock()
     message.content = content
     choice = MagicMock()
     choice.message = message
+    choice.finish_reason = finish_reason
     if token_logprobs is not None:
         tokens = []
         for value in token_logprobs:
@@ -153,6 +158,85 @@ class TestRunLLM:
         assert spans[0].text == "John"
 
     @patch("agent.completion")
+    def test_repairs_offset_mismatches_using_span_text(self, mock_completion):
+        payload = json.dumps(
+            [
+                {"start": 0, "end": 1, "label": "NAME", "text": "Anna"},
+                {"start": 2, "end": 4, "label": "NAME", "text": "Sue"},
+            ]
+        )
+        mock_completion.return_value = _mock_completion_response(payload)
+
+        result = run_llm_with_metadata(
+            text="Hello Anna and Sue.",
+            api_key="test-key",
+            model="openai/gpt-4o",
+        )
+
+        assert [(span.start, span.end, span.text) for span in result.spans] == [
+            (6, 10, "Anna"),
+            (15, 18, "Sue"),
+        ]
+        assert any("offset mismatch" in warning for warning in result.warnings)
+
+    @patch("agent.completion")
+    def test_drops_low_confidence_name_after_failed_realign(self, mock_completion):
+        payload = json.dumps(
+            [
+                {"start": 0, "end": 3, "label": "NAME", "text": "Anna"},
+            ]
+        )
+        mock_completion.return_value = _mock_completion_response(payload)
+
+        result = run_llm_with_metadata(
+            text="and value",
+            api_key="test-key",
+            model="openai/gpt-4o",
+        )
+
+        assert result.spans == []
+        assert any("Dropped 1" in warning for warning in result.warnings)
+
+    @patch("agent.completion")
+    def test_matching_offsets_skip_repair_warning(self, mock_completion):
+        payload = json.dumps(
+            [
+                {"start": 6, "end": 10, "label": "NAME", "text": "Anna"},
+            ]
+        )
+        mock_completion.return_value = _mock_completion_response(payload)
+
+        result = run_llm_with_metadata(
+            text="Hello Anna.",
+            api_key="test-key",
+            model="openai/gpt-4o",
+        )
+
+        assert len(result.spans) == 1
+        assert result.spans[0].text == "Anna"
+        assert all("offset mismatch" not in warning for warning in result.warnings)
+
+    @patch("agent.completion")
+    def test_warns_when_finish_reason_is_length(self, mock_completion):
+        payload = json.dumps(
+            [
+                {"start": 6, "end": 10, "label": "NAME", "text": "Anna"},
+            ]
+        )
+        mock_completion.return_value = _mock_completion_response(
+            payload, finish_reason="length"
+        )
+
+        result = run_llm_with_metadata(
+            text="Hello Anna.",
+            api_key="test-key",
+            model="openai/gpt-4o",
+        )
+
+        assert len(result.spans) == 1
+        assert any("finish_reason=length" in warning for warning in result.warnings)
+
+    @patch("agent.completion")
     def test_parses_object_with_spans_key(self, mock_completion):
         payload = json.dumps(
             {
@@ -175,6 +259,26 @@ class TestRunLLM:
         mock_completion.return_value = _mock_completion_response(payload)
         spans = run_llm("Hi John!", api_key="test-key")
         assert len(spans) == 1
+
+    @patch("agent.completion")
+    def test_parses_anthropic_content_blocks(self, mock_completion):
+        payload = [
+            {"type": "thinking", "text": "internal reasoning"},
+            {
+                "type": "text",
+                "text": '[{"start": 3, "end": 7, "label": "NAME", "text": "John"}]',
+            },
+        ]
+        mock_completion.return_value = _mock_completion_response(payload)
+        spans = run_llm(
+            "Hi John!",
+            api_key="test-key",
+            model="anthropic.claude-4.6-opus",
+        )
+        assert len(spans) == 1
+        assert spans[0].start == 3
+        assert spans[0].end == 7
+        assert spans[0].text == "John"
 
     @patch("agent.completion")
     def test_strips_markdown_fences(self, mock_completion):
@@ -219,6 +323,24 @@ class TestRunLLM:
 
         spans = run_llm("text", api_key="test-key")
         assert spans == []
+
+    @patch("agent.completion")
+    def test_none_content_adds_empty_output_warning(self, mock_completion):
+        message = MagicMock()
+        message.content = None
+        choice = MagicMock()
+        choice.message = message
+        resp = MagicMock()
+        resp.choices = [choice]
+        mock_completion.return_value = resp
+
+        result = run_llm_with_metadata(
+            text="text",
+            api_key="test-key",
+            model="openai/gpt-4o",
+        )
+        assert result.spans == []
+        assert any("empty output content" in warning for warning in result.warnings)
 
     @patch("agent.completion")
     def test_custom_system_prompt_and_temperature(self, mock_completion):
@@ -305,6 +427,25 @@ class TestRunLLM:
         )
         call_kwargs = mock_completion.call_args
         assert call_kwargs.kwargs["reasoning_effort"] == "xhigh"
+
+    @patch("agent.completion")
+    def test_drops_implausible_name_spans_even_with_valid_offsets(self, mock_completion):
+        payload = json.dumps(
+            [
+                {"start": 0, "end": 4, "label": "NAME", "text": "Good"},
+                {"start": 6, "end": 10, "label": "NAME", "text": "Anna"},
+            ]
+        )
+        mock_completion.return_value = _mock_completion_response(payload)
+        result = run_llm_with_metadata(
+            text="Good. Anna",
+            api_key="k",
+            model="openai/gpt-4o",
+        )
+        assert [(span.start, span.end, span.text) for span in result.spans] == [
+            (6, 10, "Anna")
+        ]
+        assert any("implausible NAME span" in warning for warning in result.warnings)
 
     @patch("agent.completion")
     def test_anthropic_thinking_is_passed(self, mock_completion):
