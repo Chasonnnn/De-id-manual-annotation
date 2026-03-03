@@ -1,4 +1,5 @@
 import type {
+  AnnotationSource,
   AgentConfig,
   CanonicalDocument,
   CanonicalSpan,
@@ -58,8 +59,8 @@ export async function runAgent(
 
 export async function getMetrics(
   docId: string,
-  reference: "pre" | "manual" | "agent",
-  hypothesis: "pre" | "manual" | "agent",
+  reference: AnnotationSource,
+  hypothesis: AnnotationSource,
   matchMode: "exact" | "overlap",
 ): Promise<MetricsResult> {
   const params = new URLSearchParams({
@@ -67,5 +68,53 @@ export async function getMetrics(
     hypothesis,
     match_mode: matchMode,
   });
-  return request(`/documents/${docId}/metrics?${params}`);
+  const raw = await request<Record<string, unknown>>(
+    `/documents/${docId}/metrics?${params}`,
+  );
+  return normalizeMetrics(raw);
+}
+
+function normalizeMetrics(raw: Record<string, unknown>): MetricsResult {
+  const rawPerLabel = (raw.per_label ?? {}) as Record<
+    string,
+    { precision: number; recall: number; f1: number; support?: number; tp?: number; fn?: number }
+  >;
+  const perLabel: MetricsResult["per_label"] = {};
+  for (const [label, value] of Object.entries(rawPerLabel)) {
+    perLabel[label] = {
+      precision: value.precision,
+      recall: value.recall,
+      f1: value.f1,
+      support: typeof value.support === "number" ? value.support : (value.tp ?? 0) + (value.fn ?? 0),
+      tp: value.tp,
+      fp: (value as { fp?: number }).fp,
+      fn: value.fn,
+    };
+  }
+
+  let confusionMatrix = raw.confusion_matrix as
+    | { labels: string[]; matrix: number[][] }
+    | undefined;
+
+  if (!confusionMatrix && raw.confusion) {
+    const confusion = raw.confusion as {
+      labels: string[];
+      matrix: Record<string, Record<string, number>>;
+    };
+    confusionMatrix = {
+      labels: confusion.labels,
+      matrix: confusion.labels.map((r) =>
+        confusion.labels.map((c) => confusion.matrix?.[r]?.[c] ?? 0),
+      ),
+    };
+  }
+
+  return {
+    micro: raw.micro as MetricsResult["micro"],
+    macro: raw.macro as MetricsResult["macro"],
+    per_label: perLabel,
+    confusion_matrix: confusionMatrix,
+    false_positives: (raw.false_positives as CanonicalSpan[] | undefined) ?? [],
+    false_negatives: (raw.false_negatives as CanonicalSpan[] | undefined) ?? [],
+  };
 }
