@@ -15,6 +15,13 @@
 - Breaking API/schema changes are allowed when they simplify architecture or speed delivery.
 - Prefer removing transitional compatibility layers instead of maintaining legacy behavior.
 
+## 3) TDD Is Required
+- Follow test-driven development for backend work:
+  1. Write/adjust failing tests first.
+  2. Implement minimal code to pass tests.
+  3. Refactor while keeping tests green.
+- No feature is complete without automated tests that cover expected behavior and key failure modes.
+
 ## 7) No Fallback Routes
 - No fallback routes. Expose issues so we can fix them.
 - Do not hide integration or runtime errors behind silent/default route behavior.
