@@ -6,6 +6,7 @@ import type {
   AgentCredentialStatus,
   AgentMethodOption,
   CanonicalSpan,
+  LabelProfile,
   MethodView,
 } from "../types";
 import AnnotatedText from "./AnnotatedText";
@@ -14,6 +15,7 @@ interface Props {
   text: string;
   spans: CanonicalSpan[];
   methods: AgentMethodOption[];
+  processedWithChunking?: boolean;
   activeMethod: MethodView;
   onActiveMethodChange: (methodId: MethodView) => void;
   diffSpans?: { start: number; end: number; type: "added" | "removed" }[];
@@ -31,6 +33,7 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
       text,
       spans,
       methods,
+      processedWithChunking = false,
       activeMethod,
       onActiveMethodChange,
       diffSpans = [],
@@ -47,6 +50,9 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
     const [model, setModel] = useState("openai.gpt-5.3-codex");
     const [customModel, setCustomModel] = useState("");
     const [temperature, setTemperature] = useState(0);
+    const [labelProfile, setLabelProfile] = useState<LabelProfile>("simple");
+    const [chunkMode, setChunkMode] = useState<"auto" | "off" | "force">("auto");
+    const [chunkSizeChars, setChunkSizeChars] = useState(10000);
     const [reasoningEffort, setReasoningEffort] = useState<
       "none" | "low" | "medium" | "high" | "xhigh"
     >("xhigh");
@@ -142,6 +148,7 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
       const payload: AgentConfig = {
         mode: "method",
         method_id: selectedMethod.id,
+        label_profile: labelProfile,
       };
       if (supportsVerifyOverride) {
         payload.method_verify = methodVerify;
@@ -157,6 +164,8 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
         payload.anthropic_thinking_budget_tokens = anthropicThinking
           ? anthropicThinkingBudget
           : undefined;
+        payload.chunk_mode = chunkMode;
+        payload.chunk_size_chars = chunkSizeChars;
       }
       void onRunMethod(payload);
     };
@@ -169,6 +178,11 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
         <div className="pane-header pane-header-agent">
           <div className="pane-header-agent-left">
             <span>Method Annotations</span>
+            {processedWithChunking && (
+              <span className="chunk-badge" title="Backend auto-chunked this run for reliability.">
+                Processed with chunking
+              </span>
+            )}
             <span className="agent-view-control">
               <label htmlFor="method-view-select">View:</label>
               <select
@@ -340,6 +354,52 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
                   onChange={(e) => setTemperature(parseFloat(e.target.value))}
                 />
               </div>
+              <div className="field">
+                <label htmlFor="method-label-profile">Label Profile</label>
+                <select
+                  id="method-label-profile"
+                  name="method_label_profile"
+                  value={labelProfile}
+                  onChange={(e) =>
+                    setLabelProfile(e.target.value as LabelProfile)
+                  }
+                >
+                  <option value="simple">Simple</option>
+                  <option value="advanced">Advanced (UPchieve)</option>
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="method-chunk-mode">Chunk Mode</label>
+                <select
+                  id="method-chunk-mode"
+                  name="method_chunk_mode"
+                  value={chunkMode}
+                  onChange={(e) =>
+                    setChunkMode(e.target.value as "auto" | "off" | "force")
+                  }
+                >
+                  <option value="auto">Auto</option>
+                  <option value="off">Off</option>
+                  <option value="force">Force</option>
+                </select>
+              </div>
+              {chunkMode !== "off" && (
+                <div className="field">
+                  <label htmlFor="method-chunk-size">Chunk Size (chars)</label>
+                  <input
+                    id="method-chunk-size"
+                    name="method_chunk_size_chars"
+                    type="number"
+                    min={2000}
+                    max={30000}
+                    step={500}
+                    value={chunkSizeChars}
+                    onChange={(e) =>
+                      setChunkSizeChars(Number.parseInt(e.target.value, 10) || 10000)
+                    }
+                  />
+                </div>
+              )}
               <div className="field">
                 {credentialStatus?.has_api_key && !showApiKeyInput && !apiKey ? (
                   <>

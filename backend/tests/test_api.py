@@ -39,6 +39,15 @@ def _make_hips_v1():
     ).encode()
 
 
+def _make_hips_v1_custom(transcript: str, pii_occurrences: list[dict] | None = None):
+    return json.dumps(
+        {
+            "transcript": transcript,
+            "pii_occurrences": pii_occurrences or [],
+        }
+    ).encode()
+
+
 def _upload(client, data=None, filename="test.json"):
     if data is None:
         data = _make_hips_v1()
@@ -451,6 +460,44 @@ def test_agent_llm_response_includes_llm_confidence_metrics(client, monkeypatch)
     assert payload["agent_run_metrics"]["llm_confidence"]["reason"] == "ok"
 
 
+def test_agent_llm_persists_label_profile(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.2-chat"],
+    )
+
+    def fake_run_llm_with_metadata(**kwargs):
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="PERSON", text="Anna")],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(),
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    resp = _upload(client)
+    doc_id = resp.json()["id"]
+    run_resp = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "llm",
+            "model": "openai.gpt-5.2-chat",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com/v1",
+            "label_profile": "advanced",
+        },
+    )
+    assert run_resp.status_code == 200
+    payload = run_resp.json()
+    assert payload["agent_outputs"]["llm"][0]["label"] == "PERSON"
+    assert payload["agent_run_metrics"]["label_profile"] == "advanced"
+
+    doc_resp = client.get(f"/api/documents/{doc_id}")
+    assert doc_resp.status_code == 200
+    reloaded = doc_resp.json()
+    assert reloaded["agent_run_metrics"]["label_profile"] == "advanced"
+
+
 def test_agent_llm_normalizes_person_label_to_name(client, monkeypatch):
     monkeypatch.setattr(
         "server._fetch_gateway_model_ids",
@@ -735,6 +782,118 @@ def test_agent_llm_request_overrides_env_key_and_base(client, monkeypatch):
     assert captured["api_base"] == "https://request.example.com/v1"
 
 
+def test_agent_llm_chunk_mode_auto_chunks_long_text(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.2-chat"],
+    )
+    call_count = {"count": 0}
+
+    def fake_run_llm_with_metadata(**kwargs):
+        call_count["count"] += 1
+        return SimpleNamespace(
+            spans=[],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(confidence=0.8, band="medium"),
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+    long_text = "Hello Anna.\n" * 1500
+    resp = _upload(client, _make_hips_v1_custom(long_text))
+    doc_id = resp.json()["id"]
+
+    run_resp = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "llm",
+            "model": "openai.gpt-5.2-chat",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com/v1",
+            "chunk_mode": "auto",
+            "chunk_size_chars": 2000,
+        },
+    )
+    assert run_resp.status_code == 200
+    payload = run_resp.json()
+    assert call_count["count"] > 1
+    assert any("Chunked LLM run used" in warning for warning in payload["agent_run_warnings"])
+
+
+def test_agent_llm_chunk_mode_off_stays_single_pass(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.2-chat"],
+    )
+    call_count = {"count": 0}
+
+    def fake_run_llm_with_metadata(**kwargs):
+        call_count["count"] += 1
+        return SimpleNamespace(
+            spans=[],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(confidence=0.8, band="medium"),
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+    long_text = "Hello Anna.\n" * 1500
+    resp = _upload(client, _make_hips_v1_custom(long_text))
+    doc_id = resp.json()["id"]
+
+    run_resp = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "llm",
+            "model": "openai.gpt-5.2-chat",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com/v1",
+            "chunk_mode": "off",
+            "chunk_size_chars": 2000,
+        },
+    )
+    assert run_resp.status_code == 200
+    payload = run_resp.json()
+    assert call_count["count"] == 1
+    assert all(
+        "Chunked LLM run used" not in warning for warning in payload["agent_run_warnings"]
+    )
+
+
+def test_agent_llm_chunk_mode_force_chunks_short_text(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.2-chat"],
+    )
+    call_count = {"count": 0}
+
+    def fake_run_llm_with_metadata(**kwargs):
+        call_count["count"] += 1
+        return SimpleNamespace(
+            spans=[],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(confidence=0.8, band="medium"),
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+    resp = _upload(client)
+    doc_id = resp.json()["id"]
+
+    run_resp = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "llm",
+            "model": "openai.gpt-5.2-chat",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com/v1",
+            "chunk_mode": "force",
+            "chunk_size_chars": 2000,
+        },
+    )
+    assert run_resp.status_code == 200
+    payload = run_resp.json()
+    assert call_count["count"] == 1
+    assert any("mode=force" in warning for warning in payload["agent_run_warnings"])
+
+
 def test_agent_llm_returns_actionable_error_details(client, monkeypatch):
     def fake_run_llm_with_metadata(**kwargs):
         raise Exception("Upstream 404 from proxy")
@@ -824,6 +983,64 @@ def test_metrics(client):
     assert "support" in next(iter(result["per_label"].values()))
     assert "llm_confidence" in result
     assert result["llm_confidence"] is None
+
+
+def test_metrics_supports_coarse_label_projection(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.2-chat"],
+    )
+
+    def fake_run_llm_with_metadata(**kwargs):
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="PERSON", text="Anna")],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(),
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    resp = _upload(client)
+    doc_id = resp.json()["id"]
+    run_resp = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "llm",
+            "model": "openai.gpt-5.2-chat",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com/v1",
+            "label_profile": "advanced",
+        },
+    )
+    assert run_resp.status_code == 200
+
+    native_resp = client.get(
+        f"/api/documents/{doc_id}/metrics",
+        params={
+            "reference": "pre",
+            "hypothesis": "agent.llm",
+            "match_mode": "exact",
+            "label_projection": "native",
+        },
+    )
+    assert native_resp.status_code == 200
+    native = native_resp.json()
+    assert native["micro"]["f1"] == pytest.approx(0.0)
+
+    coarse_resp = client.get(
+        f"/api/documents/{doc_id}/metrics",
+        params={
+            "reference": "pre",
+            "hypothesis": "agent.llm",
+            "match_mode": "exact",
+            "label_projection": "coarse_simple",
+        },
+    )
+    assert coarse_resp.status_code == 200
+    coarse = coarse_resp.json()
+    assert coarse["label_projection"] == "coarse_simple"
+    assert coarse["micro"]["f1"] == pytest.approx(1.0)
+    assert coarse["per_label"]["NAME"]["tp"] == 1
 
 
 def test_metrics_unknown_source(client):
@@ -1135,6 +1352,299 @@ def test_prompt_lab_run_handles_mismatch_metrics_without_crashing(client, monkey
     cell = final["matrix"]["cells"][0]
     assert cell["completed_docs"] == 1
     assert cell["micro"]["f1"] == pytest.approx(0.0)
+
+
+def test_prompt_lab_runtime_supports_label_profile_and_coarse_projection(
+    client,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_llm_with_metadata(**kwargs):
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="PERSON", text="Anna")],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(confidence=0.91, band="high"),
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    create_resp = client.post(
+        "/api/prompt-lab/runs",
+        json={
+            "name": "advanced-profile-run",
+            "doc_ids": [doc_id],
+            "prompts": [
+                {
+                    "id": "p1",
+                    "label": "Baseline",
+                    "system_prompt": "Detect pii spans as strict JSON",
+                }
+            ],
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "reference_source": "manual",
+                "fallback_reference_source": "pre",
+                "label_profile": "advanced",
+                "label_projection": "coarse_simple",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+
+    final = _wait_for_prompt_lab_terminal(client, run_id)
+    assert final["status"] == "completed"
+    assert final["runtime"]["label_profile"] == "advanced"
+    assert final["runtime"]["label_projection"] == "coarse_simple"
+    assert final["matrix"]["cells"][0]["micro"]["f1"] == pytest.approx(1.0)
+
+
+def test_prompt_lab_preset_variant_executes_method_pipeline(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+    calls = {"method": 0, "llm": 0}
+
+    def fake_run_method_with_metadata(**kwargs):
+        calls["method"] += 1
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            warnings=["method-path"],
+        )
+
+    def fake_run_llm_with_metadata(**kwargs):
+        calls["llm"] += 1
+        return SimpleNamespace(
+            spans=[],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(),
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    create_resp = client.post(
+        "/api/prompt-lab/runs",
+        json={
+            "name": "preset-method-run",
+            "doc_ids": [doc_id],
+            "prompts": [
+                {
+                    "id": "preset1",
+                    "label": "Verified preset",
+                    "variant_type": "preset",
+                    "preset_method_id": "verified",
+                    "method_verify_override": True,
+                }
+            ],
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "reference_source": "manual",
+                "fallback_reference_source": "pre",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+
+    final = _wait_for_prompt_lab_terminal(client, run_id)
+    assert final["status"] == "completed"
+    assert calls["method"] >= 1
+    assert calls["llm"] == 0
+    assert final["prompts"][0]["variant_type"] == "preset"
+    assert final["prompts"][0]["preset_method_id"] == "verified"
+
+
+def test_prompt_lab_matrix_includes_per_label_and_available_labels(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_llm_with_metadata(**kwargs):
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(confidence=0.91, band="high"),
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    upload_resp = _upload(client)
+    doc_id = upload_resp.json()["id"]
+    create_resp = client.post(
+        "/api/prompt-lab/runs",
+        json={
+            "doc_ids": [doc_id],
+            "prompts": [
+                {"id": "p1", "label": "Baseline", "system_prompt": "normal run"}
+            ],
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "reference_source": "manual",
+                "fallback_reference_source": "pre",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+
+    final = _wait_for_prompt_lab_terminal(client, run_id)
+    cell = final["matrix"]["cells"][0]
+    assert "per_label" in cell
+    assert "NAME" in cell["per_label"]
+    assert cell["per_label"]["NAME"]["tp"] == 1
+    assert cell["per_label"]["NAME"]["support"] == 1
+    assert "available_labels" in final["matrix"]
+    assert "NAME" in final["matrix"]["available_labels"]
+
+
+def test_prompt_lab_presidio_preset_fails_per_task_without_aborting_run(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_method_with_metadata(**kwargs):
+        raise ValueError("Presidio methods require local setup.")
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    upload_resp = _upload(client)
+    doc_id = upload_resp.json()["id"]
+    create_resp = client.post(
+        "/api/prompt-lab/runs",
+        json={
+            "doc_ids": [doc_id],
+            "prompts": [
+                {
+                    "id": "p1",
+                    "label": "Presidio split",
+                    "variant_type": "preset",
+                    "preset_method_id": "presidio+llm-split",
+                }
+            ],
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "reference_source": "manual",
+                "fallback_reference_source": "pre",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+    final = _wait_for_prompt_lab_terminal(client, run_id)
+    assert final["status"] == "completed_with_errors"
+    cell = final["matrix"]["cells"][0]
+    assert cell["failed_docs"] == 1
+
+
+def test_prompt_lab_preset_variant_requires_preset_method_id(client):
+    upload_resp = _upload(client)
+    doc_id = upload_resp.json()["id"]
+    resp = client.post(
+        "/api/prompt-lab/runs",
+        json={
+            "doc_ids": [doc_id],
+            "prompts": [
+                {
+                    "id": "preset1",
+                    "label": "Preset missing id",
+                    "variant_type": "preset",
+                }
+            ],
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "reference_source": "manual",
+                "fallback_reference_source": "pre",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert resp.status_code == 400
+    assert "preset_method_id required" in resp.json()["detail"]
 
 
 def test_prompt_lab_enforces_variant_limits(client):

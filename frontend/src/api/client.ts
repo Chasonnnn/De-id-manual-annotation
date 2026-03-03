@@ -118,20 +118,22 @@ export async function getAgentMethods(): Promise<AgentMethodOption[]> {
 export async function createPromptLabRun(
   payload: PromptLabRunCreateRequest,
 ): Promise<PromptLabRunDetail> {
-  return request("/prompt-lab/runs", {
+  const raw = await request<Record<string, unknown>>("/prompt-lab/runs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+  return normalizePromptLabRunDetail(raw);
 }
 
 export async function listPromptLabRuns(): Promise<PromptLabRunSummary[]> {
-  const data = await request<{ runs: PromptLabRunSummary[] }>("/prompt-lab/runs");
-  return data.runs;
+  const data = await request<{ runs: Record<string, unknown>[] }>("/prompt-lab/runs");
+  return (data.runs ?? []).map(normalizePromptLabRunSummary);
 }
 
 export async function getPromptLabRun(runId: string): Promise<PromptLabRunDetail> {
-  return request(`/prompt-lab/runs/${runId}`);
+  const raw = await request<Record<string, unknown>>(`/prompt-lab/runs/${runId}`);
+  return normalizePromptLabRunDetail(raw);
 }
 
 export async function getPromptLabDocResult(
@@ -139,7 +141,42 @@ export async function getPromptLabDocResult(
   cellId: string,
   docId: string,
 ): Promise<PromptLabDocResult> {
-  return request(`/prompt-lab/runs/${runId}/cells/${cellId}/documents/${docId}`);
+  const raw = await request<Record<string, unknown>>(
+    `/prompt-lab/runs/${runId}/cells/${cellId}/documents/${docId}`,
+  );
+  const metricsRaw = isRecord(raw.metrics) ? normalizeMetrics(raw.metrics) : null;
+  return {
+    run_id: String(raw.run_id ?? runId),
+    cell_id: String(raw.cell_id ?? cellId),
+    doc_id: String(raw.doc_id ?? docId),
+    status: (raw.status as PromptLabDocResult["status"] | undefined) ?? "pending",
+    error: typeof raw.error === "string" ? raw.error : null,
+    warnings: Array.isArray(raw.warnings)
+      ? raw.warnings.filter((x): x is string => typeof x === "string")
+      : [],
+    reference_source_used:
+      raw.reference_source_used === "manual" || raw.reference_source_used === "pre"
+        ? raw.reference_source_used
+        : undefined,
+    reference_spans: Array.isArray(raw.reference_spans)
+      ? (raw.reference_spans as CanonicalSpan[])
+      : [],
+    hypothesis_spans: Array.isArray(raw.hypothesis_spans)
+      ? (raw.hypothesis_spans as CanonicalSpan[])
+      : [],
+    metrics: metricsRaw,
+    llm_confidence: normalizeLLMConfidence(raw.llm_confidence),
+    transcript_text: typeof raw.transcript_text === "string" ? raw.transcript_text : null,
+    document: isRecord(raw.document)
+      ? {
+          id: String(raw.document.id ?? docId),
+          filename:
+            typeof raw.document.filename === "string" ? raw.document.filename : null,
+        }
+      : { id: docId, filename: null },
+    model: isRecord(raw.model) ? normalizePromptLabModel(raw.model, 0) : undefined,
+    prompt: isRecord(raw.prompt) ? normalizePromptLabPrompt(raw.prompt, 0) : undefined,
+  };
 }
 
 export async function getMetrics(
@@ -147,11 +184,13 @@ export async function getMetrics(
   reference: AnnotationSource,
   hypothesis: AnnotationSource,
   matchMode: "exact" | "overlap",
+  labelProjection: "native" | "coarse_simple" = "native",
 ): Promise<MetricsResult> {
   const params = new URLSearchParams({
     reference,
     hypothesis,
     match_mode: matchMode,
+    label_projection: labelProjection,
   });
   const raw = await request<Record<string, unknown>>(
     `/documents/${docId}/metrics?${params}`,
@@ -163,14 +202,22 @@ export async function getMetricsDashboard(
   reference: AnnotationSource,
   hypothesis: AnnotationSource,
   matchMode: "exact" | "overlap",
+  labelProjection: "native" | "coarse_simple" = "native",
 ): Promise<DashboardMetricsResult> {
   const params = new URLSearchParams({
     reference,
     hypothesis,
     match_mode: matchMode,
+    label_projection: labelProjection,
   });
   const raw = await request<Record<string, unknown>>(`/metrics/dashboard?${params}`);
-  return normalizeDashboardMetrics(raw, reference, hypothesis, matchMode);
+  return normalizeDashboardMetrics(
+    raw,
+    reference,
+    hypothesis,
+    matchMode,
+    labelProjection,
+  );
 }
 
 function normalizeMetrics(raw: Record<string, unknown>): MetricsResult {
@@ -211,6 +258,8 @@ function normalizeMetrics(raw: Record<string, unknown>): MetricsResult {
   return {
     micro: raw.micro as MetricsResult["micro"],
     macro: raw.macro as MetricsResult["macro"],
+    label_projection:
+      raw.label_projection === "coarse_simple" ? "coarse_simple" : "native",
     per_label: perLabel,
     confusion_matrix: confusionMatrix,
     false_positives: (raw.false_positives as CanonicalSpan[] | undefined) ?? [],
@@ -219,11 +268,214 @@ function normalizeMetrics(raw: Record<string, unknown>): MetricsResult {
   };
 }
 
+function normalizePromptLabRunSummary(raw: Record<string, unknown>): PromptLabRunSummary {
+  return {
+    id: String(raw.id ?? ""),
+    name: String(raw.name ?? ""),
+    status: (raw.status as PromptLabRunSummary["status"] | undefined) ?? "queued",
+    created_at: String(raw.created_at ?? ""),
+    started_at: typeof raw.started_at === "string" ? raw.started_at : null,
+    finished_at: typeof raw.finished_at === "string" ? raw.finished_at : null,
+    doc_count: toNumber(raw.doc_count, 0),
+    prompt_count: toNumber(raw.prompt_count, 0),
+    model_count: toNumber(raw.model_count, 0),
+    total_tasks: toNumber(raw.total_tasks, 0),
+    completed_tasks: toNumber(raw.completed_tasks, 0),
+    failed_tasks: toNumber(raw.failed_tasks, 0),
+  };
+}
+
+function normalizePromptLabRunDetail(raw: Record<string, unknown>): PromptLabRunDetail {
+  const summary = normalizePromptLabRunSummary(raw);
+  const docIds = Array.isArray(raw.doc_ids)
+    ? raw.doc_ids.map((value) => String(value))
+    : [];
+  const promptsRaw = Array.isArray(raw.prompts) ? raw.prompts : [];
+  const modelsRaw = Array.isArray(raw.models) ? raw.models : [];
+  const runtimeRaw = isRecord(raw.runtime) ? raw.runtime : {};
+  const matrixRaw = isRecord(raw.matrix) ? raw.matrix : {};
+  const matrixModels = Array.isArray(matrixRaw.models)
+    ? matrixRaw.models
+        .filter(isRecord)
+        .map((item) => ({ id: String(item.id ?? ""), label: String(item.label ?? "") }))
+    : [];
+  const matrixPrompts = Array.isArray(matrixRaw.prompts)
+    ? matrixRaw.prompts
+        .filter(isRecord)
+        .map((item) => ({ id: String(item.id ?? ""), label: String(item.label ?? "") }))
+    : [];
+  const matrixCellsRaw = Array.isArray(matrixRaw.cells) ? matrixRaw.cells : [];
+  const matrixCells = matrixCellsRaw
+    .filter(isRecord)
+    .map((cell, index) => normalizePromptLabCellSummary(cell, index, summary.doc_count));
+  const availableLabels = Array.isArray(matrixRaw.available_labels)
+    ? matrixRaw.available_labels.filter((x): x is string => typeof x === "string")
+    : [];
+
+  return {
+    ...summary,
+    doc_ids: docIds,
+    prompts: promptsRaw
+      .filter(isRecord)
+      .map((prompt, index) => normalizePromptLabPrompt(prompt, index)),
+    models: modelsRaw
+      .filter(isRecord)
+      .map((model, index) => normalizePromptLabModel(model, index)),
+    runtime: {
+      api_base: typeof runtimeRaw.api_base === "string" ? runtimeRaw.api_base : undefined,
+      temperature: toNumber(runtimeRaw.temperature, 0),
+      match_mode:
+        runtimeRaw.match_mode === "overlap"
+          ? "overlap"
+          : "exact",
+      reference_source:
+        runtimeRaw.reference_source === "pre"
+          ? "pre"
+          : "manual",
+      fallback_reference_source:
+        runtimeRaw.fallback_reference_source === "manual"
+          ? "manual"
+          : "pre",
+      label_profile:
+        runtimeRaw.label_profile === "advanced"
+          ? "advanced"
+          : "simple",
+      label_projection:
+        runtimeRaw.label_projection === "coarse_simple"
+          ? "coarse_simple"
+          : "native",
+      chunk_mode:
+        runtimeRaw.chunk_mode === "off" || runtimeRaw.chunk_mode === "force"
+          ? runtimeRaw.chunk_mode
+          : "auto",
+      chunk_size_chars: toNumber(runtimeRaw.chunk_size_chars, 10000),
+    },
+    concurrency: toNumber(raw.concurrency, 4),
+    warnings: Array.isArray(raw.warnings)
+      ? raw.warnings.filter((x): x is string => typeof x === "string")
+      : [],
+    errors: Array.isArray(raw.errors)
+      ? raw.errors.filter((x): x is string => typeof x === "string")
+      : [],
+    matrix: {
+      models: matrixModels,
+      prompts: matrixPrompts,
+      cells: matrixCells,
+      available_labels: availableLabels,
+    },
+    progress: isRecord(raw.progress)
+      ? {
+          total_tasks: toNumber(raw.progress.total_tasks, summary.total_tasks),
+          completed_tasks: toNumber(raw.progress.completed_tasks, summary.completed_tasks),
+          failed_tasks: toNumber(raw.progress.failed_tasks, summary.failed_tasks),
+        }
+      : {
+          total_tasks: summary.total_tasks,
+          completed_tasks: summary.completed_tasks,
+          failed_tasks: summary.failed_tasks,
+        },
+  };
+}
+
+function normalizePromptLabPrompt(
+  raw: Record<string, unknown>,
+  index: number,
+): PromptLabRunDetail["prompts"][number] {
+  const variantType = raw.variant_type === "preset" ? "preset" : "prompt";
+  return {
+    id: typeof raw.id === "string" ? raw.id : `prompt_${index + 1}`,
+    label: String(raw.label ?? `Prompt ${index + 1}`),
+    variant_type: variantType,
+    preset_method_id:
+      typeof raw.preset_method_id === "string" ? raw.preset_method_id : null,
+    method_verify_override:
+      typeof raw.method_verify_override === "boolean"
+        ? raw.method_verify_override
+        : null,
+    system_prompt:
+      typeof raw.system_prompt === "string"
+        ? raw.system_prompt
+        : variantType === "prompt"
+          ? ""
+          : undefined,
+  };
+}
+
+function normalizePromptLabModel(
+  raw: Record<string, unknown>,
+  index: number,
+): PromptLabRunDetail["models"][number] {
+  return {
+    id: typeof raw.id === "string" ? raw.id : `model_${index + 1}`,
+    label: String(raw.label ?? `Model ${index + 1}`),
+    model: String(raw.model ?? ""),
+    reasoning_effort:
+      raw.reasoning_effort === "low" ||
+      raw.reasoning_effort === "medium" ||
+      raw.reasoning_effort === "high" ||
+      raw.reasoning_effort === "xhigh"
+        ? raw.reasoning_effort
+        : "none",
+    anthropic_thinking: Boolean(raw.anthropic_thinking),
+    anthropic_thinking_budget_tokens:
+      typeof raw.anthropic_thinking_budget_tokens === "number"
+        ? raw.anthropic_thinking_budget_tokens
+        : null,
+  };
+}
+
+function normalizePromptLabCellSummary(
+  raw: Record<string, unknown>,
+  index: number,
+  defaultDocCount: number,
+): PromptLabRunDetail["matrix"]["cells"][number] {
+  const microRaw = isRecord(raw.micro) ? raw.micro : {};
+  const perLabelRaw = isRecord(raw.per_label)
+    ? (raw.per_label as Record<string, unknown>)
+    : {};
+  const perLabel: PromptLabRunDetail["matrix"]["cells"][number]["per_label"] = {};
+  for (const [label, value] of Object.entries(perLabelRaw)) {
+    if (!isRecord(value)) continue;
+    perLabel[label] = {
+      precision: toNumber(value.precision, 0),
+      recall: toNumber(value.recall, 0),
+      f1: toNumber(value.f1, 0),
+      tp: toNumber(value.tp, 0),
+      fp: toNumber(value.fp, 0),
+      fn: toNumber(value.fn, 0),
+      support: toNumber(value.support, 0),
+    };
+  }
+  return {
+    id: String(raw.id ?? `cell_${index + 1}`),
+    model_id: String(raw.model_id ?? ""),
+    model_label: String(raw.model_label ?? ""),
+    prompt_id: String(raw.prompt_id ?? ""),
+    prompt_label: String(raw.prompt_label ?? ""),
+    status: (raw.status as PromptLabRunDetail["matrix"]["cells"][number]["status"] | undefined) ?? "pending",
+    total_docs: toNumber(raw.total_docs, defaultDocCount),
+    completed_docs: toNumber(raw.completed_docs, 0),
+    failed_docs: toNumber(raw.failed_docs, 0),
+    error_count: toNumber(raw.error_count, 0),
+    micro: {
+      precision: toNumber(microRaw.precision, 0),
+      recall: toNumber(microRaw.recall, 0),
+      f1: toNumber(microRaw.f1, 0),
+      tp: toNumber(microRaw.tp, 0),
+      fp: toNumber(microRaw.fp, 0),
+      fn: toNumber(microRaw.fn, 0),
+    },
+    per_label: perLabel,
+    mean_confidence: typeof raw.mean_confidence === "number" ? raw.mean_confidence : null,
+  };
+}
+
 function normalizeDashboardMetrics(
   raw: Record<string, unknown>,
   reference: AnnotationSource,
   hypothesis: AnnotationSource,
   matchMode: "exact" | "overlap",
+  labelProjection: "native" | "coarse_simple",
 ): DashboardMetricsResult {
   const defaultBandCounts: Record<LLMConfidenceBand, number> = {
     high: 0,
@@ -272,6 +524,10 @@ function normalizeDashboardMetrics(
     reference: (raw.reference as AnnotationSource | undefined) ?? reference,
     hypothesis: (raw.hypothesis as AnnotationSource | undefined) ?? hypothesis,
     match_mode: (raw.match_mode as "exact" | "overlap" | undefined) ?? matchMode,
+    label_projection:
+      raw.label_projection === "coarse_simple"
+        ? "coarse_simple"
+        : labelProjection,
     total_documents: toNumber(raw.total_documents, 0),
     documents_compared: toNumber(raw.documents_compared, documents.length),
     micro: (raw.micro ?? {

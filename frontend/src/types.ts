@@ -1,4 +1,6 @@
 export type PIILabel = string;
+export type LabelProfile = "simple" | "advanced";
+export type LabelProjection = "native" | "coarse_simple";
 
 export const PII_LABELS: PIILabel[] = [
   "NAME",
@@ -67,6 +69,7 @@ export interface LLMConfidenceMetric {
 
 export interface AgentRunMetrics {
   llm_confidence: LLMConfidenceMetric | null;
+  label_profile?: LabelProfile | null;
 }
 
 export interface UtteranceRow {
@@ -104,6 +107,7 @@ export interface DocumentSummary {
 export interface MetricsResult {
   micro: { precision: number; recall: number; f1: number };
   macro: { precision: number; recall: number; f1: number };
+  label_projection?: LabelProjection;
   per_label: Record<
     string,
     {
@@ -148,6 +152,7 @@ export interface DashboardMetricsResult {
   reference: AnnotationSource;
   hypothesis: AnnotationSource;
   match_mode: MatchMode;
+  label_projection?: LabelProjection;
   total_documents: number;
   documents_compared: number;
   micro: {
@@ -188,6 +193,7 @@ export interface SessionExportBundle {
     };
     agent_metrics?: {
       llm_confidence?: LLMConfidenceMetric | null;
+      label_profile?: LabelProfile | null;
     };
   }>;
   config?: Record<string, unknown>;
@@ -220,6 +226,9 @@ export interface AgentConfig {
   reasoning_effort?: "none" | "low" | "medium" | "high" | "xhigh";
   anthropic_thinking?: boolean;
   anthropic_thinking_budget_tokens?: number;
+  chunk_mode?: "auto" | "off" | "force";
+  chunk_size_chars?: number;
+  label_profile?: LabelProfile;
   method_id?: string;
   method_verify?: boolean;
 }
@@ -252,7 +261,10 @@ export type PromptLabRunStatus =
 export interface PromptLabPromptInput {
   id?: string;
   label: string;
-  system_prompt: string;
+  variant_type?: "prompt" | "preset";
+  preset_method_id?: string | null;
+  method_verify_override?: boolean | null;
+  system_prompt?: string;
 }
 
 export interface PromptLabModelInput {
@@ -271,6 +283,10 @@ export interface PromptLabRuntimeInput {
   match_mode: MatchMode;
   reference_source: "manual" | "pre";
   fallback_reference_source: "manual" | "pre";
+  label_profile?: LabelProfile;
+  label_projection?: LabelProjection;
+  chunk_mode?: "auto" | "off" | "force";
+  chunk_size_chars?: number;
 }
 
 export interface PromptLabRunCreateRequest {
@@ -303,6 +319,18 @@ export interface PromptLabMatrixCellSummary {
   failed_docs: number;
   error_count: number;
   micro: PromptLabCellMicro;
+  per_label: Record<
+    string,
+    {
+      precision: number;
+      recall: number;
+      f1: number;
+      tp: number;
+      fp: number;
+      fn: number;
+      support: number;
+    }
+  >;
   mean_confidence: number | null;
 }
 
@@ -333,6 +361,7 @@ export interface PromptLabRunDetail extends PromptLabRunSummary {
     models: Array<{ id: string; label: string }>;
     prompts: Array<{ id: string; label: string }>;
     cells: PromptLabMatrixCellSummary[];
+    available_labels: string[];
   };
   progress: {
     total_tasks: number;

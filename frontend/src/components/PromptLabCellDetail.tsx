@@ -21,6 +21,11 @@ function fmtPct(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
 }
 
+function isChunkWarning(message: string): boolean {
+  const trimmed = message.trim();
+  return trimmed.startsWith("Chunked ") || /^Chunk \d+\/\d+:/.test(trimmed);
+}
+
 export default function PromptLabCellDetail({
   run,
   cell,
@@ -64,6 +69,10 @@ export default function PromptLabCellDetail({
           run.runtime.match_mode,
         )
       : [];
+  const allWarnings = detail?.warnings ?? [];
+  const chunkWarnings = allWarnings.filter(isChunkWarning);
+  const nonChunkWarnings = allWarnings.filter((message) => !isChunkWarning(message));
+  const processedWithChunking = chunkWarnings.length > 0;
 
   return (
     <section className="prompt-lab-detail">
@@ -123,12 +132,13 @@ export default function PromptLabCellDetail({
             <span>Status: {detail.status}</span>
             <span>Reference used: {detail.reference_source_used ?? "n/a"}</span>
             {detail.metrics && <span>Micro F1: {fmtPct(detail.metrics.micro.f1)}</span>}
+            {processedWithChunking && <span className="chunk-badge">Processed with chunking</span>}
           </div>
 
           {detail.error && <div className="prompt-lab-error">{detail.error}</div>}
 
-          {(detail.warnings ?? []).length > 0 && (
-            <div className="prompt-lab-warning">{detail.warnings.join(" | ")}</div>
+          {nonChunkWarnings.length > 0 && (
+            <div className="prompt-lab-warning">{nonChunkWarnings.join(" | ")}</div>
           )}
 
           {detail.metrics && (

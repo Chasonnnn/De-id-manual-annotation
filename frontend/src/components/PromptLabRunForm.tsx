@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { MODEL_PRESETS, getModelPreset } from "../modelPresets";
 import type {
+  AgentMethodOption,
   DocumentSummary,
   PromptLabModelInput,
   PromptLabPromptInput,
@@ -10,11 +11,20 @@ import type {
 interface Props {
   documents: DocumentSummary[];
   selectedDocumentId: string | null;
+  methods: AgentMethodOption[];
   onRun: (payload: PromptLabRunCreateRequest) => Promise<void>;
   running: boolean;
 }
 
 const REASONING_EFFORT_OPTIONS = ["none", "low", "medium", "high", "xhigh"] as const;
+const PROMPT_LAB_PRESET_METHOD_IDS = [
+  "default",
+  "extended",
+  "verified",
+  "dual",
+  "dual-split",
+  "presidio+llm-split",
+] as const;
 
 const DEFAULT_PROMPT =
   'You are a PII annotation assistant. Return ONLY a JSON array of objects with start (0-based), end (exclusive), label, and text for each PII span.';
@@ -23,7 +33,10 @@ function makePrompt(index: number): PromptLabPromptInput {
   return {
     id: `prompt_${index + 1}`,
     label: index === 0 ? "Baseline" : `Prompt ${index + 1}`,
+    variant_type: "prompt",
     system_prompt: DEFAULT_PROMPT,
+    preset_method_id: null,
+    method_verify_override: null,
   };
 }
 
@@ -42,6 +55,7 @@ function makeModel(index: number): PromptLabModelInput {
 export default function PromptLabRunForm({
   documents,
   selectedDocumentId,
+  methods,
   onRun,
   running,
 }: Props) {
@@ -68,6 +82,12 @@ export default function PromptLabRunForm({
     }
   });
   const [concurrency, setConcurrency] = useState(4);
+  const [labelProfile, setLabelProfile] = useState<"simple" | "advanced">("simple");
+  const [labelProjection, setLabelProjection] = useState<"native" | "coarse_simple">(
+    "native",
+  );
+  const [chunkMode, setChunkMode] = useState<"auto" | "off" | "force">("auto");
+  const [chunkSizeChars, setChunkSizeChars] = useState(10000);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
@@ -99,6 +119,29 @@ export default function PromptLabRunForm({
     () => selectedDocIds.length * prompts.length * models.length,
     [selectedDocIds.length, prompts.length, models.length],
   );
+  const presetMethodOptions = useMemo(
+    () => {
+      const filtered = methods.filter((method) =>
+        PROMPT_LAB_PRESET_METHOD_IDS.includes(
+          method.id as (typeof PROMPT_LAB_PRESET_METHOD_IDS)[number],
+        ),
+      );
+      if (filtered.length > 0) {
+        return filtered;
+      }
+      return PROMPT_LAB_PRESET_METHOD_IDS.map((id) => ({
+        id,
+        label: id,
+        description: "",
+        requires_presidio: id.includes("presidio"),
+        uses_llm: true,
+        supports_verify_override: id === "verified",
+        available: true,
+        unavailable_reason: null,
+      }));
+    },
+    [methods],
+  );
 
   const toggleDoc = (docId: string) => {
     setSelectedDocIds((prev) =>
@@ -108,6 +151,33 @@ export default function PromptLabRunForm({
 
   const updatePrompt = (index: number, patch: Partial<PromptLabPromptInput>) => {
     setPrompts((prev) => prev.map((item, i) => (i === index ? { ...item, ...patch } : item)));
+  };
+
+  const handlePromptVariantChange = (index: number, variantType: "prompt" | "preset") => {
+    setPrompts((prev) =>
+      prev.map((item, i) => {
+        if (i !== index) return item;
+        if (variantType === "prompt") {
+          return {
+            ...item,
+            variant_type: "prompt",
+            preset_method_id: null,
+            method_verify_override: null,
+            system_prompt: item.system_prompt || DEFAULT_PROMPT,
+          };
+        }
+        return {
+          ...item,
+          variant_type: "preset",
+          system_prompt: undefined,
+          preset_method_id: item.preset_method_id || presetMethodOptions[0]?.id || null,
+          method_verify_override:
+            typeof item.method_verify_override === "boolean"
+              ? item.method_verify_override
+              : null,
+        };
+      }),
+    );
   };
 
   const updateModel = (index: number, patch: Partial<PromptLabModelInput>) => {
@@ -133,12 +203,23 @@ export default function PromptLabRunForm({
     if (prompts.length === 0 || prompts.length > 6) return "Prompt variants must be 1 to 6";
     if (models.length === 0 || models.length > 6) return "Model variants must be 1 to 6";
     if (concurrency < 1 || concurrency > 6) return "Concurrency must be 1 to 6";
+    if (chunkSizeChars < 2000 || chunkSizeChars > 30000) {
+      return "Chunk size must be between 2000 and 30000";
+    }
     for (const prompt of prompts) {
-      if (!prompt.label.trim() || !prompt.system_prompt.trim()) {
-        return "Every prompt needs a label and system prompt";
+      if (!prompt.label.trim()) {
+        return "Every prompt needs a label";
       }
-      if (prompt.system_prompt.includes("{") || prompt.system_prompt.includes("}")) {
-        return "Prompt text must be plain system prompt text (no templating)";
+      if ((prompt.variant_type ?? "prompt") === "prompt") {
+        const promptText = prompt.system_prompt?.trim() ?? "";
+        if (!promptText) {
+          return "Every System Prompt variant needs system prompt text";
+        }
+        if (promptText.includes("{") || promptText.includes("}")) {
+          return "Prompt text must be plain system prompt text (no templating)";
+        }
+      } else if (!(prompt.preset_method_id ?? "").trim()) {
+        return "Every Experiment Preset variant needs a preset method";
       }
     }
     for (const model of models) {
@@ -159,7 +240,17 @@ export default function PromptLabRunForm({
       prompts: prompts.map((item, index) => ({
         id: item.id?.trim() || `prompt_${index + 1}`,
         label: item.label.trim(),
-        system_prompt: item.system_prompt,
+        variant_type: item.variant_type ?? "prompt",
+        system_prompt:
+          (item.variant_type ?? "prompt") === "prompt" ? item.system_prompt ?? "" : undefined,
+        preset_method_id:
+          (item.variant_type ?? "prompt") === "preset"
+            ? item.preset_method_id ?? null
+            : null,
+        method_verify_override:
+          (item.variant_type ?? "prompt") === "preset"
+            ? item.method_verify_override ?? null
+            : null,
       })),
       models: models.map((item, index) => ({
         id: item.id?.trim() || `model_${index + 1}`,
@@ -178,6 +269,10 @@ export default function PromptLabRunForm({
         match_mode: matchMode,
         reference_source: referenceSource,
         fallback_reference_source: fallbackSource,
+        label_profile: labelProfile,
+        label_projection: labelProjection,
+        chunk_mode: chunkMode,
+        chunk_size_chars: chunkSizeChars,
       },
       concurrency,
     };
@@ -285,6 +380,66 @@ export default function PromptLabRunForm({
               />
             </div>
 
+            <div className="prompt-lab-field prompt-lab-inline">
+              <label htmlFor="prompt-lab-label-profile">Label Profile</label>
+              <select
+                id="prompt-lab-label-profile"
+                value={labelProfile}
+                onChange={(e) =>
+                  setLabelProfile(e.target.value as "simple" | "advanced")
+                }
+              >
+                <option value="simple">Simple</option>
+                <option value="advanced">Advanced (UPchieve)</option>
+              </select>
+            </div>
+
+            <div className="prompt-lab-field prompt-lab-inline">
+              <label htmlFor="prompt-lab-label-projection">Label Compare</label>
+              <select
+                id="prompt-lab-label-projection"
+                value={labelProjection}
+                onChange={(e) =>
+                  setLabelProjection(e.target.value as "native" | "coarse_simple")
+                }
+              >
+                <option value="native">Native</option>
+                <option value="coarse_simple">Coarse (advanced→simple)</option>
+              </select>
+            </div>
+
+            <div className="prompt-lab-field prompt-lab-inline">
+              <label htmlFor="prompt-lab-chunk-mode">Chunk Mode</label>
+              <select
+                id="prompt-lab-chunk-mode"
+                value={chunkMode}
+                onChange={(e) =>
+                  setChunkMode(e.target.value as "auto" | "off" | "force")
+                }
+              >
+                <option value="auto">Auto</option>
+                <option value="off">Off</option>
+                <option value="force">Force</option>
+              </select>
+            </div>
+
+            {chunkMode !== "off" && (
+              <div className="prompt-lab-field prompt-lab-inline">
+                <label htmlFor="prompt-lab-chunk-size">Chunk Size (chars)</label>
+                <input
+                  id="prompt-lab-chunk-size"
+                  type="number"
+                  min={2000}
+                  max={30000}
+                  step={500}
+                  value={chunkSizeChars}
+                  onChange={(e) =>
+                    setChunkSizeChars(Number.parseInt(e.target.value, 10) || 10000)
+                  }
+                />
+              </div>
+            )}
+
             <div className="prompt-lab-field">
               <label htmlFor="prompt-lab-api-key">API Key (optional override)</label>
               <input
@@ -338,30 +493,104 @@ export default function PromptLabRunForm({
                 + Add Prompt
               </button>
             </div>
-            {prompts.map((prompt, index) => (
-              <div key={prompt.id ?? index} className="prompt-lab-card">
-                <div className="prompt-lab-card-header">
-                  <input
-                    type="text"
-                    value={prompt.label}
-                    onChange={(e) => updatePrompt(index, { label: e.target.value })}
-                    placeholder="Prompt label"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setPrompts((prev) => prev.filter((_, i) => i !== index))}
-                    disabled={prompts.length <= 1}
-                  >
-                    Remove
-                  </button>
+            {prompts.map((prompt, index) => {
+              const variantType = prompt.variant_type ?? "prompt";
+              const selectedPreset = presetMethodOptions.find(
+                (method) => method.id === prompt.preset_method_id,
+              );
+              return (
+                <div key={prompt.id ?? index} className="prompt-lab-card">
+                  <div className="prompt-lab-card-header">
+                    <input
+                      type="text"
+                      value={prompt.label}
+                      onChange={(e) => updatePrompt(index, { label: e.target.value })}
+                      placeholder="Prompt label"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setPrompts((prev) => prev.filter((_, i) => i !== index))}
+                      disabled={prompts.length <= 1}
+                    >
+                      Remove
+                    </button>
+                  </div>
+
+                  <div className="prompt-lab-model-row">
+                    <label>
+                      Variant
+                      <select
+                        value={variantType}
+                        onChange={(e) =>
+                          handlePromptVariantChange(
+                            index,
+                            e.target.value as "prompt" | "preset",
+                          )
+                        }
+                      >
+                        <option value="prompt">System Prompt</option>
+                        <option value="preset">Experiment Preset</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  {variantType === "prompt" ? (
+                    <textarea
+                      value={prompt.system_prompt ?? ""}
+                      onChange={(e) => updatePrompt(index, { system_prompt: e.target.value })}
+                      rows={4}
+                    />
+                  ) : (
+                    <>
+                      <div className="prompt-lab-model-row">
+                        <label>
+                          Preset
+                          <select
+                            value={prompt.preset_method_id ?? ""}
+                            onChange={(e) =>
+                              updatePrompt(index, { preset_method_id: e.target.value || null })
+                            }
+                          >
+                            {presetMethodOptions.map((method) => (
+                              <option
+                                key={method.id}
+                                value={method.id}
+                                disabled={!method.available}
+                              >
+                                {method.label}
+                                {!method.available ? " (setup required)" : ""}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                      {selectedPreset && (
+                        <div className="prompt-lab-config-note">
+                          {selectedPreset.description}
+                          {selectedPreset.unavailable_reason
+                            ? ` ${selectedPreset.unavailable_reason}`
+                            : ""}
+                        </div>
+                      )}
+                      {selectedPreset?.supports_verify_override && (
+                        <label className="inline-checkbox-label">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(prompt.method_verify_override)}
+                            onChange={(e) =>
+                              updatePrompt(index, {
+                                method_verify_override: e.target.checked,
+                              })
+                            }
+                          />
+                          Verifier Override
+                        </label>
+                      )}
+                    </>
+                  )}
                 </div>
-                <textarea
-                  value={prompt.system_prompt}
-                  onChange={(e) => updatePrompt(index, { system_prompt: e.target.value })}
-                  rows={4}
-                />
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           <div className="prompt-lab-section">

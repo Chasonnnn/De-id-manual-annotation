@@ -619,6 +619,132 @@ class TestRunLLM:
         assert "logprobs" not in second_call
         assert any("rejected logprobs" in warning for warning in result.warnings)
 
+    @patch("agent.completion")
+    def test_response_format_fallback_retries_without_schema(self, mock_completion):
+        calls: list[dict] = []
+
+        def _side_effect(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise Exception(
+                    "UnsupportedParamsError: openai does not support parameters: ['response_format']"
+                )
+            return _mock_completion_response("[]")
+
+        mock_completion.side_effect = _side_effect
+        result = run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            model="openai/gpt-4o",
+        )
+        assert result.spans == []
+        assert "response_format" in calls[0]
+        assert "response_format" not in calls[1]
+        assert any("rejected response_format" in warning for warning in result.warnings)
+
+    @patch("agent.completion")
+    def test_advanced_profile_response_schema_enforces_label_enum(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response("[]")
+        run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            model="openai/gpt-4o",
+            label_profile="advanced",
+        )
+        call_kwargs = mock_completion.call_args
+        enum_values = (
+            call_kwargs.kwargs["response_format"]["json_schema"]["schema"]["properties"]["spans"][
+                "items"
+            ]["properties"]["label"]["enum"]
+        )
+        assert "PERSON" in enum_values
+        assert "COURSE" in enum_values
+        assert "US_SSN" in enum_values
+
+    @patch("agent.completion")
+    def test_parse_failure_uses_one_repair_retry(self, mock_completion):
+        mock_completion.side_effect = [
+            _mock_completion_response("not valid json"),
+            _mock_completion_response(
+                '{"spans":[{"start":3,"end":7,"label":"NAME","text":"John"}]}'
+            ),
+        ]
+        result = run_llm_with_metadata(
+            text="Hi John!",
+            api_key="k",
+            model="openai/gpt-4o",
+        )
+        assert len(result.spans) == 1
+        assert result.spans[0].text == "John"
+        assert mock_completion.call_count == 2
+        assert any("repair retry" in warning for warning in result.warnings)
+
+    @patch("agent.completion")
+    def test_parse_failure_after_repair_raises_clear_error(self, mock_completion):
+        mock_completion.side_effect = [
+            _mock_completion_response("not valid json"),
+            _mock_completion_response("still not json"),
+        ]
+        with pytest.raises(ValueError, match="one repair retry failed"):
+            run_llm_with_metadata(
+                text="Hi John!",
+                api_key="k",
+                model="openai/gpt-4o",
+            )
+
+    @patch("agent.completion")
+    def test_advanced_profile_filters_course_and_non_specific_date(self, mock_completion):
+        text = "Monday algebra Algebra 300 January 5, 2026"
+        monday_start = text.index("Monday")
+        monday_end = monday_start + len("Monday")
+        invalid_course_start = text.index("algebra")
+        invalid_course_end = invalid_course_start + len("algebra")
+        valid_course_start = text.index("Algebra 300")
+        valid_course_end = valid_course_start + len("Algebra 300")
+        valid_date_start = text.index("January 5, 2026")
+        valid_date_end = valid_date_start + len("January 5, 2026")
+
+        payload = json.dumps(
+            [
+                {
+                    "start": monday_start,
+                    "end": monday_end,
+                    "label": "DATE",
+                    "text": "Monday",
+                },
+                {
+                    "start": invalid_course_start,
+                    "end": invalid_course_end,
+                    "label": "COURSE",
+                    "text": "algebra",
+                },
+                {
+                    "start": valid_course_start,
+                    "end": valid_course_end,
+                    "label": "COURSE",
+                    "text": "Algebra 300",
+                },
+                {
+                    "start": valid_date_start,
+                    "end": valid_date_end,
+                    "label": "DATE",
+                    "text": "January 5, 2026",
+                },
+            ]
+        )
+        mock_completion.return_value = _mock_completion_response(payload)
+
+        result = run_llm_with_metadata(
+            text=text,
+            api_key="k",
+            model="openai/gpt-4o",
+            label_profile="advanced",
+        )
+        assert [(span.label, span.text) for span in result.spans] == [
+            ("COURSE", "Algebra 300"),
+            ("DATE", "January 5, 2026"),
+        ]
+
 
 def test_model_presets_include_requested_options():
     model_ids = {preset["model"] for preset in MODEL_PRESETS}

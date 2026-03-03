@@ -6,12 +6,14 @@ import type {
   AgentCredentialStatus,
   AgentView,
   CanonicalSpan,
+  LabelProfile,
 } from "../types";
 import AnnotatedText from "./AnnotatedText";
 
 interface Props {
   text: string;
   spans: CanonicalSpan[];
+  processedWithChunking?: boolean;
   activeOutput: AgentView;
   onActiveOutputChange: (view: AgentView) => void;
   diffSpans?: { start: number; end: number; type: "added" | "removed" }[];
@@ -28,6 +30,7 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
     {
       text,
       spans,
+      processedWithChunking = false,
       activeOutput,
       onActiveOutputChange,
       diffSpans = [],
@@ -45,6 +48,9 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
     const [model, setModel] = useState("openai.gpt-5.3-codex");
     const [customModel, setCustomModel] = useState("");
     const [temperature, setTemperature] = useState(0);
+    const [labelProfile, setLabelProfile] = useState<LabelProfile>("simple");
+    const [chunkMode, setChunkMode] = useState<"auto" | "off" | "force">("auto");
+    const [chunkSizeChars, setChunkSizeChars] = useState(10000);
     const [reasoningEffort, setReasoningEffort] = useState<
       "none" | "low" | "medium" | "high" | "xhigh"
     >("xhigh");
@@ -131,6 +137,9 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
         anthropic_thinking_budget_tokens: anthropicThinking
           ? anthropicThinkingBudget
           : undefined,
+        label_profile: labelProfile,
+        chunk_mode: chunkMode,
+        chunk_size_chars: chunkSizeChars,
       });
     };
 
@@ -139,6 +148,11 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
         <div className="pane-header pane-header-agent">
           <div className="pane-header-agent-left">
             <span>Agent Annotations</span>
+            {processedWithChunking && (
+              <span className="chunk-badge" title="Backend auto-chunked this run for reliability.">
+                Processed with chunking
+              </span>
+            )}
             <span className="agent-view-control">
               <label htmlFor="agent-view-select">View:</label>
               <select
@@ -284,6 +298,52 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
                   onChange={(e) => setTemperature(parseFloat(e.target.value))}
                 />
               </div>
+              <div className="field">
+                <label htmlFor="agent-label-profile">Label Profile</label>
+                <select
+                  id="agent-label-profile"
+                  name="agent_label_profile"
+                  value={labelProfile}
+                  onChange={(e) =>
+                    setLabelProfile(e.target.value as LabelProfile)
+                  }
+                >
+                  <option value="simple">Simple</option>
+                  <option value="advanced">Advanced (UPchieve)</option>
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="agent-chunk-mode">Chunk Mode</label>
+                <select
+                  id="agent-chunk-mode"
+                  name="agent_chunk_mode"
+                  value={chunkMode}
+                  onChange={(e) =>
+                    setChunkMode(e.target.value as "auto" | "off" | "force")
+                  }
+                >
+                  <option value="auto">Auto</option>
+                  <option value="off">Off</option>
+                  <option value="force">Force</option>
+                </select>
+              </div>
+              {chunkMode !== "off" && (
+                <div className="field">
+                  <label htmlFor="agent-chunk-size">Chunk Size (chars)</label>
+                  <input
+                    id="agent-chunk-size"
+                    name="agent_chunk_size_chars"
+                    type="number"
+                    min={2000}
+                    max={30000}
+                    step={500}
+                    value={chunkSizeChars}
+                    onChange={(e) =>
+                      setChunkSizeChars(Number.parseInt(e.target.value, 10) || 10000)
+                    }
+                  />
+                </div>
+              )}
               <div className="field">
                 {credentialStatus?.has_api_key && !showApiKeyInput && !apiKey ? (
                   <>

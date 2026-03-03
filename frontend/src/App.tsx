@@ -1,6 +1,6 @@
 import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PII_LABELS } from "./types";
-import type {
+  import type {
   AnnotationSource,
   AgentConfig,
   AgentMethodOption,
@@ -9,12 +9,13 @@ import type {
   CanonicalSpan,
   DashboardMetricsResult,
   DocumentSummary,
-  MatchMode,
-  MethodView,
-  MetricsResult,
-  PaneType,
-  SessionProfile,
-} from "./types";
+    MatchMode,
+    MethodView,
+    MetricsResult,
+    LabelProjection,
+    PaneType,
+    SessionProfile,
+  } from "./types";
 import {
   deleteDocument,
   exportSession,
@@ -116,6 +117,20 @@ function normalizePaneOrder(panes: PaneType[]): PaneType[] {
   return CANONICAL_PANE_ORDER.filter((pane) => visible.has(pane));
 }
 
+function isChunkWarning(message: string): boolean {
+  const trimmed = message.trim();
+  return trimmed.startsWith("Chunked ") || /^Chunk \d+\/\d+:/.test(trimmed);
+}
+
+function hasChunkWarnings(messages: string[]): boolean {
+  return messages.some(isChunkWarning);
+}
+
+function nonChunkWarningMessage(messages: string[]): string | null {
+  const filtered = messages.filter((message) => !isChunkWarning(message));
+  return filtered.length > 0 ? filtered.join(" ") : null;
+}
+
 // ---------------------------------------------------------------------------
 // Main App
 // ---------------------------------------------------------------------------
@@ -145,12 +160,15 @@ function AppContent() {
   const [reference, setReference] = useState<AnnotationSource>("pre");
   const [hypothesis, setHypothesis] = useState<AnnotationSource>("manual");
   const [matchMode, setMatchMode] = useState<MatchMode>("exact");
+  const [labelProjection, setLabelProjection] = useState<LabelProjection>("native");
   const [agentView, setAgentView] = useState<AgentView>("combined");
   const [agentMethods, setAgentMethods] = useState<AgentMethodOption[]>([]);
   const [methodView, setMethodView] = useState<MethodView>("default");
 
   const [agentRunning, setAgentRunning] = useState(false);
   const [methodRunning, setMethodRunning] = useState(false);
+  const [agentChunked, setAgentChunked] = useState(false);
+  const [methodChunked, setMethodChunked] = useState(false);
   const [metrics, setMetrics] = useState<MetricsResult | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [dashboard, setDashboard] = useState<DashboardMetricsResult | null>(null);
@@ -189,6 +207,8 @@ function AppContent() {
   useEffect(() => {
     if (!selectedId) {
       setDoc(null);
+      setAgentChunked(false);
+      setMethodChunked(false);
       return;
     }
     setLoading(true);
@@ -198,6 +218,8 @@ function AppContent() {
         setMetrics(null);
         setSaveStatus("idle");
         setWarning(null);
+        setAgentChunked(false);
+        setMethodChunked(false);
       })
       .catch((e: unknown) => setError(String(e)))
       .finally(() => setLoading(false));
@@ -417,14 +439,19 @@ function AppContent() {
     }
     setDashboardLoading(true);
     try {
-      const result = await getMetricsDashboard(reference, hypothesis, matchMode);
+      const result = await getMetricsDashboard(
+        reference,
+        hypothesis,
+        matchMode,
+        labelProjection,
+      );
       setDashboard(result);
     } catch (e: unknown) {
       setError(String(e));
     } finally {
       setDashboardLoading(false);
     }
-  }, [documents.length, reference, hypothesis, matchMode]);
+  }, [documents.length, reference, hypothesis, matchMode, labelProjection]);
 
   useEffect(() => {
     void handleDashboardRefresh();
@@ -463,11 +490,9 @@ function AppContent() {
       try {
         const updated = await runAgent(doc.id, config);
         setDoc(updated);
-        if ((updated.agent_run_warnings ?? []).length > 0) {
-          setWarning(updated.agent_run_warnings.join(" "));
-        } else {
-          setWarning(null);
-        }
+        const warnings = updated.agent_run_warnings ?? [];
+        setAgentChunked(hasChunkWarnings(warnings));
+        setWarning(nonChunkWarningMessage(warnings));
         void handleDashboardRefresh();
       } catch (e: unknown) {
         setError(String(e));
@@ -485,11 +510,9 @@ function AppContent() {
       try {
         const updated = await runAgent(doc.id, config);
         setDoc(updated);
-        if ((updated.agent_run_warnings ?? []).length > 0) {
-          setWarning(updated.agent_run_warnings.join(" "));
-        } else {
-          setWarning(null);
-        }
+        const warnings = updated.agent_run_warnings ?? [];
+        setMethodChunked(hasChunkWarnings(warnings));
+        setWarning(nonChunkWarningMessage(warnings));
         void handleDashboardRefresh();
       } catch (e: unknown) {
         setError(String(e));
@@ -508,14 +531,20 @@ function AppContent() {
     }
     setMetricsLoading(true);
     try {
-      const result = await getMetrics(doc.id, reference, hypothesis, matchMode);
+      const result = await getMetrics(
+        doc.id,
+        reference,
+        hypothesis,
+        matchMode,
+        labelProjection,
+      );
       setMetrics(result);
     } catch (e: unknown) {
       setError(String(e));
     } finally {
       setMetricsLoading(false);
     }
-  }, [doc, reference, hypothesis, matchMode]);
+  }, [doc, reference, hypothesis, matchMode, labelProjection]);
 
   // Compute diffs if diff mode is on
   const getSpansForSource = (source: AnnotationSource): CanonicalSpan[] => {
@@ -688,6 +717,8 @@ function AppContent() {
                   sourceOptions={sourceOptions}
                   matchMode={matchMode}
                   onMatchModeChange={setMatchMode}
+                  labelProjection={labelProjection}
+                  onLabelProjectionChange={setLabelProjection}
                   saveStatus={saveStatus}
                 />
                 <DashboardPanel
@@ -742,6 +773,7 @@ function AppContent() {
                             ref={registerPane(idx)}
                             text={doc.raw_text}
                             spans={getAgentSpans()}
+                            processedWithChunking={agentChunked}
                             activeOutput={agentView}
                             onActiveOutputChange={setAgentView}
                             diffSpans={getDiffSpans("agent")}
@@ -758,6 +790,7 @@ function AppContent() {
                             text={doc.raw_text}
                             spans={getMethodSpans()}
                             methods={methodCatalog}
+                            processedWithChunking={methodChunked}
                             activeMethod={methodView}
                             onActiveMethodChange={setMethodView}
                             diffSpans={getDiffSpans("methods")}

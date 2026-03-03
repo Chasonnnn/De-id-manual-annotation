@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   createPromptLabRun,
+  getAgentMethods,
   getPromptLabDocResult,
   getPromptLabRun,
   listPromptLabRuns,
 } from "../api/client";
 import type {
+  AgentMethodOption,
   DocumentSummary,
   PromptLabDocResult,
   PromptLabRunCreateRequest,
@@ -42,6 +44,7 @@ export default function PromptLabTab({
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [docDetail, setDocDetail] = useState<PromptLabDocResult | null>(null);
   const [docLoading, setDocLoading] = useState(false);
+  const [methodCatalog, setMethodCatalog] = useState<AgentMethodOption[]>([]);
 
   const refreshRuns = useCallback(async () => {
     setRunsLoading(true);
@@ -61,6 +64,12 @@ export default function PromptLabTab({
   useEffect(() => {
     void refreshRuns();
   }, [refreshRuns]);
+
+  useEffect(() => {
+    getAgentMethods()
+      .then(setMethodCatalog)
+      .catch(() => setMethodCatalog([]));
+  }, []);
 
   const refreshRunDetail = useCallback(async () => {
     if (!selectedRunId) {
@@ -142,6 +151,7 @@ export default function PromptLabTab({
       <PromptLabRunForm
         documents={documents}
         selectedDocumentId={selectedDocumentId}
+        methods={methodCatalog}
         onRun={handleCreateRun}
         running={creatingRun}
       />

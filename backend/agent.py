@@ -62,6 +62,16 @@ STRICT OUTPUT REQUIREMENTS:
 - Do not include confidence fields or extra commentary.
 """
 
+JSON_REPAIR_PROMPT = """\
+You repair malformed JSON output for a PII span extractor.
+Return valid JSON only.
+- Top-level must be either:
+  1) {"spans": [...]}
+  2) [...]
+- Each span must include: start (int), end (int), label (str), text (str).
+- Do not add prose, markdown, or extra keys.
+"""
+
 VERIFIER_PROMPT = """\
 You are a PII verification analyst. You will receive transcript text and candidate
 PII spans. Keep a candidate unless you are highly confident it is not PII.
@@ -188,6 +198,74 @@ TOOL_LABEL_MAP: dict[str, str] = {
     "IMAGE": "MISC_ID",
     "IDENTIFYING_NUMBER": "MISC_ID",
     "MISC_ID": "MISC_ID",
+}
+
+SIMPLE_LABELS: list[str] = [
+    "AGE",
+    "DATE",
+    "EMAIL",
+    "LOCATION",
+    "MISC_ID",
+    "NAME",
+    "PHONE",
+    "SCHOOL",
+    "URL",
+]
+SIMPLE_LABEL_SET = set(SIMPLE_LABELS)
+
+ADVANCED_LABELS: list[str] = [
+    "AGE",
+    "COURSE",
+    "DATE",
+    "EMAIL_ADDRESS",
+    "GRADE_LEVEL",
+    "IP_ADDRESS",
+    "LOCATION",
+    "NRP",
+    "PERSON",
+    "PHONE_NUMBER",
+    "SCHOOL",
+    "SOCIAL_HANDLE",
+    "URL",
+    "US_BANK_NUMBER",
+    "US_DRIVER_LICENSE",
+    "US_PASSPORT",
+    "US_SSN",
+]
+ADVANCED_LABEL_SET = set(ADVANCED_LABELS)
+
+ADVANCED_TOOL_LABEL_MAP: dict[str, str] = {
+    "AGE": "AGE",
+    "COURSE": "COURSE",
+    "DATE": "DATE",
+    "DATE_TIME": "DATE",
+    "EMAIL": "EMAIL_ADDRESS",
+    "EMAIL_ADDRESS": "EMAIL_ADDRESS",
+    "GRADE_LEVEL": "GRADE_LEVEL",
+    "IP_ADDRESS": "IP_ADDRESS",
+    "LOCATION": "LOCATION",
+    "ADDRESS": "LOCATION",
+    "GPE": "LOCATION",
+    "NRP": "NRP",
+    "NATIONALITY": "NRP",
+    "NORP": "NRP",
+    "RELIGION": "NRP",
+    "POLITICAL_GROUP": "NRP",
+    "PERSON": "PERSON",
+    "PER": "PERSON",
+    "NAME": "PERSON",
+    "PHONE": "PHONE_NUMBER",
+    "PHONE_NUMBER": "PHONE_NUMBER",
+    "FAX_NUMBER": "PHONE_NUMBER",
+    "SCHOOL": "SCHOOL",
+    "SOCIAL_HANDLE": "SOCIAL_HANDLE",
+    "URL": "URL",
+    "US_BANK_NUMBER": "US_BANK_NUMBER",
+    "ACCOUNT_NUMBER": "US_BANK_NUMBER",
+    "US_DRIVER_LICENSE": "US_DRIVER_LICENSE",
+    "US_PASSPORT": "US_PASSPORT",
+    "US_SSN": "US_SSN",
+    "SSN": "US_SSN",
 }
 
 PRESIDIO_DEFAULT_MODEL = "en_core_web_lg"
@@ -668,6 +746,45 @@ def _parse_spans_from_response(resp: Any) -> list[CanonicalSpan]:
     ]
 
 
+def _build_span_response_format(
+    *,
+    label_profile: Literal["simple", "advanced"] = "simple",
+) -> dict[str, Any]:
+    label_schema: dict[str, Any]
+    if label_profile == "advanced":
+        label_schema = {"type": "string", "enum": ADVANCED_LABELS}
+    else:
+        label_schema = {"type": "string"}
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "pii_spans",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "spans": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "start": {"type": "integer"},
+                                "end": {"type": "integer"},
+                                "label": label_schema,
+                                "text": {"type": "string"},
+                            },
+                            "required": ["start", "end", "label", "text"],
+                            "additionalProperties": False,
+                        },
+                    }
+                },
+                "required": ["spans"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
 def _extract_finish_reason(resp: Any) -> str | None:
     try:
         reason = getattr(resp.choices[0], "finish_reason", None)
@@ -836,6 +953,8 @@ def _resolve_offsets_from_text(
 def _repair_offset_mismatches(
     raw_text: str,
     spans: list[CanonicalSpan],
+    *,
+    label_profile: Literal["simple", "advanced"] = "simple",
 ) -> tuple[list[CanonicalSpan], list[str]]:
     if not spans:
         return spans, []
@@ -881,7 +1000,10 @@ def _repair_offset_mismatches(
                 dropped += 1
                 continue
 
-        if had_mismatch and normalize_method_label(candidate.label) == "NAME":
+        if had_mismatch and normalize_method_label(
+            candidate.label,
+            label_profile=label_profile,
+        ) in {"NAME", "PERSON"}:
             if not _is_plausible_name_text(candidate.text):
                 dropped += 1
                 continue
@@ -909,11 +1031,17 @@ def _repair_offset_mismatches(
 
 def _drop_implausible_name_spans(
     spans: list[CanonicalSpan],
+    *,
+    label_profile: Literal["simple", "advanced"] = "simple",
 ) -> tuple[list[CanonicalSpan], int]:
     kept: list[CanonicalSpan] = []
     dropped = 0
+    target_label = "NAME" if label_profile == "simple" else "PERSON"
     for span in spans:
-        if normalize_method_label(span.label) == "NAME" and not _is_plausible_name_text(span.text):
+        if (
+            normalize_method_label(span.label, label_profile=label_profile) == target_label
+            and not _is_plausible_name_text(span.text)
+        ):
             dropped += 1
             continue
         kept.append(span)
@@ -931,6 +1059,15 @@ def _is_unsupported_param_error(exc: Exception, param: str) -> bool:
     )
 
 
+def _is_response_format_unsupported_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    if _is_unsupported_param_error(exc, "response_format"):
+        return True
+    return "json_schema" in message and (
+        "unsupported" in message or "not support" in message
+    )
+
+
 def _build_api_base_candidates(api_base: str | None) -> list[str | None]:
     if not api_base:
         return [None]
@@ -941,24 +1078,166 @@ def _build_api_base_candidates(api_base: str | None) -> list[str | None]:
     return candidates
 
 
-def normalize_method_label(label: str) -> str:
+def _complete_with_supported_params(
+    request_kwargs: dict[str, Any],
+    *,
+    model: str,
+    warnings: list[str],
+) -> tuple[Any, dict[str, Any]]:
+    effective_kwargs = dict(request_kwargs)
+    while True:
+        try:
+            return completion(**effective_kwargs), effective_kwargs
+        except Exception as exc:
+            if "response_format" in effective_kwargs and _is_response_format_unsupported_error(
+                exc
+            ):
+                effective_kwargs.pop("response_format", None)
+                warnings.append(
+                    f"Model '{model}' rejected response_format/json_schema; retried without schema enforcement."
+                )
+                continue
+            if "logprobs" in effective_kwargs and _is_unsupported_param_error(exc, "logprobs"):
+                effective_kwargs.pop("logprobs", None)
+                warnings.append(f"Model '{model}' rejected logprobs; retried without logprobs.")
+                continue
+            raise
+
+
+def _parse_with_one_repair_retry(
+    *,
+    resp: Any,
+    request_kwargs: dict[str, Any],
+    text: str,
+    warnings: list[str],
+) -> tuple[list[CanonicalSpan], Any]:
+    raw_content = _extract_response_content(resp)
+    if not raw_content.strip():
+        warnings.append("LLM returned empty output content; interpreted as no spans.")
+
+    try:
+        return _parse_spans_from_response(resp), resp
+    except Exception as parse_exc:
+        repair_kwargs = {
+            key: value
+            for key, value in request_kwargs.items()
+            if key not in {"messages", "logprobs"}
+        }
+        repair_kwargs["messages"] = [
+            {"role": "system", "content": JSON_REPAIR_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    "Fix this invalid extractor output into valid JSON.\n\n"
+                    f"TRANSCRIPT:\n{text}\n\n"
+                    f"INVALID_OUTPUT:\n{raw_content}"
+                ),
+            },
+        ]
+        try:
+            repair_resp = completion(**repair_kwargs)
+            repaired_spans = _parse_spans_from_response(repair_resp)
+            warnings.append("Recovered invalid LLM JSON with one repair retry.")
+            return repaired_spans, repair_resp
+        except Exception as repair_exc:
+            raise ValueError(
+                f"Failed to parse LLM output and one repair retry failed: {repair_exc}"
+            ) from parse_exc
+
+
+_WEEKDAY_ONLY_RE = re.compile(
+    r"^(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$", re.IGNORECASE
+)
+_MONTH_ONLY_RE = re.compile(
+    r"^(january|february|march|april|may|june|july|august|september|october|november|december)$",
+    re.IGNORECASE,
+)
+_YEAR_ONLY_RE = re.compile(r"^\d{4}$")
+_SPECIFIC_DATE_PATTERNS = [
+    re.compile(r"\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b"),
+    re.compile(
+        r"\b(?:january|february|march|april|may|june|july|august|september|october|november|december)"
+        r"\s+\d{1,2}(?:,\s*\d{2,4})?\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b\d{1,2}\s+"
+        r"(?:january|february|march|april|may|june|july|august|september|october|november|december)"
+        r"(?:\s+\d{2,4})?\b",
+        re.IGNORECASE,
+    ),
+]
+_COURSE_RE = re.compile(r"^[A-Za-z]{2,}(?:\s+[A-Za-z]{1,})*\s+\d{2,}$", re.IGNORECASE)
+
+
+def _is_specific_date_text(value: str) -> bool:
+    cleaned = value.strip(" \t\r\n.,!?;:\"'()[]{}")
+    if not cleaned:
+        return False
+    if _WEEKDAY_ONLY_RE.fullmatch(cleaned):
+        return False
+    if _MONTH_ONLY_RE.fullmatch(cleaned):
+        return False
+    if _YEAR_ONLY_RE.fullmatch(cleaned):
+        return False
+    return any(pattern.search(cleaned) for pattern in _SPECIFIC_DATE_PATTERNS)
+
+
+def _is_valid_course_text(value: str) -> bool:
+    cleaned = " ".join(value.strip().split())
+    if not cleaned:
+        return False
+    return bool(_COURSE_RE.fullmatch(cleaned))
+
+
+def _passes_label_profile_filters(
+    span: CanonicalSpan,
+    *,
+    label_profile: Literal["simple", "advanced"] = "simple",
+) -> bool:
+    if label_profile != "advanced":
+        return True
+    if span.label == "COURSE":
+        return _is_valid_course_text(span.text)
+    if span.label == "DATE":
+        return _is_specific_date_text(span.text)
+    return True
+
+
+def normalize_method_label(
+    label: str,
+    *,
+    label_profile: Literal["simple", "advanced"] = "simple",
+) -> str:
     normalized = label.strip().upper()
     if not normalized:
-        return "MISC_ID"
-    return TOOL_LABEL_MAP.get(normalized, "MISC_ID")
+        return "MISC_ID" if label_profile == "simple" else ""
+    if label_profile == "advanced":
+        mapped = ADVANCED_TOOL_LABEL_MAP.get(normalized, normalized)
+        return mapped if mapped in ADVANCED_LABEL_SET else ""
+    mapped = TOOL_LABEL_MAP.get(normalized, normalized)
+    return mapped if mapped in SIMPLE_LABEL_SET else "MISC_ID"
 
 
-def normalize_method_spans(spans: list[CanonicalSpan]) -> list[CanonicalSpan]:
+def normalize_method_spans(
+    spans: list[CanonicalSpan],
+    *,
+    label_profile: Literal["simple", "advanced"] = "simple",
+) -> list[CanonicalSpan]:
     normalized: list[CanonicalSpan] = []
     for span in spans:
-        normalized.append(
-            CanonicalSpan(
-                start=span.start,
-                end=span.end,
-                label=normalize_method_label(span.label),
-                text=span.text,
-            )
+        mapped_label = normalize_method_label(span.label, label_profile=label_profile)
+        if not mapped_label:
+            continue
+        candidate = CanonicalSpan(
+            start=span.start,
+            end=span.end,
+            label=mapped_label,
+            text=span.text,
         )
+        if not _passes_label_profile_filters(candidate, label_profile=label_profile):
+            continue
+        normalized.append(candidate)
     return normalized
 
 
@@ -1120,7 +1399,7 @@ def _run_llm_verifier(
             request_kwargs["api_base"] = candidate
         try:
             resp = completion(**request_kwargs)
-            message_content = resp.choices[0].message.content or '{"decisions":[]}'
+            message_content = _extract_response_content(resp) or '{"decisions":[]}'
             rejected = _parse_verifier_decisions(message_content, len(spans))
             filtered = [span for i, span in enumerate(spans) if i not in rejected]
             if idx > 0:
@@ -1180,11 +1459,21 @@ def _run_presidio_pass(
 def _filter_method_pass_spans(
     spans: list[CanonicalSpan],
     entity_types: list[str] | None,
+    *,
+    label_profile: Literal["simple", "advanced"] = "simple",
 ) -> list[CanonicalSpan]:
     if not entity_types:
         return spans
-    allowed = {normalize_method_label(entity_type) for entity_type in entity_types}
-    return [span for span in spans if normalize_method_label(span.label) in allowed]
+    allowed = {
+        normalize_method_label(entity_type, label_profile=label_profile)
+        for entity_type in entity_types
+    }
+    allowed.discard("")
+    return [
+        span
+        for span in spans
+        if normalize_method_label(span.label, label_profile=label_profile) in allowed
+    ]
 
 
 def run_method_with_metadata(
@@ -1200,6 +1489,7 @@ def run_method_with_metadata(
     anthropic_thinking: bool,
     anthropic_thinking_budget_tokens: int | None,
     method_verify: bool | None,
+    label_profile: Literal["simple", "advanced"] = "simple",
 ) -> MethodRunResult:
     method = METHOD_DEFINITION_BY_ID.get(method_id)
     if method is None:
@@ -1231,7 +1521,7 @@ def run_method_with_metadata(
                 text=text,
                 entity_types=method_pass.get("entity_types"),
             )
-            all_spans.extend(normalize_method_spans(pass_spans))
+            all_spans.extend(normalize_method_spans(pass_spans, label_profile=label_profile))
             continue
 
         prompt = str(method_pass.get("prompt") or SYSTEM_PROMPT)
@@ -1249,10 +1539,12 @@ def run_method_with_metadata(
             reasoning_effort=reasoning_effort,
             anthropic_thinking=anthropic_thinking,
             anthropic_thinking_budget_tokens=anthropic_thinking_budget_tokens,
+            label_profile=label_profile,
         )
         pass_spans = _filter_method_pass_spans(
-            normalize_method_spans(llm_result.spans),
+            normalize_method_spans(llm_result.spans, label_profile=label_profile),
             method_pass.get("entity_types"),
+            label_profile=label_profile,
         )
         all_spans.extend(pass_spans)
         for warning in llm_result.warnings:
@@ -1269,7 +1561,9 @@ def run_method_with_metadata(
                 api_base=api_base,
                 model=model,
             )
-            merged = merge_method_spans(normalize_method_spans(verified_spans))
+            merged = merge_method_spans(
+                normalize_method_spans(verified_spans, label_profile=label_profile)
+            )
             warnings.extend(verify_warnings)
         except Exception as exc:
             raise ValueError(f"Method '{method_id}' verifier failed: {exc}") from exc
@@ -1287,6 +1581,7 @@ def run_llm_with_metadata(
     reasoning_effort: ReasoningEffort = "none",
     anthropic_thinking: bool = False,
     anthropic_thinking_budget_tokens: int | None = None,
+    label_profile: Literal["simple", "advanced"] = "simple",
 ) -> LLMRunResult:
     """Run LLM-based PII detection with provider-aware advanced parameters."""
     provider = _infer_provider(model)
@@ -1319,6 +1614,9 @@ def run_llm_with_metadata(
     }
     if _supports_logprobs(model, provider):
         base_request_kwargs["logprobs"] = True
+    base_request_kwargs["response_format"] = _build_span_response_format(
+        label_profile=label_profile
+    )
     if effective_temperature is not None:
         base_request_kwargs["temperature"] = effective_temperature
     elif not supports_custom_temperature and temperature not in (0.0, 1.0):
@@ -1368,23 +1666,37 @@ def run_llm_with_metadata(
             request_kwargs["api_base"] = candidate
 
         try:
-            resp = completion(**request_kwargs)
-            spans = _parse_spans_from_response(resp)
-            spans, repair_warnings = _repair_offset_mismatches(text, spans)
+            resp, effective_kwargs = _complete_with_supported_params(
+                request_kwargs, model=model, warnings=warnings
+            )
+            spans, parsed_resp = _parse_with_one_repair_retry(
+                resp=resp,
+                request_kwargs=effective_kwargs,
+                text=text,
+                warnings=warnings,
+            )
+            spans, repair_warnings = _repair_offset_mismatches(
+                text,
+                spans,
+                label_profile=label_profile,
+            )
             warnings.extend(repair_warnings)
-            spans, dropped_name_spans = _drop_implausible_name_spans(spans)
+            spans, dropped_name_spans = _drop_implausible_name_spans(
+                spans,
+                label_profile=label_profile,
+            )
             if dropped_name_spans > 0:
+                target_label = "NAME" if label_profile == "simple" else "PERSON"
                 warnings.append(
-                    f"Dropped {dropped_name_spans} implausible NAME span(s) from LLM output."
+                    f"Dropped {dropped_name_spans} implausible {target_label} span(s) from LLM output."
                 )
-            if not _extract_response_content(resp).strip():
-                warnings.append("LLM returned empty output content; interpreted as no spans.")
-            finish_reason = _extract_finish_reason(resp)
+            spans = normalize_method_spans(spans, label_profile=label_profile)
+            finish_reason = _extract_finish_reason(parsed_resp)
             if finish_reason == "length":
                 warnings.append(
                     "LLM output may be truncated (finish_reason=length); results can be incomplete."
                 )
-            llm_confidence = _compute_llm_confidence_metric(resp, provider, model)
+            llm_confidence = _compute_llm_confidence_metric(parsed_resp, provider, model)
             if idx > 0:
                 warnings.append(
                     f"Primary api_base failed; succeeded after retrying with '{candidate}'."
@@ -1395,44 +1707,6 @@ def run_llm_with_metadata(
                 llm_confidence=llm_confidence,
             )
         except Exception as exc:
-            if request_kwargs.get("logprobs") and _is_unsupported_param_error(exc, "logprobs"):
-                fallback_kwargs = dict(request_kwargs)
-                fallback_kwargs.pop("logprobs", None)
-                try:
-                    resp = completion(**fallback_kwargs)
-                    spans = _parse_spans_from_response(resp)
-                    spans, repair_warnings = _repair_offset_mismatches(text, spans)
-                    warnings.extend(repair_warnings)
-                    spans, dropped_name_spans = _drop_implausible_name_spans(spans)
-                    if dropped_name_spans > 0:
-                        warnings.append(
-                            f"Dropped {dropped_name_spans} implausible NAME span(s) from LLM output."
-                        )
-                    if not _extract_response_content(resp).strip():
-                        warnings.append("LLM returned empty output content; interpreted as no spans.")
-                    finish_reason = _extract_finish_reason(resp)
-                    if finish_reason == "length":
-                        warnings.append(
-                            "LLM output may be truncated (finish_reason=length); results can be incomplete."
-                        )
-                    llm_confidence = _compute_llm_confidence_metric(resp, provider, model)
-                    warnings.append(
-                        f"Model '{model}' rejected logprobs; retried without logprobs."
-                    )
-                    if idx > 0:
-                        warnings.append(
-                            f"Primary api_base failed; succeeded after retrying with '{candidate}'."
-                        )
-                    return LLMRunResult(
-                        spans=spans,
-                        warnings=warnings,
-                        llm_confidence=llm_confidence,
-                    )
-                except Exception as retry_exc:
-                    last_exc = retry_exc
-                    if idx < len(api_base_candidates) - 1:
-                        continue
-                    raise
             last_exc = exc
             if idx < len(api_base_candidates) - 1:
                 continue

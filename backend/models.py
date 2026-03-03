@@ -43,6 +43,7 @@ class LLMConfidenceMetric(BaseModel):
 
 class AgentRunMetrics(BaseModel):
     llm_confidence: LLMConfidenceMetric | None = None
+    label_profile: Literal["simple", "advanced"] | None = None
 
 
 class CanonicalDocument(BaseModel):
