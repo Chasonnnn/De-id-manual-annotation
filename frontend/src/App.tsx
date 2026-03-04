@@ -4,6 +4,7 @@ import { PII_LABELS } from "./types";
   AnnotationSource,
   AgentConfig,
   AgentMethodOption,
+  AgentRunProgress,
   AgentView,
   CanonicalDocument,
   CanonicalSpan,
@@ -20,6 +21,7 @@ import {
   deleteDocument,
   exportGroundTruth,
   exportSession,
+  getAgentProgress,
   getAgentMethods,
   getDocument,
   getMetricsDashboard,
@@ -208,6 +210,7 @@ function AppContent() {
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [runToasts, setRunToasts] = useState<RunToast[]>([]);
+  const [agentRunProgress, setAgentRunProgress] = useState<AgentRunProgress | null>(null);
   const [uploading, setUploading] = useState(false); // 4.2: upload loading
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -287,6 +290,7 @@ function AppContent() {
       setDoc(null);
       setAgentChunked(false);
       setMethodChunked(false);
+      setAgentRunProgress(null);
       return;
     }
     setLoading(true);
@@ -302,6 +306,29 @@ function AppContent() {
       .catch((e: unknown) => setError(String(e)))
       .finally(() => setLoading(false));
   }, [selectedId]);
+
+  useEffect(() => {
+    if (!doc || (!agentRunning && !methodRunning)) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const progress = await getAgentProgress(doc.id);
+        if (!cancelled) {
+          setAgentRunProgress(progress);
+        }
+      } catch {
+        // best-effort polling; no-op on transient failures
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => {
+      void poll();
+    }, 400);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [doc, agentRunning, methodRunning]);
 
   // 4.2: Upload with loading indicator
   const handleUpload = useCallback(
@@ -1026,6 +1053,7 @@ function AppContent() {
                             ref={registerPane(idx)}
                             text={doc.raw_text}
                             spans={getAgentSpans()}
+                            runProgress={agentRunning ? agentRunProgress : null}
                             processedWithChunking={agentChunked}
                             activeOutput={agentView}
                             onActiveOutputChange={setAgentView}
@@ -1045,6 +1073,7 @@ function AppContent() {
                             ref={registerPane(idx)}
                             text={doc.raw_text}
                             spans={getMethodSpans()}
+                            runProgress={methodRunning ? agentRunProgress : null}
                             methods={methodCatalog}
                             processedWithChunking={methodChunked}
                             activeMethod={methodView}

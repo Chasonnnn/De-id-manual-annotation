@@ -5,6 +5,7 @@ import type {
   AgentConfig,
   AgentCredentialStatus,
   AgentMethodOption,
+  AgentRunProgress,
   CanonicalSpan,
   LabelProfile,
   MethodView,
@@ -14,6 +15,7 @@ import AnnotatedText from "./AnnotatedText";
 interface Props {
   text: string;
   spans: CanonicalSpan[];
+  runProgress?: AgentRunProgress | null;
   methods: AgentMethodOption[];
   processedWithChunking?: boolean;
   activeMethod: MethodView;
@@ -32,6 +34,7 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
     {
       text,
       spans,
+      runProgress = null,
       methods,
       processedWithChunking = false,
       activeMethod,
@@ -509,6 +512,20 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
           <button className="run-btn" onClick={handleRun} disabled={runDisabled}>
             {running ? "Running..." : "Run Method"}
           </button>
+          {running && runProgress && (
+            <div className="run-progress" role="status" aria-live="polite">
+              <div className="run-progress-label">
+                Progress: {Math.round((runProgress.progress ?? 0) * 100)}% (
+                {runProgress.completed_chunks}/{runProgress.total_chunks || 1} chunks)
+              </div>
+              <div className="run-progress-track">
+                <div
+                  className="run-progress-fill"
+                  style={{ width: `${Math.round((runProgress.progress ?? 0) * 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
         </div>
         <div
           className="pane-body"

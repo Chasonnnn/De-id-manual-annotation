@@ -3,6 +3,7 @@ import type {
   AgentConfig,
   AgentCredentialStatus,
   AgentMethodOption,
+  AgentRunProgress,
   CanonicalDocument,
   CanonicalSpan,
   DashboardMetricsResult,
@@ -123,6 +124,10 @@ export async function runAgent(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(config),
   });
+}
+
+export async function getAgentProgress(docId: string): Promise<AgentRunProgress> {
+  return request(`/documents/${docId}/agent/progress`);
 }
 
 export async function getAgentCredentialStatus(): Promise<AgentCredentialStatus> {

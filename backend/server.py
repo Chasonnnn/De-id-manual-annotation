@@ -12,7 +12,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 from urllib.parse import urlparse
 
 import httpx
@@ -334,6 +334,8 @@ def _normalize_optional_llm_confidence(raw: object) -> LLMConfidenceMetric | Non
 _session_docs: dict[str, list[str]] = {}
 _prompt_lab_runs: dict[str, list[str]] = {}
 _prompt_lab_lock = threading.Lock()
+_agent_progress: dict[str, dict[str, Any]] = {}
+_agent_progress_lock = threading.Lock()
 
 
 def _load_session_index(session_id: str = "default") -> list[str]:
@@ -356,6 +358,113 @@ def _save_session_index(session_id: str = "default"):
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _agent_progress_key(doc_id: str, session_id: str = "default") -> str:
+    return f"{session_id}:{doc_id}"
+
+
+def _start_agent_progress(
+    doc_id: str,
+    *,
+    mode: str,
+    total_chunks: int,
+    session_id: str = "default",
+):
+    now = _now_iso()
+    key = _agent_progress_key(doc_id, session_id)
+    with _agent_progress_lock:
+        _agent_progress[key] = {
+            "doc_id": doc_id,
+            "mode": mode,
+            "status": "running",
+            "completed_chunks": 0,
+            "total_chunks": max(1, int(total_chunks)),
+            "progress": 0.0,
+            "started_at": now,
+            "updated_at": now,
+            "message": None,
+        }
+
+
+def _update_agent_progress(
+    doc_id: str,
+    *,
+    completed_chunks: int,
+    total_chunks: int,
+    session_id: str = "default",
+):
+    key = _agent_progress_key(doc_id, session_id)
+    now = _now_iso()
+    with _agent_progress_lock:
+        current = _agent_progress.get(key)
+        if not current:
+            return
+        total = max(1, int(total_chunks))
+        completed = max(0, min(int(completed_chunks), total))
+        current["status"] = "running"
+        current["completed_chunks"] = completed
+        current["total_chunks"] = total
+        current["progress"] = completed / total
+        current["updated_at"] = now
+        _agent_progress[key] = current
+
+
+def _finish_agent_progress(
+    doc_id: str,
+    *,
+    status: Literal["completed", "failed"],
+    session_id: str = "default",
+    message: str | None = None,
+):
+    key = _agent_progress_key(doc_id, session_id)
+    now = _now_iso()
+    with _agent_progress_lock:
+        current = _agent_progress.get(key)
+        if not current:
+            current = {
+                "doc_id": doc_id,
+                "mode": "unknown",
+                "status": status,
+                "completed_chunks": 1 if status == "completed" else 0,
+                "total_chunks": 1,
+                "progress": 1.0 if status == "completed" else 0.0,
+                "started_at": now,
+                "updated_at": now,
+                "message": message,
+            }
+        else:
+            total = max(1, int(current.get("total_chunks") or 1))
+            if status == "completed":
+                completed = total
+            else:
+                completed = max(0, min(int(current.get("completed_chunks") or 0), total))
+            current["status"] = status
+            current["completed_chunks"] = completed
+            current["total_chunks"] = total
+            current["progress"] = completed / total
+            current["updated_at"] = now
+            current["message"] = message
+        _agent_progress[key] = current
+
+
+def _get_agent_progress(doc_id: str, session_id: str = "default") -> dict[str, Any]:
+    key = _agent_progress_key(doc_id, session_id)
+    with _agent_progress_lock:
+        payload = _agent_progress.get(key)
+        if payload:
+            return dict(payload)
+    return {
+        "doc_id": doc_id,
+        "mode": None,
+        "status": "idle",
+        "completed_chunks": 0,
+        "total_chunks": 0,
+        "progress": 0.0,
+        "started_at": None,
+        "updated_at": _now_iso(),
+        "message": None,
+    }
 
 
 def _prompt_lab_dir(session_id: str = "default") -> Path:
@@ -1351,6 +1460,17 @@ def _should_use_chunking(text_len: int, chunk_mode: str, chunk_size: int) -> boo
     return text_len > chunk_size
 
 
+def _estimate_chunk_total(
+    doc: CanonicalDocument,
+    *,
+    chunk_mode: str,
+    chunk_size_chars: int,
+) -> int:
+    if not _should_use_chunking(len(doc.raw_text), chunk_mode, chunk_size_chars):
+        return 1
+    return max(1, len(_build_text_chunks(doc, chunk_size_chars)))
+
+
 def _resolve_chunk_parallel_workers(chunk_count: int) -> int:
     if chunk_count <= 1:
         return 1
@@ -1377,6 +1497,7 @@ def _run_llm_for_document(
     label_profile: Literal["simple", "advanced"],
     chunk_mode: str,
     chunk_size_chars: int,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> tuple[list[CanonicalSpan], list[str], LLMConfidenceMetric]:
     if not _should_use_chunking(len(doc.raw_text), chunk_mode, chunk_size_chars):
         llm_result = run_llm_with_metadata(
@@ -1395,6 +1516,8 @@ def _run_llm_for_document(
             normalize_method_spans(llm_result.spans, label_profile=label_profile),
             doc.raw_text,
         )
+        if progress_callback is not None:
+            progress_callback(1, 1)
         return spans, llm_result.warnings, llm_result.llm_confidence
 
     chunks = _build_text_chunks(doc, chunk_size_chars)
@@ -1430,7 +1553,10 @@ def _run_llm_for_document(
         for idx, (start, end) in enumerate(chunks):
             _, shifted, chunk_warnings, chunk_conf = _run_chunk(idx, start, end)
             chunk_results[idx] = (shifted, chunk_warnings, chunk_conf)
+            if progress_callback is not None:
+                progress_callback(idx + 1, chunk_count)
     else:
+        completed_count = 0
         with ThreadPoolExecutor(max_workers=chunk_workers) as pool:
             future_map = {
                 pool.submit(_run_chunk, idx, start, end): idx
@@ -1445,6 +1571,9 @@ def _run_llm_for_document(
                         f"Chunk {idx + 1}/{chunk_count} failed during parallel LLM execution: {exc}"
                     ) from exc
                 chunk_results[idx] = (shifted, chunk_warnings, chunk_conf)
+                completed_count += 1
+                if progress_callback is not None:
+                    progress_callback(completed_count, chunk_count)
 
     for idx in range(chunk_count):
         shifted, chunk_warnings, chunk_conf = chunk_results[idx]
@@ -1479,6 +1608,7 @@ def _run_method_for_document(
     label_profile: Literal["simple", "advanced"],
     chunk_mode: str,
     chunk_size_chars: int,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> tuple[list[CanonicalSpan], list[str]]:
     if not _should_use_chunking(len(doc.raw_text), chunk_mode, chunk_size_chars):
         method_result = run_method_with_metadata(
@@ -1499,6 +1629,8 @@ def _run_method_for_document(
             normalize_method_spans(method_result.spans, label_profile=label_profile),
             doc.raw_text,
         )
+        if progress_callback is not None:
+            progress_callback(1, 1)
         return spans, method_result.warnings
 
     chunks = _build_text_chunks(doc, chunk_size_chars)
@@ -1535,7 +1667,10 @@ def _run_method_for_document(
         for idx, (start, end) in enumerate(chunks):
             _, shifted, chunk_warnings = _run_chunk(idx, start, end)
             chunk_results[idx] = (shifted, chunk_warnings)
+            if progress_callback is not None:
+                progress_callback(idx + 1, chunk_count)
     else:
+        completed_count = 0
         with ThreadPoolExecutor(max_workers=chunk_workers) as pool:
             future_map = {
                 pool.submit(_run_chunk, idx, start, end): idx
@@ -1550,6 +1685,9 @@ def _run_method_for_document(
                         f"Chunk {idx + 1}/{chunk_count} failed during parallel method execution: {exc}"
                     ) from exc
                 chunk_results[idx] = (shifted, chunk_warnings)
+                completed_count += 1
+                if progress_callback is not None:
+                    progress_callback(completed_count, chunk_count)
 
     for idx in range(chunk_count):
         shifted, chunk_warnings = chunk_results[idx]
@@ -2129,13 +2267,14 @@ def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
 
 
 @app.post("/api/documents/{doc_id}/agent")
-async def run_agent(doc_id: str, body: AgentRunBody):
+def run_agent(doc_id: str, body: AgentRunBody):
     session_id = "default"
     doc = _load_doc(doc_id, session_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
     if body.mode == "rule":
+        _start_agent_progress(doc_id, mode="rule", total_chunks=1, session_id=session_id)
         spans = _normalize_and_validate_spans(run_regex(doc.raw_text), doc.raw_text)
         _save_sidecar(doc_id, "agent.rule", spans, session_id)
         _save_json_sidecar(
@@ -2148,6 +2287,13 @@ async def run_agent(doc_id: str, body: AgentRunBody):
             },
             session_id,
         )
+        _update_agent_progress(
+            doc_id,
+            completed_chunks=1,
+            total_chunks=1,
+            session_id=session_id,
+        )
+        _finish_agent_progress(doc_id, status="completed", session_id=session_id)
         enriched = _enrich_doc(doc, session_id)
         enriched.agent_run_warnings = []
         enriched.agent_run_metrics = AgentRunMetrics(
@@ -2169,6 +2315,11 @@ async def run_agent(doc_id: str, body: AgentRunBody):
         label_profile = str(llm_runtime["label_profile"])
         chunk_mode = str(llm_runtime["chunk_mode"])
         chunk_size_chars = int(llm_runtime["chunk_size_chars"])
+        total_chunks = _estimate_chunk_total(
+            doc,
+            chunk_mode=chunk_mode,
+            chunk_size_chars=chunk_size_chars,
+        )
 
         if not api_key:
             raise HTTPException(
@@ -2182,6 +2333,12 @@ async def run_agent(doc_id: str, body: AgentRunBody):
         _validate_gateway_model_access(model=model, api_base=api_base, api_key=api_key)
 
         system_prompt = f"{requested_system_prompt}\n\n{FORMAT_GUARDRAIL}"
+        _start_agent_progress(
+            doc_id,
+            mode="llm",
+            total_chunks=total_chunks,
+            session_id=session_id,
+        )
 
         try:
             spans, warnings, llm_confidence = _run_llm_for_document(
@@ -2197,6 +2354,12 @@ async def run_agent(doc_id: str, body: AgentRunBody):
                 label_profile=label_profile,  # type: ignore[arg-type]
                 chunk_mode=chunk_mode,
                 chunk_size_chars=chunk_size_chars,
+                progress_callback=lambda completed, total: _update_agent_progress(
+                    doc_id,
+                    completed_chunks=completed,
+                    total_chunks=total,
+                    session_id=session_id,
+                ),
             )
         except Exception as exc:
             message = str(exc).strip() or exc.__class__.__name__
@@ -2216,6 +2379,12 @@ async def run_agent(doc_id: str, body: AgentRunBody):
                         " Hint: this gateway may require an OpenAI-compatible '/v1' path; "
                         "the backend also retries with '/v1' automatically."
                     )
+            _finish_agent_progress(
+                doc_id,
+                status="failed",
+                session_id=session_id,
+                message=detail,
+            )
             raise HTTPException(status_code=502, detail=detail) from exc
         _save_sidecar(doc_id, "agent.llm", spans, session_id)
         _delete_sidecar(doc_id, "agent.openai", session_id)
@@ -2255,6 +2424,7 @@ async def run_agent(doc_id: str, body: AgentRunBody):
             },
             session_id,
         )
+        _finish_agent_progress(doc_id, status="completed", session_id=session_id)
         enriched = _enrich_doc(doc, session_id)
         enriched.agent_run_warnings = warnings
         enriched.agent_run_metrics = AgentRunMetrics(
@@ -2284,6 +2454,11 @@ async def run_agent(doc_id: str, body: AgentRunBody):
         label_profile = str(llm_runtime["label_profile"])
         chunk_mode = str(llm_runtime["chunk_mode"])
         chunk_size_chars = int(llm_runtime["chunk_size_chars"])
+        total_chunks = _estimate_chunk_total(
+            doc,
+            chunk_mode=chunk_mode,
+            chunk_size_chars=chunk_size_chars,
+        )
 
         if method_definition["uses_llm"] and not api_key:
             raise HTTPException(
@@ -2295,6 +2470,12 @@ async def run_agent(doc_id: str, body: AgentRunBody):
             )
         if method_definition["uses_llm"]:
             _validate_gateway_model_access(model=model, api_base=api_base, api_key=api_key)
+        _start_agent_progress(
+            doc_id,
+            mode="method",
+            total_chunks=total_chunks,
+            session_id=session_id,
+        )
 
         try:
             spans, warnings = _run_method_for_document(
@@ -2312,6 +2493,12 @@ async def run_agent(doc_id: str, body: AgentRunBody):
                 label_profile=label_profile,  # type: ignore[arg-type]
                 chunk_mode=chunk_mode,
                 chunk_size_chars=chunk_size_chars,
+                progress_callback=lambda completed, total: _update_agent_progress(
+                    doc_id,
+                    completed_chunks=completed,
+                    total_chunks=total,
+                    session_id=session_id,
+                ),
             )
         except Exception as exc:
             message = str(exc).strip() or exc.__class__.__name__
@@ -2320,6 +2507,12 @@ async def run_agent(doc_id: str, body: AgentRunBody):
             status_code = 400
             if "LLM returned" in message or "request failed" in message.lower():
                 status_code = 502
+            _finish_agent_progress(
+                doc_id,
+                status="failed",
+                session_id=session_id,
+                message=message,
+            )
             raise HTTPException(status_code=status_code, detail=message) from exc
 
         _save_sidecar(doc_id, f"agent.method.{method_id}", spans, session_id)
@@ -2360,6 +2553,7 @@ async def run_agent(doc_id: str, body: AgentRunBody):
             },
             session_id,
         )
+        _finish_agent_progress(doc_id, status="completed", session_id=session_id)
         enriched = _enrich_doc(doc, session_id)
         enriched.agent_run_warnings = warnings
         enriched.agent_run_metrics = AgentRunMetrics(
@@ -2369,6 +2563,15 @@ async def run_agent(doc_id: str, body: AgentRunBody):
         return enriched
 
     raise HTTPException(status_code=400, detail=f"Unknown agent mode: {body.mode}")
+
+
+@app.get("/api/documents/{doc_id}/agent/progress")
+async def get_agent_run_progress(doc_id: str):
+    session_id = "default"
+    doc = _load_doc(doc_id, session_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return _get_agent_progress(doc_id, session_id)
 
 
 @app.post("/api/prompt-lab/runs")

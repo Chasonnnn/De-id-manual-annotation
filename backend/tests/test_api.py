@@ -422,6 +422,15 @@ def test_agent_rule(client):
     assert result["agent_run_warnings"] == []
     assert result["agent_run_metrics"]["llm_confidence"] is None
 
+    progress_resp = client.get(f"/api/documents/{doc_id}/agent/progress")
+    assert progress_resp.status_code == 200
+    progress = progress_resp.json()
+    assert progress["status"] == "completed"
+    assert progress["mode"] == "rule"
+    assert progress["completed_chunks"] == 1
+    assert progress["total_chunks"] == 1
+    assert progress["progress"] == 1.0
+
 
 def test_agent_combined_excludes_method_outputs(client):
     resp = _upload(client)

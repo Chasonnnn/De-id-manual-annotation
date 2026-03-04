@@ -277,6 +277,18 @@ export interface AgentCredentialStatus {
   api_base_sources: string[];
 }
 
+export interface AgentRunProgress {
+  doc_id: string;
+  mode: string | null;
+  status: "idle" | "running" | "completed" | "failed";
+  completed_chunks: number;
+  total_chunks: number;
+  progress: number;
+  started_at: string | null;
+  updated_at: string;
+  message?: string | null;
+}
+
 export type PromptLabRunStatus =
   | "queued"
   | "running"

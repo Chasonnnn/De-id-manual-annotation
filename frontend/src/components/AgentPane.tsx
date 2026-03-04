@@ -4,6 +4,7 @@ import { MODEL_PRESETS, getModelPreset } from "../modelPresets";
 import type {
   AgentConfig,
   AgentCredentialStatus,
+  AgentRunProgress,
   AgentView,
   CanonicalSpan,
   LabelProfile,
@@ -13,6 +14,7 @@ import AnnotatedText from "./AnnotatedText";
 interface Props {
   text: string;
   spans: CanonicalSpan[];
+  runProgress?: AgentRunProgress | null;
   processedWithChunking?: boolean;
   activeOutput: AgentView;
   onActiveOutputChange: (view: AgentView) => void;
@@ -33,6 +35,7 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
     {
       text,
       spans,
+      runProgress = null,
       processedWithChunking = false,
       activeOutput,
       onActiveOutputChange,
@@ -451,6 +454,20 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
           <button className="run-btn" onClick={handleRun} disabled={running}>
             {running ? "Running..." : "Run Agent"}
           </button>
+          {running && runProgress && (
+            <div className="run-progress" role="status" aria-live="polite">
+              <div className="run-progress-label">
+                Progress: {Math.round((runProgress.progress ?? 0) * 100)}% (
+                {runProgress.completed_chunks}/{runProgress.total_chunks || 1} chunks)
+              </div>
+              <div className="run-progress-track">
+                <div
+                  className="run-progress-fill"
+                  style={{ width: `${Math.round((runProgress.progress ?? 0) * 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
         </div>
         <div
           className="pane-body"

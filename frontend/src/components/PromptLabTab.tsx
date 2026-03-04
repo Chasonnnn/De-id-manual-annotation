@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createPromptLabRun,
   getAgentMethods,
@@ -24,6 +24,14 @@ interface Props {
   onSelectDocument: (docId: string) => void;
 }
 
+type PromptLabToastKind = "success" | "error" | "info";
+
+interface PromptLabToast {
+  id: string;
+  kind: PromptLabToastKind;
+  message: string;
+}
+
 function isActiveStatus(status: string): boolean {
   return status === "queued" || status === "running";
 }
@@ -45,6 +53,23 @@ export default function PromptLabTab({
   const [docDetail, setDocDetail] = useState<PromptLabDocResult | null>(null);
   const [docLoading, setDocLoading] = useState(false);
   const [methodCatalog, setMethodCatalog] = useState<AgentMethodOption[]>([]);
+  const [toasts, setToasts] = useState<PromptLabToast[]>([]);
+  const previousRunStatusRef = useRef<Record<string, string>>({});
+  const previousCellCompletedRef = useRef<Record<string, number>>({});
+  const previousCellErrorsRef = useRef<Record<string, number>>({});
+  const previousDocStatusRef = useRef<Record<string, string>>({});
+
+  const pushToast = useCallback((kind: PromptLabToastKind, message: string) => {
+    const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    setToasts((prev) => [...prev, { id, kind, message }]);
+    window.setTimeout(() => {
+      setToasts((prev) => prev.filter((item) => item.id !== id));
+    }, 4500);
+  }, []);
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((item) => item.id !== id));
+  }, []);
 
   const refreshRuns = useCallback(async () => {
     setRunsLoading(true);
@@ -91,6 +116,55 @@ export default function PromptLabTab({
 
   useEffect(() => {
     if (!runDetail) return;
+    const runId = runDetail.id;
+    const previousRunStatus = previousRunStatusRef.current[runId];
+    if (previousRunStatus && previousRunStatus !== runDetail.status) {
+      if (runDetail.status === "completed") {
+        pushToast(
+          "success",
+          `Prompt Lab run completed: ${runDetail.name}.`,
+        );
+      } else if (runDetail.status === "completed_with_errors" || runDetail.status === "failed") {
+        pushToast(
+          "error",
+          `Prompt Lab run ended with issues: ${runDetail.name} (${runDetail.status}).`,
+        );
+      }
+    }
+    previousRunStatusRef.current[runId] = runDetail.status;
+
+    for (const cell of runDetail.matrix.cells) {
+      const cellKey = `${runId}::${cell.id}`;
+      const previousCompleted = previousCellCompletedRef.current[cellKey];
+      if (
+        typeof previousCompleted === "number" &&
+        cell.completed_docs > previousCompleted
+      ) {
+        const delta = cell.completed_docs - previousCompleted;
+        pushToast(
+          "info",
+          `Cell ${cell.model_label} × ${cell.prompt_label}: +${delta} doc(s) completed (${cell.completed_docs}/${cell.total_docs}).`,
+        );
+      }
+      previousCellCompletedRef.current[cellKey] = cell.completed_docs;
+
+      const previousErrors = previousCellErrorsRef.current[cellKey];
+      if (
+        typeof previousErrors === "number" &&
+        cell.error_count > previousErrors
+      ) {
+        const delta = cell.error_count - previousErrors;
+        pushToast(
+          "error",
+          `Cell ${cell.model_label} × ${cell.prompt_label}: +${delta} new error(s) (${cell.error_count} total).`,
+        );
+      }
+      previousCellErrorsRef.current[cellKey] = cell.error_count;
+    }
+  }, [pushToast, runDetail]);
+
+  useEffect(() => {
+    if (!runDetail) return;
     const firstCellId = runDetail.matrix.cells[0]?.id ?? null;
     if (!selectedCellId || !runDetail.matrix.cells.some((cell) => cell.id === selectedCellId)) {
       setSelectedCellId(firstCellId);
@@ -117,13 +191,32 @@ export default function PromptLabTab({
     getPromptLabDocResult(runDetail.id, selectedCellId, selectedDocId)
       .then((detail) => {
         setDocDetail(detail);
+        const key = `${detail.run_id}::${detail.cell_id}::${detail.doc_id}`;
+        const previousStatus = previousDocStatusRef.current[key];
+        if (previousStatus && previousStatus !== detail.status) {
+          const filename = detail.document.filename || detail.document.id;
+          const modelLabel = detail.model?.label ?? detail.model?.model ?? "model";
+          const promptLabel = detail.prompt?.label ?? "prompt";
+          if (detail.status === "completed") {
+            pushToast(
+              "success",
+              `Doc completed: ${filename} (${modelLabel} × ${promptLabel}).`,
+            );
+          } else if (detail.status === "failed" || detail.status === "unavailable") {
+            pushToast(
+              "error",
+              `Doc failed: ${filename} (${modelLabel} × ${promptLabel}).`,
+            );
+          }
+        }
+        previousDocStatusRef.current[key] = detail.status;
         if (selectedDocId) {
           onSelectDocument(selectedDocId);
         }
       })
       .catch((e: unknown) => setRunError(String(e)))
       .finally(() => setDocLoading(false));
-  }, [onSelectDocument, runDetail, selectedCellId, selectedDocId]);
+  }, [onSelectDocument, pushToast, runDetail, selectedCellId, selectedDocId]);
 
   const handleCreateRun = async (payload: PromptLabRunCreateRequest) => {
     setCreatingRun(true);
@@ -218,6 +311,20 @@ export default function PromptLabTab({
           )}
         </section>
       </div>
+      {toasts.length > 0 && (
+        <div className="prompt-lab-toast-stack" aria-live="polite" aria-atomic="false">
+          {toasts.map((toast) => (
+            <div
+              key={toast.id}
+              className={`prompt-lab-toast ${toast.kind}`}
+              onClick={() => dismissToast(toast.id)}
+              role="status"
+            >
+              {toast.message}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
