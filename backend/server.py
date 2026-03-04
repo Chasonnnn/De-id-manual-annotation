@@ -929,6 +929,75 @@ def _spans_from_source(
     raise HTTPException(status_code=400, detail=f"Unknown source: {source}")
 
 
+def _parse_iso_datetime(value: str | None) -> datetime:
+    if not value:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(value)
+    except Exception:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _resolve_source_llm_confidence(
+    doc: CanonicalDocument,
+    source: str,
+) -> LLMConfidenceMetric | None:
+    if source == "agent.llm":
+        return doc.agent_run_metrics.llm_confidence
+
+    if source.startswith("agent.llm_run."):
+        run_key = source[len("agent.llm_run.") :]
+        if not run_key:
+            return None
+        run_meta = doc.agent_outputs.llm_run_metadata.get(run_key)
+        if run_meta is not None and run_meta.llm_confidence is not None:
+            return run_meta.llm_confidence
+
+        # Backward compatibility for sessions that predate per-run confidence metadata.
+        latest = doc.agent_run_metrics.llm_confidence
+        if latest is not None and latest.model == run_key:
+            return latest
+        return None
+
+    if source.startswith("agent.method."):
+        method_key = source[len("agent.method.") :]
+        if not method_key:
+            return None
+
+        run_meta = doc.agent_outputs.method_run_metadata.get(method_key)
+        if run_meta is not None and run_meta.llm_confidence is not None:
+            return run_meta.llm_confidence
+
+        # For a base method source, use the latest run for that method if available.
+        if "::" not in method_key:
+            latest_metric: LLMConfidenceMetric | None = None
+            latest_updated_at = datetime.min.replace(tzinfo=timezone.utc)
+            for metadata in doc.agent_outputs.method_run_metadata.values():
+                if metadata.method_id != method_key or metadata.llm_confidence is None:
+                    continue
+                updated_at = _parse_iso_datetime(metadata.updated_at)
+                if updated_at >= latest_updated_at:
+                    latest_updated_at = updated_at
+                    latest_metric = metadata.llm_confidence
+            return latest_metric
+
+    return None
+
+
+def _resolve_metrics_llm_confidence(
+    doc: CanonicalDocument,
+    reference: str,
+    hypothesis: str,
+) -> LLMConfidenceMetric | None:
+    hypothesis_metric = _resolve_source_llm_confidence(doc, hypothesis)
+    if hypothesis_metric is not None:
+        return hypothesis_metric
+    return _resolve_source_llm_confidence(doc, reference)
+
+
 def _prf_from_counts(tp: int, fp: int, fn: int) -> dict[str, float | int]:
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
@@ -1609,7 +1678,7 @@ def _run_method_for_document(
     chunk_mode: str,
     chunk_size_chars: int,
     progress_callback: Callable[[int, int], None] | None = None,
-) -> tuple[list[CanonicalSpan], list[str]]:
+) -> tuple[list[CanonicalSpan], list[str], LLMConfidenceMetric | None]:
     if not _should_use_chunking(len(doc.raw_text), chunk_mode, chunk_size_chars):
         method_result = run_method_with_metadata(
             text=doc.raw_text,
@@ -1631,7 +1700,7 @@ def _run_method_for_document(
         )
         if progress_callback is not None:
             progress_callback(1, 1)
-        return spans, method_result.warnings
+        return spans, method_result.warnings, getattr(method_result, "llm_confidence", None)
 
     chunks = _build_text_chunks(doc, chunk_size_chars)
     warnings: list[str] = []
@@ -1639,7 +1708,11 @@ def _run_method_for_document(
     chunk_count = len(chunks)
     chunk_workers = _resolve_chunk_parallel_workers(chunk_count)
 
-    def _run_chunk(idx: int, start: int, end: int) -> tuple[int, list[CanonicalSpan], list[str]]:
+    def _run_chunk(
+        idx: int,
+        start: int,
+        end: int,
+    ) -> tuple[int, list[CanonicalSpan], list[str], LLMConfidenceMetric | None]:
         chunk_text = doc.raw_text[start:end]
         method_result = run_method_with_metadata(
             text=chunk_text,
@@ -1660,13 +1733,13 @@ def _run_method_for_document(
             start,
         )
         chunk_warnings = [f"Chunk {idx + 1}/{chunk_count}: {item}" for item in method_result.warnings]
-        return idx, shifted, chunk_warnings
+        return idx, shifted, chunk_warnings, getattr(method_result, "llm_confidence", None)
 
-    chunk_results: dict[int, tuple[list[CanonicalSpan], list[str]]] = {}
+    chunk_results: dict[int, tuple[list[CanonicalSpan], list[str], LLMConfidenceMetric | None]] = {}
     if chunk_workers == 1:
         for idx, (start, end) in enumerate(chunks):
-            _, shifted, chunk_warnings = _run_chunk(idx, start, end)
-            chunk_results[idx] = (shifted, chunk_warnings)
+            _, shifted, chunk_warnings, chunk_confidence = _run_chunk(idx, start, end)
+            chunk_results[idx] = (shifted, chunk_warnings, chunk_confidence)
             if progress_callback is not None:
                 progress_callback(idx + 1, chunk_count)
     else:
@@ -1679,20 +1752,23 @@ def _run_method_for_document(
             for future in as_completed(future_map):
                 idx = future_map[future]
                 try:
-                    _, shifted, chunk_warnings = future.result()
+                    _, shifted, chunk_warnings, chunk_confidence = future.result()
                 except Exception as exc:
                     raise RuntimeError(
                         f"Chunk {idx + 1}/{chunk_count} failed during parallel method execution: {exc}"
                     ) from exc
-                chunk_results[idx] = (shifted, chunk_warnings)
+                chunk_results[idx] = (shifted, chunk_warnings, chunk_confidence)
                 completed_count += 1
                 if progress_callback is not None:
                     progress_callback(completed_count, chunk_count)
 
+    chunk_confidence_metrics: list[LLMConfidenceMetric] = []
     for idx in range(chunk_count):
-        shifted, chunk_warnings = chunk_results[idx]
+        shifted, chunk_warnings, chunk_confidence = chunk_results[idx]
         all_spans.extend(shifted)
         warnings.extend(chunk_warnings)
+        if chunk_confidence is not None:
+            chunk_confidence_metrics.append(chunk_confidence)
 
     normalized = _normalize_and_validate_spans(_dedup_spans(all_spans), doc.raw_text)
     warnings.insert(
@@ -1702,7 +1778,12 @@ def _run_method_for_document(
             f"(mode={chunk_mode}, workers={chunk_workers})."
         ),
     )
-    return normalized, warnings
+    aggregated_confidence = (
+        _aggregate_llm_confidence(chunk_confidence_metrics)
+        if chunk_confidence_metrics
+        else None
+    )
+    return normalized, warnings, aggregated_confidence
 
 
 # --- Routes ---
@@ -2142,7 +2223,7 @@ def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                 if not isinstance(method_verify_override, bool):
                     method_verify_override = None
 
-                hypothesis_spans, warnings = _run_method_for_document(
+                hypothesis_spans, warnings, llm_confidence = _run_method_for_document(
                     doc=enriched,
                     method_id=preset_method_id,
                     api_key=api_key or None,
@@ -2158,7 +2239,6 @@ def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                     chunk_mode=chunk_mode,
                     chunk_size_chars=chunk_size_chars,
                 )
-                llm_confidence: LLMConfidenceMetric | None = None
             else:
                 requested_system_prompt = str(prompt.get("system_prompt") or "").strip()
                 if not requested_system_prompt:
@@ -2405,6 +2485,7 @@ def run_agent(doc_id: str, body: AgentRunBody):
                 model=model,
                 label_profile=label_profile,  # type: ignore[arg-type]
                 prompt_snapshot=_build_llm_prompt_snapshot(requested_system_prompt),
+                llm_confidence=llm_confidence,
             ),
             session_id,
         )
@@ -2478,7 +2559,7 @@ def run_agent(doc_id: str, body: AgentRunBody):
         )
 
         try:
-            spans, warnings = _run_method_for_document(
+            spans, warnings, llm_confidence = _run_method_for_document(
                 doc=doc,
                 method_id=method_id,
                 api_key=api_key or None,
@@ -2539,6 +2620,7 @@ def run_agent(doc_id: str, body: AgentRunBody):
                     additional_constraints=requested_system_prompt,
                     method_verify=body.method_verify,
                 ),
+                llm_confidence=llm_confidence,
             ),
             session_id,
         )
@@ -2557,7 +2639,7 @@ def run_agent(doc_id: str, body: AgentRunBody):
         enriched = _enrich_doc(doc, session_id)
         enriched.agent_run_warnings = warnings
         enriched.agent_run_metrics = AgentRunMetrics(
-            llm_confidence=enriched.agent_run_metrics.llm_confidence,
+            llm_confidence=llm_confidence,
             label_profile=label_profile,  # type: ignore[arg-type]
         )
         return enriched
@@ -2727,9 +2809,10 @@ async def get_metrics(
     )
 
     result = compute_metrics(eval_ref_spans, eval_hyp_spans, match_mode)
+    llm_confidence = _resolve_metrics_llm_confidence(enriched, reference, hypothesis)
     result["llm_confidence"] = (
-        enriched.agent_run_metrics.llm_confidence.model_dump()
-        if enriched.agent_run_metrics.llm_confidence is not None
+        llm_confidence.model_dump()
+        if llm_confidence is not None
         else None
     )
     result["label_projection"] = normalized_projection
@@ -3219,7 +3302,7 @@ async def get_dashboard_metrics(
         sum_macro_p += float(macro.get("precision", 0.0))
         sum_macro_r += float(macro.get("recall", 0.0))
         sum_macro_f1 += float(macro.get("f1", 0.0))
-        llm_confidence = enriched.agent_run_metrics.llm_confidence
+        llm_confidence = _resolve_metrics_llm_confidence(enriched, reference, hypothesis)
         if llm_confidence is not None:
             band_counts[llm_confidence.band] += 1
             if llm_confidence.available and llm_confidence.confidence is not None:

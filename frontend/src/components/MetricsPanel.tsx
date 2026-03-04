@@ -1,23 +1,31 @@
 import React, { useState } from "react";
-import type { MetricsResult } from "../types";
+import type { AnnotationSource, MatchMode, MetricsResult } from "../types";
 import { getLabelColor } from "../types";
 
 interface Props {
-  reference: string;
-  hypothesis: string;
-  matchMode: string;
+  reference: AnnotationSource;
+  hypothesis: AnnotationSource;
+  matchMode: MatchMode;
+  sourceOptions: Array<{ value: AnnotationSource; label: string }>;
   metrics: MetricsResult | null;
   loading: boolean;
   onRefresh: () => void;
+  onReferenceChange: (ref: AnnotationSource) => void;
+  onHypothesisChange: (hyp: AnnotationSource) => void;
+  onMatchModeChange: (mode: MatchMode) => void;
 }
 
 export default function MetricsPanel({
   reference,
   hypothesis,
   matchMode,
+  sourceOptions,
   metrics,
   loading,
   onRefresh,
+  onReferenceChange,
+  onHypothesisChange,
+  onMatchModeChange,
 }: Props) {
   const [collapsed, setCollapsed] = useState(false);
 
@@ -68,8 +76,59 @@ export default function MetricsPanel({
           {metrics && (
             <>
               <div className="metrics-subtitle">
-                Comparing <strong>{reference}</strong> vs <strong>{hypothesis}</strong>{" "}
-                ({matchMode})
+                <div className="metrics-compare-controls">
+                  <label>
+                    Comparing
+                    <select
+                      value={reference}
+                      onChange={(e) =>
+                        onReferenceChange(e.target.value as AnnotationSource)
+                      }
+                    >
+                      {sourceOptions.map((option) => (
+                        <option key={`metrics-ref-${option.value}`} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <span>vs</span>
+                  <label>
+                    <select
+                      value={hypothesis}
+                      onChange={(e) =>
+                        onHypothesisChange(e.target.value as AnnotationSource)
+                      }
+                    >
+                      {sourceOptions.map((option) => (
+                        <option key={`metrics-hyp-${option.value}`} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    className="metrics-swap-btn"
+                    onClick={() => {
+                      onReferenceChange(hypothesis);
+                      onHypothesisChange(reference);
+                    }}
+                    title="Swap reference and hypothesis"
+                  >
+                    Swap
+                  </button>
+                  <label>
+                    Match
+                    <select
+                      value={matchMode}
+                      onChange={(e) => onMatchModeChange(e.target.value as MatchMode)}
+                    >
+                      <option value="exact">Exact</option>
+                      <option value="overlap">Overlap</option>
+                    </select>
+                  </label>
+                </div>
               </div>
               {confidence && (
                 <div className={`confidence-summary band-${confidence.band}`}>

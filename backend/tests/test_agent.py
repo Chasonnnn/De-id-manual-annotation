@@ -449,6 +449,38 @@ class TestRunLLM:
         assert any("implausible NAME span" in warning for warning in result.warnings)
 
     @patch("agent.completion")
+    def test_drops_partial_word_name_fragments_with_valid_offsets(self, mock_completion):
+        text = (
+            "So how did you come up late?\n"
+            "Three over three and they both look like X's which one is which?\n"
+            "Wait, they both look like X's which one is which?\n"
+            "Good job, Anna."
+        )
+        three_idx = text.index("Three")
+        wait_idx = text.index("Wait")
+        and_they_idx = text.index("and they")
+        anna_idx = text.index("Anna")
+        payload = json.dumps(
+            [
+                {"start": three_idx + 2, "end": three_idx + 5, "label": "NAME", "text": "ree"},
+                {"start": wait_idx + 1, "end": wait_idx + 5, "label": "NAME", "text": "ait,"},
+                {"start": and_they_idx + 2, "end": and_they_idx + 6, "label": "NAME", "text": "d th"},
+                {"start": anna_idx, "end": anna_idx + 4, "label": "NAME", "text": "Anna"},
+            ]
+        )
+        mock_completion.return_value = _mock_completion_response(payload)
+
+        result = run_llm_with_metadata(
+            text=text,
+            api_key="k",
+            model="openai/gpt-4o",
+        )
+        assert [(span.start, span.end, span.text) for span in result.spans] == [
+            (anna_idx, anna_idx + 4, "Anna")
+        ]
+        assert any("implausible NAME span" in warning for warning in result.warnings)
+
+    @patch("agent.completion")
     def test_anthropic_thinking_is_passed(self, mock_completion):
         mock_completion.return_value = _mock_completion_response("[]")
         run_llm_with_metadata(

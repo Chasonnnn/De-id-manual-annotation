@@ -35,6 +35,7 @@ class SavedRunMetadata(BaseModel):
     method_id: str | None = None
     label_profile: Literal["simple", "advanced"] | None = None
     prompt_snapshot: dict[str, Any] | None = None
+    llm_confidence: "LLMConfidenceMetric | None" = None
 
 
 class LLMConfidenceMetric(BaseModel):

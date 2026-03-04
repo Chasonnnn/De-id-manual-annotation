@@ -683,6 +683,118 @@ def test_metrics_include_latest_llm_confidence(client, monkeypatch):
     assert metrics["llm_confidence"]["band"] == "high"
 
 
+def test_metrics_use_selected_method_run_llm_confidence(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: [
+            "google.gemini-3-flash-preview",
+            "openai.gpt-5.2-chat",
+        ],
+    )
+
+    def fake_run_llm_with_metadata(**kwargs):
+        model = str(kwargs.get("model"))
+        if model == "google.gemini-3-flash-preview":
+            return SimpleNamespace(
+                spans=[],
+                warnings=[],
+                llm_confidence=_mock_confidence_metric(
+                    available=False,
+                    provider="unknown",
+                    model=model,
+                    reason="unsupported_provider",
+                    token_count=0,
+                    mean_logprob=None,
+                    confidence=None,
+                    perplexity=None,
+                    band="na",
+                ),
+            )
+        return SimpleNamespace(
+            spans=[],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(
+                model=model,
+                confidence=0.91,
+                band="high",
+            ),
+        )
+
+    def fake_run_method_with_metadata(**kwargs):
+        model = str(kwargs.get("model"))
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(
+                model=model,
+                token_count=6,
+                mean_logprob=-0.08,
+                confidence=0.9231163464,
+                perplexity=1.0832870677,
+                band="high",
+            ),
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    gemini_run = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "llm",
+            "model": "google.gemini-3-flash-preview",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com/v1",
+        },
+    )
+    assert gemini_run.status_code == 200
+    assert gemini_run.json()["agent_run_metrics"]["llm_confidence"]["reason"] == "unsupported_provider"
+
+    method_run = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "method",
+            "method_id": "default",
+            "model": "openai.gpt-5.2-chat",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com/v1",
+        },
+    )
+    assert method_run.status_code == 200
+    assert method_run.json()["agent_run_metrics"]["llm_confidence"]["reason"] == "ok"
+
+    metrics_resp = client.get(
+        f"/api/documents/{doc_id}/metrics",
+        params={
+            "reference": "pre",
+            "hypothesis": "agent.method.default::openai.gpt-5.2-chat",
+            "match_mode": "exact",
+        },
+    )
+    assert metrics_resp.status_code == 200
+    metrics = metrics_resp.json()
+    assert metrics["llm_confidence"]["reason"] == "ok"
+    assert metrics["llm_confidence"]["model"] == "openai.gpt-5.2-chat"
+    assert metrics["llm_confidence"]["token_count"] == 6
+
+    dashboard_resp = client.get(
+        "/api/metrics/dashboard",
+        params={
+            "reference": "pre",
+            "hypothesis": "agent.method.default::openai.gpt-5.2-chat",
+            "match_mode": "exact",
+        },
+    )
+    assert dashboard_resp.status_code == 200
+    first_doc = dashboard_resp.json()["documents"][0]
+    assert first_doc["llm_confidence"]["reason"] == "ok"
+    assert first_doc["llm_confidence"]["model"] == "openai.gpt-5.2-chat"
+
+
 def test_non_openai_llm_confidence_returns_na_without_failing_run(client, monkeypatch):
     monkeypatch.setattr(
         "server._fetch_gateway_model_ids",

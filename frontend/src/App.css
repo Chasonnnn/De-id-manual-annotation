@@ -668,7 +668,12 @@ textarea:focus-visible {
   border-radius: 8px;
   background: #fff;
   padding: 8px;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: clamp(300px, 48vh, 640px);
+  max-height: clamp(300px, 56vh, 760px);
+  overflow: hidden;
 }
 
 .prompt-lab-matrix-header {
@@ -676,6 +681,14 @@ textarea:focus-visible {
   align-items: baseline;
   justify-content: space-between;
   margin-bottom: 8px;
+}
+
+.prompt-lab-matrix-header-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 .prompt-lab-matrix-controls {
@@ -704,9 +717,43 @@ textarea:focus-visible {
   color: #4d597b;
 }
 
+.prompt-lab-matrix-meta-secondary {
+  font-size: 11px;
+  color: #6a7290;
+}
+
+.prompt-lab-matrix.collapsed {
+  min-height: auto;
+  max-height: none;
+  overflow: hidden;
+}
+
 .prompt-lab-matrix table {
   width: 100%;
   border-collapse: collapse;
+  min-width: 760px;
+}
+
+.prompt-lab-matrix-table-wrap {
+  flex: 1;
+  min-height: 220px;
+  overflow: auto;
+  border: 1px solid #e1e6f4;
+  border-radius: 6px;
+}
+
+.prompt-lab-matrix-table-wrap thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: #f6f8ff;
+}
+
+.prompt-lab-matrix-table-wrap tbody th {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: #fff;
 }
 
 .prompt-lab-matrix th,
@@ -869,6 +916,11 @@ textarea:focus-visible {
 
   .prompt-lab-body {
     grid-template-columns: 1fr;
+  }
+
+  .prompt-lab-matrix {
+    min-height: 320px;
+    max-height: 52vh;
   }
 }
 
@@ -1365,6 +1417,37 @@ textarea:focus-visible {
   margin-bottom: 10px;
 }
 
+.metrics-compare-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.metrics-compare-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.metrics-compare-controls select {
+  border: 1px solid #cbd2e5;
+  border-radius: 6px;
+  background: #fff;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.metrics-swap-btn {
+  border: 1px solid #bcc6e6;
+  background: #f5f8ff;
+  color: #2f4787;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
 .confidence-summary {
   border: 1px solid #d9dfe8;
   border-radius: 6px;
@@ -1618,6 +1701,11 @@ textarea:focus-visible {
 .run-toast.error {
   background: #f38ba8;
   color: #fff;
+}
+
+.run-toast.info {
+  background: #89b4fa;
+  color: #0f2147;
 }
 
 /* Loading indicator */

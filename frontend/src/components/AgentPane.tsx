@@ -474,24 +474,6 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
           ref={ref}
           onScroll={(e) => onScroll((e.target as HTMLDivElement).scrollTop)}
         >
-          {activeOutput === "llm" && llmRunOptions.length > 0 && (
-            <div className="saved-run-chip-row">
-              {llmRunOptions.map((run) => (
-                <button
-                  key={`agent-run-chip-${run.key}`}
-                  type="button"
-                  className={`saved-run-chip ${activeLlmRunKey === run.key ? "active" : ""}`}
-                  onClick={() => onActiveLlmRunKeyChange(run.key)}
-                  title={run.subtitle ? `${run.label} (${run.subtitle})` : run.label}
-                >
-                  <span className="saved-run-chip-primary">{run.label}</span>
-                  {run.subtitle ? (
-                    <span className="saved-run-chip-secondary">{run.subtitle}</span>
-                  ) : null}
-                </button>
-              ))}
-            </div>
-          )}
           {spans.length === 0 && !running ? (
             <span style={{ color: "#888" }}>
               No agent annotations yet. Configure and run the agent above.

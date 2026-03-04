@@ -112,7 +112,7 @@ class ErrorBoundary extends Component<
 // Save status type
 // ---------------------------------------------------------------------------
 type SaveStatus = "idle" | "saving" | "saved";
-type RunToastKind = "success" | "error";
+type RunToastKind = "success" | "error" | "info";
 
 interface RunToast {
   id: string;
@@ -596,19 +596,11 @@ function AppContent() {
       setHypothesis(fallback);
       return;
     }
-    if (reference === hypothesis && values.length > 1) {
-      const fallback = values.find((value) => value !== reference) ?? primary;
-      setHypothesis(fallback);
-    }
   }, [hypothesis, reference, sourceOptions]);
 
   const handleDashboardRefresh = useCallback(async () => {
     if (documents.length === 0) {
       setDashboard(null);
-      return;
-    }
-    if (reference === hypothesis) {
-      setError("Reference and hypothesis must be different for metrics");
       return;
     }
     setDashboardLoading(true);
@@ -667,14 +659,28 @@ function AppContent() {
         setDoc(updated);
         const warnings = updated.agent_run_warnings ?? [];
         setAgentChunked(hasChunkWarnings(warnings));
-        setWarning(nonChunkWarningMessage(warnings));
+        const nonChunkWarning = nonChunkWarningMessage(warnings);
+        setWarning(nonChunkWarning);
+        const spanCount =
+          config.mode === "rule"
+            ? updated.agent_outputs?.rule?.length ?? 0
+            : updated.agent_outputs?.llm?.length ?? 0;
         const modelLabel = config.model?.trim();
-        pushRunToast(
-          "success",
-          modelLabel
-            ? `Agent run completed for ${fileLabel} (${modelLabel}).`
-            : `Agent run completed for ${fileLabel}.`,
-        );
+        if (spanCount === 0) {
+          pushRunToast(
+            "info",
+            modelLabel
+              ? `Agent run completed for ${fileLabel} (${modelLabel}) with 0 spans.${nonChunkWarning ? ` ${nonChunkWarning}` : ""}`
+              : `Agent run completed for ${fileLabel} with 0 spans.${nonChunkWarning ? ` ${nonChunkWarning}` : ""}`,
+          );
+        } else {
+          pushRunToast(
+            "success",
+            modelLabel
+              ? `Agent run completed for ${fileLabel} (${modelLabel}) with ${spanCount} span(s).`
+              : `Agent run completed for ${fileLabel} with ${spanCount} span(s).`,
+          );
+        }
         void handleDashboardRefresh();
       } catch (e: unknown) {
         setError(String(e));
@@ -696,16 +702,30 @@ function AppContent() {
         setDoc(updated);
         const warnings = updated.agent_run_warnings ?? [];
         setMethodChunked(hasChunkWarnings(warnings));
-        setWarning(nonChunkWarningMessage(warnings));
+        const nonChunkWarning = nonChunkWarningMessage(warnings);
+        setWarning(nonChunkWarning);
+        const methodKey = config.method_id?.trim() ?? "";
+        const spanCount = methodKey
+          ? updated.agent_outputs?.methods?.[methodKey]?.length ?? 0
+          : 0;
         const methodLabel = config.method_id?.trim();
         const modelLabel = config.model?.trim();
         const scope = [methodLabel, modelLabel].filter(Boolean).join(" @ ");
-        pushRunToast(
-          "success",
-          scope
-            ? `Method run completed for ${fileLabel} (${scope}).`
-            : `Method run completed for ${fileLabel}.`,
-        );
+        if (spanCount === 0) {
+          pushRunToast(
+            "info",
+            scope
+              ? `Method run completed for ${fileLabel} (${scope}) with 0 spans.${nonChunkWarning ? ` ${nonChunkWarning}` : ""}`
+              : `Method run completed for ${fileLabel} with 0 spans.${nonChunkWarning ? ` ${nonChunkWarning}` : ""}`,
+          );
+        } else {
+          pushRunToast(
+            "success",
+            scope
+              ? `Method run completed for ${fileLabel} (${scope}) with ${spanCount} span(s).`
+              : `Method run completed for ${fileLabel} with ${spanCount} span(s).`,
+          );
+        }
         void handleDashboardRefresh();
       } catch (e: unknown) {
         setError(String(e));
@@ -719,10 +739,6 @@ function AppContent() {
 
   const handleMetricsRefresh = useCallback(async () => {
     if (!doc) return;
-    if (reference === hypothesis) {
-      setError("Reference and hypothesis must be different for metrics");
-      return;
-    }
     setMetricsLoading(true);
     try {
       const result = await getMetrics(
@@ -1091,9 +1107,13 @@ function AppContent() {
                   reference={reference}
                   hypothesis={hypothesis}
                   matchMode={matchMode}
+                  sourceOptions={sourceOptions}
                   metrics={metrics}
                   loading={metricsLoading}
                   onRefresh={handleMetricsRefresh}
+                  onReferenceChange={setReference}
+                  onHypothesisChange={setHypothesis}
+                  onMatchModeChange={setMatchMode}
                 />
               </>
             )}

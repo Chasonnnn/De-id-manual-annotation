@@ -108,7 +108,6 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
     }, [activeMethod, methods]);
 
     const selectedMethod = methods.find((method) => method.id === activeMethod) ?? null;
-    const savedMethodRuns = methods.filter((method) => method.id.includes("::"));
     const methodAvailable = selectedMethod?.available ?? false;
     const methodUsesLlm = selectedMethod?.uses_llm ?? true;
     const supportsVerifyOverride = selectedMethod?.supports_verify_override ?? false;
@@ -532,21 +531,6 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
           ref={ref}
           onScroll={(e) => onScroll((e.target as HTMLDivElement).scrollTop)}
         >
-          {savedMethodRuns.length > 0 && (
-            <div className="saved-run-chip-row">
-              {savedMethodRuns.map((method) => (
-                <button
-                  key={`method-run-chip-${method.id}`}
-                  type="button"
-                  className={`saved-run-chip ${activeMethod === method.id ? "active" : ""}`}
-                  onClick={() => onActiveMethodChange(method.id)}
-                  title={method.label}
-                >
-                  <span className="saved-run-chip-primary">{method.label}</span>
-                </button>
-              ))}
-            </div>
-          )}
           {spans.length === 0 && !running ? (
             <span style={{ color: "#888" }}>
               No method annotations yet for the selected method.

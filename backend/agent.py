@@ -592,6 +592,7 @@ class LLMRunResult:
 class MethodRunResult:
     spans: list[CanonicalSpan]
     warnings: list[str]
+    llm_confidence: LLMConfidenceMetric | None = None
 
 
 def _strip_code_fences(content: str) -> str:
@@ -744,6 +745,53 @@ def _build_unavailable_confidence_metric(
         band="na",
         high_threshold=CONFIDENCE_HIGH_THRESHOLD,
         medium_threshold=CONFIDENCE_MEDIUM_THRESHOLD,
+    )
+
+
+def _aggregate_llm_confidence_metrics(
+    metrics: list[LLMConfidenceMetric],
+) -> LLMConfidenceMetric | None:
+    if not metrics:
+        return None
+    if len(metrics) == 1:
+        return metrics[0]
+
+    usable = [
+        item
+        for item in metrics
+        if item.available and item.mean_logprob is not None and item.token_count > 0
+    ]
+    if not usable:
+        return metrics[0]
+
+    total_tokens = sum(item.token_count for item in usable)
+    if total_tokens <= 0:
+        return metrics[0]
+
+    weighted_mean_logprob = (
+        sum(float(item.mean_logprob or 0.0) * item.token_count for item in usable) / total_tokens
+    )
+    confidence = math.exp(weighted_mean_logprob)
+    perplexity = math.exp(-weighted_mean_logprob)
+    if confidence >= usable[0].high_threshold:
+        band: Literal["high", "medium", "low", "na"] = "high"
+    elif confidence >= usable[0].medium_threshold:
+        band = "medium"
+    else:
+        band = "low"
+
+    return LLMConfidenceMetric(
+        available=True,
+        provider=usable[0].provider,
+        model=usable[0].model,
+        reason="ok",
+        token_count=total_tokens,
+        mean_logprob=weighted_mean_logprob,
+        confidence=confidence,
+        perplexity=perplexity,
+        band=band,
+        high_threshold=usable[0].high_threshold,
+        medium_threshold=usable[0].medium_threshold,
     )
 
 
@@ -1000,6 +1048,24 @@ def _is_plausible_name_text(value: str) -> bool:
     return True
 
 
+def _has_name_word_boundaries(raw_text: str, start: int, end: int) -> bool:
+    if not (0 <= start < end <= len(raw_text)):
+        return False
+    left_char = raw_text[start - 1] if start > 0 else ""
+    right_char = raw_text[end] if end < len(raw_text) else ""
+    if left_char and left_char.isalnum():
+        return False
+    if right_char and right_char.isalnum():
+        return False
+    return True
+
+
+def _is_plausible_name_span(raw_text: str, span: CanonicalSpan) -> bool:
+    if not _is_plausible_name_text(span.text):
+        return False
+    return _has_name_word_boundaries(raw_text, span.start, span.end)
+
+
 def _find_occurrences(text: str, needle: str) -> list[tuple[int, int]]:
     if not needle:
         return []
@@ -1115,7 +1181,7 @@ def _repair_offset_mismatches(
             candidate.label,
             label_profile=label_profile,
         ) in {"NAME", "PERSON"}:
-            if not _is_plausible_name_text(candidate.text):
+            if not _is_plausible_name_span(raw_text, candidate):
                 dropped += 1
                 continue
 
@@ -1141,6 +1207,7 @@ def _repair_offset_mismatches(
 
 
 def _drop_implausible_name_spans(
+    raw_text: str,
     spans: list[CanonicalSpan],
     *,
     label_profile: Literal["simple", "advanced"] = "simple",
@@ -1151,7 +1218,7 @@ def _drop_implausible_name_spans(
     for span in spans:
         if (
             normalize_method_label(span.label, label_profile=label_profile) == target_label
-            and not _is_plausible_name_text(span.text)
+            and not _is_plausible_name_span(raw_text, span)
         ):
             dropped += 1
             continue
@@ -1637,6 +1704,7 @@ def run_method_with_metadata(
 
     warnings: list[str] = []
     all_spans: list[CanonicalSpan] = []
+    llm_metrics: list[LLMConfidenceMetric] = []
 
     for idx, method_pass in enumerate(method["passes"]):
         kind = method_pass["kind"]
@@ -1665,6 +1733,7 @@ def run_method_with_metadata(
             anthropic_thinking_budget_tokens=anthropic_thinking_budget_tokens,
             label_profile=label_profile,
         )
+        llm_metrics.append(llm_result.llm_confidence)
         pass_spans = _filter_method_pass_spans(
             normalize_method_spans(llm_result.spans, label_profile=label_profile),
             method_pass.get("entity_types"),
@@ -1692,7 +1761,11 @@ def run_method_with_metadata(
         except Exception as exc:
             raise ValueError(f"Method '{method_id}' verifier failed: {exc}") from exc
 
-    return MethodRunResult(spans=merged, warnings=warnings)
+    return MethodRunResult(
+        spans=merged,
+        warnings=warnings,
+        llm_confidence=_aggregate_llm_confidence_metrics(llm_metrics),
+    )
 
 
 def run_llm_with_metadata(
@@ -1806,6 +1879,7 @@ def run_llm_with_metadata(
             )
             warnings.extend(repair_warnings)
             spans, dropped_name_spans = _drop_implausible_name_spans(
+                text,
                 spans,
                 label_profile=label_profile,
             )

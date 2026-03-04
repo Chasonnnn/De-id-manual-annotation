@@ -33,6 +33,9 @@ function getHeatColor(score: number): string {
 
 export default function PromptLabMatrix({ run, selectedCellId, onSelectCell }: Props) {
   const [metricKey, setMetricKey] = useState<string>(MICRO_METRIC_KEY);
+  const [collapsed, setCollapsed] = useState(false);
+  const totalCells = run.matrix.models.length * run.matrix.prompts.length;
+  const totalRequests = run.total_tasks || run.doc_count * totalCells;
 
   useEffect(() => {
     const options = [MICRO_METRIC_KEY, ...(run.matrix.available_labels ?? [])];
@@ -50,72 +53,92 @@ export default function PromptLabMatrix({ run, selectedCellId, onSelectCell }: P
   }, [run.matrix.cells]);
 
   return (
-    <section className="prompt-lab-matrix">
+    <section className={`prompt-lab-matrix ${collapsed ? "collapsed" : ""}`}>
       <div className="prompt-lab-matrix-header">
         <h3>Matrix Results</h3>
-        <div className="prompt-lab-matrix-meta">
-          Status: <strong>{run.status}</strong> · Progress: {run.progress.completed_tasks}/
-          {run.progress.total_tasks}
+        <div className="prompt-lab-matrix-header-actions">
+          <div className="prompt-lab-matrix-meta">
+            Status: <strong>{run.status}</strong> · Progress: {run.progress.completed_tasks}/
+            {run.progress.total_tasks}
+          </div>
+          <div className="prompt-lab-matrix-meta-secondary">
+            Showing {totalCells} cells (model × prompt), aggregated from {totalRequests} requests
+            (docs × prompts × models).
+          </div>
+          <button
+            type="button"
+            className="prompt-lab-toggle-btn"
+            onClick={() => setCollapsed((prev) => !prev)}
+            aria-expanded={!collapsed}
+          >
+            {collapsed ? "Show Matrix" : "Hide Matrix"}
+          </button>
         </div>
       </div>
-      <div className="prompt-lab-matrix-controls">
-        <label htmlFor="prompt-lab-metric-select">Metric</label>
-        <select
-          id="prompt-lab-metric-select"
-          value={metricKey}
-          onChange={(e) => setMetricKey(e.target.value)}
-        >
-          <option value={MICRO_METRIC_KEY}>Micro F1</option>
-          {(run.matrix.available_labels ?? []).map((label) => (
-            <option key={label} value={label}>
-              {label} F1
-            </option>
-          ))}
-        </select>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Model \ Prompt</th>
-            {run.matrix.prompts.map((prompt) => (
-              <th key={prompt.id}>{prompt.label}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {run.matrix.models.map((model) => (
-            <tr key={model.id}>
-              <th>{model.label}</th>
-              {run.matrix.prompts.map((prompt) => {
-                const cellId = `${model.id}__${prompt.id}`;
-                const cell = cellsById.get(cellId);
-                const active = selectedCellId === cellId;
-                const score = getMetricScore(cell, metricKey);
-                return (
-                  <td key={cellId}>
-                    <button
-                      type="button"
-                      className={`prompt-lab-matrix-cell ${active ? "active" : ""}`}
-                      onClick={() => onSelectCell(cellId)}
-                      style={{ background: getHeatColor(score) }}
-                    >
-                      <div className="prompt-lab-cell-status">{cell?.status ?? "pending"}</div>
-                      <div className="prompt-lab-cell-f1">{fmtPct(score)}</div>
-                      <div className="prompt-lab-cell-meta">
-                        Docs {cell?.completed_docs ?? 0}/{cell?.total_docs ?? run.doc_count}
-                      </div>
-                      <div className="prompt-lab-cell-meta">
-                        Errors {cell?.error_count ?? 0} · Conf{" "}
-                        {cell?.mean_confidence != null ? fmtPct(cell.mean_confidence) : "N/A"}
-                      </div>
-                    </button>
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {!collapsed && (
+        <>
+          <div className="prompt-lab-matrix-controls">
+            <label htmlFor="prompt-lab-metric-select">Metric</label>
+            <select
+              id="prompt-lab-metric-select"
+              value={metricKey}
+              onChange={(e) => setMetricKey(e.target.value)}
+            >
+              <option value={MICRO_METRIC_KEY}>Micro F1</option>
+              {(run.matrix.available_labels ?? []).map((label) => (
+                <option key={label} value={label}>
+                  {label} F1
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="prompt-lab-matrix-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Model \ Prompt</th>
+                  {run.matrix.prompts.map((prompt) => (
+                    <th key={prompt.id}>{prompt.label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {run.matrix.models.map((model) => (
+                  <tr key={model.id}>
+                    <th>{model.label}</th>
+                    {run.matrix.prompts.map((prompt) => {
+                      const cellId = `${model.id}__${prompt.id}`;
+                      const cell = cellsById.get(cellId);
+                      const active = selectedCellId === cellId;
+                      const score = getMetricScore(cell, metricKey);
+                      return (
+                        <td key={cellId}>
+                          <button
+                            type="button"
+                            className={`prompt-lab-matrix-cell ${active ? "active" : ""}`}
+                            onClick={() => onSelectCell(cellId)}
+                            style={{ background: getHeatColor(score) }}
+                          >
+                            <div className="prompt-lab-cell-status">{cell?.status ?? "pending"}</div>
+                            <div className="prompt-lab-cell-f1">{fmtPct(score)}</div>
+                            <div className="prompt-lab-cell-meta">
+                              Docs {cell?.completed_docs ?? 0}/{cell?.total_docs ?? run.doc_count}
+                            </div>
+                            <div className="prompt-lab-cell-meta">
+                              Errors {cell?.error_count ?? 0} · Conf{" "}
+                              {cell?.mean_confidence != null ? fmtPct(cell.mean_confidence) : "N/A"}
+                            </div>
+                          </button>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
     </section>
   );
 }
