@@ -16,6 +16,9 @@ interface Props {
   processedWithChunking?: boolean;
   activeOutput: AgentView;
   onActiveOutputChange: (view: AgentView) => void;
+  llmRunOptions: Array<{ key: string; label: string; subtitle?: string }>;
+  activeLlmRunKey: string;
+  onActiveLlmRunKeyChange: (runKey: string) => void;
   diffSpans?: { start: number; end: number; type: "added" | "removed" }[];
   onRunAgent: (config: AgentConfig) => Promise<void>;
   running: boolean;
@@ -33,6 +36,9 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
       processedWithChunking = false,
       activeOutput,
       onActiveOutputChange,
+      llmRunOptions,
+      activeLlmRunKey,
+      onActiveLlmRunKeyChange,
       diffSpans = [],
       onRunAgent,
       running,
@@ -168,6 +174,24 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
                 <option value="llm">LLM Only</option>
               </select>
             </span>
+            {activeOutput === "llm" && llmRunOptions.length > 0 && (
+              <span className="agent-view-control">
+                <label htmlFor="agent-llm-run-select">Run:</label>
+                <select
+                  id="agent-llm-run-select"
+                  name="agent_llm_run"
+                  value={activeLlmRunKey}
+                  onChange={(e) => onActiveLlmRunKeyChange(e.target.value)}
+                >
+                  <option value="__latest__">Latest</option>
+                  {llmRunOptions.map((run) => (
+                    <option key={run.key} value={run.key}>
+                      {run.subtitle ? `${run.label} • ${run.subtitle}` : run.label}
+                    </option>
+                  ))}
+                </select>
+              </span>
+            )}
           </div>
           <button className="config-toggle" onClick={() => setConfigOpen(!configOpen)}>
             {configOpen ? "Hide Config" : "Show Config"}
@@ -433,6 +457,24 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
           ref={ref}
           onScroll={(e) => onScroll((e.target as HTMLDivElement).scrollTop)}
         >
+          {activeOutput === "llm" && llmRunOptions.length > 0 && (
+            <div className="saved-run-chip-row">
+              {llmRunOptions.map((run) => (
+                <button
+                  key={`agent-run-chip-${run.key}`}
+                  type="button"
+                  className={`saved-run-chip ${activeLlmRunKey === run.key ? "active" : ""}`}
+                  onClick={() => onActiveLlmRunKeyChange(run.key)}
+                  title={run.subtitle ? `${run.label} (${run.subtitle})` : run.label}
+                >
+                  <span className="saved-run-chip-primary">{run.label}</span>
+                  {run.subtitle ? (
+                    <span className="saved-run-chip-secondary">{run.subtitle}</span>
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          )}
           {spans.length === 0 && !running ? (
             <span style={{ color: "#888" }}>
               No agent annotations yet. Configure and run the agent above.

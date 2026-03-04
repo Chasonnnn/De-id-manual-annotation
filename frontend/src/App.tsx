@@ -18,6 +18,7 @@ import { PII_LABELS } from "./types";
   } from "./types";
 import {
   deleteDocument,
+  exportGroundTruth,
   exportSession,
   getAgentMethods,
   getDocument,
@@ -109,6 +110,13 @@ class ErrorBoundary extends Component<
 // Save status type
 // ---------------------------------------------------------------------------
 type SaveStatus = "idle" | "saving" | "saved";
+type RunToastKind = "success" | "error";
+
+interface RunToast {
+  id: string;
+  kind: RunToastKind;
+  message: string;
+}
 
 const CANONICAL_PANE_ORDER: PaneType[] = ["raw", "pre", "manual", "agent", "methods"];
 
@@ -126,22 +134,80 @@ function hasChunkWarnings(messages: string[]): boolean {
   return messages.some(isChunkWarning);
 }
 
+function formatRunTimestamp(value: string | null | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString([], {
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function nonChunkWarningMessage(messages: string[]): string | null {
   const filtered = messages.filter((message) => !isChunkWarning(message));
   return filtered.length > 0 ? filtered.join(" ") : null;
+}
+
+function toPromptTemplatesFromSnapshot(
+  snapshot: unknown,
+): AgentMethodOption["prompt_templates"] {
+  if (!snapshot || typeof snapshot !== "object") {
+    return undefined;
+  }
+  const snapshotObj = snapshot as Record<string, unknown>;
+  const passes = Array.isArray(snapshotObj.passes) ? snapshotObj.passes : [];
+  const templates: NonNullable<AgentMethodOption["prompt_templates"]> = [];
+
+  for (let i = 0; i < passes.length; i += 1) {
+    const rawPass = passes[i];
+    if (!rawPass || typeof rawPass !== "object") continue;
+    const pass = rawPass as Record<string, unknown>;
+
+    const promptCandidate =
+      typeof pass.resolved_system_prompt === "string"
+        ? pass.resolved_system_prompt
+        : typeof pass.base_system_prompt === "string"
+          ? pass.base_system_prompt
+          : typeof pass.effective_system_prompt === "string"
+            ? pass.effective_system_prompt
+            : "";
+    if (!promptCandidate) continue;
+
+    const entityTypes = Array.isArray(pass.entity_types)
+      ? pass.entity_types.filter((item): item is string => typeof item === "string")
+      : null;
+
+    templates.push({
+      pass_index:
+        typeof pass.pass_index === "number" && Number.isFinite(pass.pass_index)
+          ? pass.pass_index
+          : i + 1,
+      entity_types: entityTypes,
+      system_prompt: promptCandidate,
+      source: "saved",
+    });
+  }
+
+  return templates.length > 0 ? templates : undefined;
 }
 
 // ---------------------------------------------------------------------------
 // Main App
 // ---------------------------------------------------------------------------
 function AppContent() {
-  const [mainTab, setMainTab] = useState<"workspace" | "prompt_lab">("workspace");
+  const [mainTab, setMainTab] = useState<"workspace" | "prompt_lab" | "dashboard">(
+    "workspace",
+  );
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [doc, setDoc] = useState<CanonicalDocument | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
+  const [runToasts, setRunToasts] = useState<RunToast[]>([]);
   const [uploading, setUploading] = useState(false); // 4.2: upload loading
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -150,7 +216,6 @@ function AppContent() {
   const [sessionProfile, setSessionProfile] = useState<SessionProfile>({
     project_name: "",
     author: "",
-    notes: "",
   });
 
   const [visiblePanes, setVisiblePanes] = useState<PaneType[]>(() =>
@@ -162,6 +227,7 @@ function AppContent() {
   const [matchMode, setMatchMode] = useState<MatchMode>("exact");
   const [labelProjection, setLabelProjection] = useState<LabelProjection>("native");
   const [agentView, setAgentView] = useState<AgentView>("combined");
+  const [agentLlmRun, setAgentLlmRun] = useState<string>("__latest__");
   const [agentMethods, setAgentMethods] = useState<AgentMethodOption[]>([]);
   const [methodView, setMethodView] = useState<MethodView>("default");
 
@@ -179,6 +245,18 @@ function AppContent() {
   const savedTimer = useRef<ReturnType<typeof setTimeout>>(null);
 
   const { registerPane, handleScroll } = useSyncScroll();
+
+  const pushRunToast = useCallback((kind: RunToastKind, message: string) => {
+    const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    setRunToasts((prev) => [...prev, { id, kind, message }]);
+    window.setTimeout(() => {
+      setRunToasts((prev) => prev.filter((item) => item.id !== id));
+    }, 4500);
+  }, []);
+
+  const dismissRunToast = useCallback((id: string) => {
+    setRunToasts((prev) => prev.filter((item) => item.id !== id));
+  }, []);
 
   const refreshDocuments = useCallback(async () => {
     const docs = await listDocuments();
@@ -266,19 +344,28 @@ function AppContent() {
     [refreshDocuments, selectedId],
   );
 
-  const handleExportSession = useCallback(async () => {
+  const handleExportSession = useCallback(async (
+    mode: "full" | "ground_truth",
+    source: AnnotationSource,
+  ) => {
     setExporting(true);
     try {
       await updateSessionProfile(sessionProfile);
-      const bundle = await exportSession();
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const blob = new Blob([JSON.stringify(bundle, null, 2)], {
-        type: "application/json",
-      });
+      const fullBundle = mode === "full" ? await exportSession() : null;
+      const blob =
+        mode === "full"
+          ? new Blob([JSON.stringify(fullBundle, null, 2)], {
+              type: "application/json",
+            })
+          : await exportGroundTruth(source);
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `annotation-session-${stamp}.json`;
+      link.download =
+        mode === "full"
+          ? `annotation-session-${stamp}.json`
+          : `ground-truth-${stamp}.zip`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -362,22 +449,33 @@ function AppContent() {
   const methodCatalog = useMemo<AgentMethodOption[]>(() => {
     const merged = [...agentMethods];
     const knownIds = new Set(agentMethods.map((method) => method.id));
+    const runMeta = doc?.agent_outputs?.method_run_metadata ?? {};
     for (const methodId of methodOutputIds) {
       if (knownIds.has(methodId)) continue;
+      const runParts = methodId.split("::");
+      const meta = runMeta[methodId];
+      const runTime = formatRunTimestamp(meta?.updated_at);
+      const methodName = meta?.method_id ?? runParts[0] ?? "method";
+      const modelName = meta?.model ?? runParts[1] ?? "run";
+      const inferredLabel =
+        runParts.length === 2 || meta
+          ? `${methodName} @ ${modelName}${runTime ? ` • ${runTime}` : ""}`
+          : methodId;
       merged.push({
         id: methodId,
-        label: methodId,
-        description: "Imported method output",
+        label: inferredLabel,
+        description: runParts.length === 2 ? "Saved method run output" : "Imported method output",
         requires_presidio: false,
         uses_llm: true,
         supports_verify_override: false,
+        prompt_templates: toPromptTemplatesFromSnapshot(meta?.prompt_snapshot),
         available: true,
         unavailable_reason: null,
       });
       knownIds.add(methodId);
     }
     return merged;
-  }, [agentMethods, methodOutputIds]);
+  }, [agentMethods, doc, methodOutputIds]);
 
   useEffect(() => {
     if (methodCatalog.length === 0) return;
@@ -400,14 +498,63 @@ function AppContent() {
       { value: "agent.rule", label: "Agent (rule)" },
       { value: "agent.llm", label: "Agent (llm)" },
     ];
-    for (const method of methodCatalog) {
+    const llmRunMeta = doc?.agent_outputs?.llm_run_metadata ?? {};
+    for (const modelKey of Object.keys(doc?.agent_outputs?.llm_runs ?? {})) {
+      const meta = llmRunMeta[modelKey];
+      const modelName = meta?.model ?? modelKey;
+      const runTime = formatRunTimestamp(meta?.updated_at);
+      options.push({
+        value: `agent.llm_run.${modelKey}` as AnnotationSource,
+        label: `Agent LLM: ${modelName}${runTime ? ` • ${runTime}` : ""}`,
+      });
+    }
+    const methodOptionsSeed =
+      methodCatalog.length > 0
+        ? methodCatalog
+        : ([
+            "default",
+            "extended",
+            "verified",
+            "dual",
+            "dual-split",
+            "presidio",
+            "presidio+default",
+            "presidio+llm-split",
+          ].map((id) => ({
+            id,
+            label: id,
+          })) as Array<{ id: string; label: string }>);
+    for (const method of methodOptionsSeed) {
       options.push({
         value: `agent.method.${method.id}` as AnnotationSource,
         label: `Method: ${method.label}`,
       });
     }
     return options;
-  }, [methodCatalog]);
+  }, [doc, methodCatalog]);
+
+  const llmRunOptions = useMemo(() => {
+    const runs = doc?.agent_outputs?.llm_runs ?? {};
+    const meta = doc?.agent_outputs?.llm_run_metadata ?? {};
+    return Object.keys(runs).map((key) => {
+      const runMeta = meta[key];
+      const modelName = runMeta?.model ?? key;
+      const runTime = formatRunTimestamp(runMeta?.updated_at);
+      return {
+        key,
+        label: modelName,
+        subtitle: runTime,
+      };
+    });
+  }, [doc]);
+
+  useEffect(() => {
+    if (agentLlmRun === "__latest__") return;
+    const exists = llmRunOptions.some((item) => item.key === agentLlmRun);
+    if (!exists) {
+      setAgentLlmRun("__latest__");
+    }
+  }, [agentLlmRun, llmRunOptions]);
 
   useEffect(() => {
     if (sourceOptions.length === 0) return;
@@ -486,6 +633,7 @@ function AppContent() {
   const handleRunAgent = useCallback(
     async (config: AgentConfig) => {
       if (!doc) return;
+      const fileLabel = doc.filename || doc.id;
       setAgentRunning(true);
       try {
         const updated = await runAgent(doc.id, config);
@@ -493,19 +641,28 @@ function AppContent() {
         const warnings = updated.agent_run_warnings ?? [];
         setAgentChunked(hasChunkWarnings(warnings));
         setWarning(nonChunkWarningMessage(warnings));
+        const modelLabel = config.model?.trim();
+        pushRunToast(
+          "success",
+          modelLabel
+            ? `Agent run completed for ${fileLabel} (${modelLabel}).`
+            : `Agent run completed for ${fileLabel}.`,
+        );
         void handleDashboardRefresh();
       } catch (e: unknown) {
         setError(String(e));
+        pushRunToast("error", `Agent run failed for ${fileLabel}.`);
       } finally {
         setAgentRunning(false);
       }
     },
-    [doc, handleDashboardRefresh],
+    [doc, handleDashboardRefresh, pushRunToast],
   );
 
   const handleRunMethod = useCallback(
     async (config: AgentConfig) => {
       if (!doc) return;
+      const fileLabel = doc.filename || doc.id;
       setMethodRunning(true);
       try {
         const updated = await runAgent(doc.id, config);
@@ -513,14 +670,24 @@ function AppContent() {
         const warnings = updated.agent_run_warnings ?? [];
         setMethodChunked(hasChunkWarnings(warnings));
         setWarning(nonChunkWarningMessage(warnings));
+        const methodLabel = config.method_id?.trim();
+        const modelLabel = config.model?.trim();
+        const scope = [methodLabel, modelLabel].filter(Boolean).join(" @ ");
+        pushRunToast(
+          "success",
+          scope
+            ? `Method run completed for ${fileLabel} (${scope}).`
+            : `Method run completed for ${fileLabel}.`,
+        );
         void handleDashboardRefresh();
       } catch (e: unknown) {
         setError(String(e));
+        pushRunToast("error", `Method run failed for ${fileLabel}.`);
       } finally {
         setMethodRunning(false);
       }
     },
-    [doc, handleDashboardRefresh],
+    [doc, handleDashboardRefresh, pushRunToast],
   );
 
   const handleMetricsRefresh = useCallback(async () => {
@@ -561,6 +728,10 @@ function AppContent() {
       case "agent.llm":
         return doc.agent_outputs?.llm ?? [];
       default:
+        if (source.startsWith("agent.llm_run.")) {
+          const runKey = source.slice("agent.llm_run.".length);
+          return doc.agent_outputs?.llm_runs?.[runKey] ?? [];
+        }
         if (source.startsWith("agent.method.")) {
           const methodId = source.slice("agent.method.".length);
           return doc.agent_outputs?.methods?.[methodId] ?? [];
@@ -572,7 +743,12 @@ function AppContent() {
   const getAgentSpans = (): CanonicalSpan[] => {
     if (!doc) return [];
     if (agentView === "rule") return doc.agent_outputs?.rule ?? [];
-    if (agentView === "llm") return doc.agent_outputs?.llm ?? [];
+    if (agentView === "llm") {
+      if (agentLlmRun !== "__latest__") {
+        return doc.agent_outputs?.llm_runs?.[agentLlmRun] ?? [];
+      }
+      return doc.agent_outputs?.llm ?? [];
+    }
     return doc.agent_annotations;
   };
 
@@ -586,7 +762,11 @@ function AppContent() {
     if (paneType === "manual") return "manual";
     if (paneType === "agent") {
       if (agentView === "rule") return "agent.rule";
-      if (agentView === "llm") return "agent.llm";
+      if (agentView === "llm") {
+        return agentLlmRun === "__latest__"
+          ? "agent.llm"
+          : (`agent.llm_run.${agentLlmRun}` as AnnotationSource);
+      }
       return "agent";
     }
     if (paneType === "methods") {
@@ -663,6 +843,7 @@ function AppContent() {
         onDelete={handleDeleteDocument}
         onExportSession={handleExportSession}
         onImportSession={handleImportSession}
+        exportSourceOptions={sourceOptions}
         sessionProfile={sessionProfile}
         onSessionProfileChange={setSessionProfile}
         onSaveSessionProfile={handleSaveSessionProfile}
@@ -688,6 +869,13 @@ function AppContent() {
           >
             Prompt Lab
           </button>
+          <button
+            type="button"
+            className={mainTab === "dashboard" ? "active" : ""}
+            onClick={() => setMainTab("dashboard")}
+          >
+            Dashboard
+          </button>
         </div>
         {mainTab === "prompt_lab" ? (
           <PromptLabTab
@@ -695,6 +883,78 @@ function AppContent() {
             selectedDocumentId={selectedId}
             onSelectDocument={setSelectedId}
           />
+        ) : mainTab === "dashboard" ? (
+          <section className="dashboard-tab">
+            <div className="dashboard-tab-toolbar">
+              <div className="dashboard-tab-controls">
+                <label>
+                  Reference
+                  <select value={reference} onChange={(e) => setReference(e.target.value as AnnotationSource)}>
+                    {sourceOptions.map((option) => (
+                      <option key={`dash-ref-${option.value}`} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Hypothesis
+                  <select
+                    value={hypothesis}
+                    onChange={(e) => setHypothesis(e.target.value as AnnotationSource)}
+                  >
+                    {sourceOptions.map((option) => (
+                      <option key={`dash-hyp-${option.value}`} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Match
+                  <select
+                    value={matchMode}
+                    onChange={(e) => setMatchMode(e.target.value as MatchMode)}
+                  >
+                    <option value="exact">Exact</option>
+                    <option value="overlap">Overlap</option>
+                  </select>
+                </label>
+                <label>
+                  Label Compare
+                  <select
+                    value={labelProjection}
+                    onChange={(e) => setLabelProjection(e.target.value as LabelProjection)}
+                  >
+                    <option value="native">Native</option>
+                    <option value="coarse_simple">Coarse (advanced→simple)</option>
+                  </select>
+                </label>
+              </div>
+              <button
+                type="button"
+                className="dashboard-tab-refresh"
+                onClick={() => void handleDashboardRefresh()}
+              >
+                Refresh Dashboard
+              </button>
+            </div>
+            <DashboardPanel
+              dashboard={dashboard}
+              loading={dashboardLoading}
+              onRefresh={handleDashboardRefresh}
+              selectedId={selectedId}
+              onSelectDocument={(docId) => {
+                setSelectedId(docId);
+                setMainTab("workspace");
+              }}
+            />
+            {!dashboard && !dashboardLoading && (
+              <div className="dashboard-tab-empty">
+                No dashboard metrics yet. Click <strong>Refresh Dashboard</strong>.
+              </div>
+            )}
+          </section>
         ) : (
           <>
             {!doc && !loading && (
@@ -720,13 +980,6 @@ function AppContent() {
                   labelProjection={labelProjection}
                   onLabelProjectionChange={setLabelProjection}
                   saveStatus={saveStatus}
-                />
-                <DashboardPanel
-                  dashboard={dashboard}
-                  loading={dashboardLoading}
-                  onRefresh={handleDashboardRefresh}
-                  selectedId={selectedId}
-                  onSelectDocument={setSelectedId}
                 />
                 <PaneContainer>
                   {allPanes.map((paneType) => {
@@ -776,6 +1029,9 @@ function AppContent() {
                             processedWithChunking={agentChunked}
                             activeOutput={agentView}
                             onActiveOutputChange={setAgentView}
+                            llmRunOptions={llmRunOptions}
+                            activeLlmRunKey={agentLlmRun}
+                            onActiveLlmRunKeyChange={setAgentLlmRun}
                             diffSpans={getDiffSpans("agent")}
                             onRunAgent={handleRunAgent}
                             running={agentRunning}
@@ -823,6 +1079,20 @@ function AppContent() {
       {warning && (
         <div className="warning-toast" onClick={() => setWarning(null)}>
           {warning}
+        </div>
+      )}
+      {runToasts.length > 0 && (
+        <div className="run-toast-stack" aria-live="polite" aria-atomic="false">
+          {runToasts.map((toast) => (
+            <div
+              key={toast.id}
+              className={`run-toast ${toast.kind}`}
+              onClick={() => dismissRunToast(toast.id)}
+              role="status"
+            >
+              {toast.message}
+            </div>
+          ))}
         </div>
       )}
     </div>

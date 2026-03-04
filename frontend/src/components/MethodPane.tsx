@@ -44,9 +44,7 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
     ref,
   ) => {
     const [configOpen, setConfigOpen] = useState(false);
-    const [systemPrompt, setSystemPrompt] = useState(
-      "Identify all PII in the transcript. Label each span with: NAME, LOCATION, SCHOOL, DATE, AGE, PHONE, EMAIL, URL, or MISC_ID.",
-    );
+    const [systemPrompt, setSystemPrompt] = useState("");
     const [model, setModel] = useState("openai.gpt-5.3-codex");
     const [customModel, setCustomModel] = useState("");
     const [temperature, setTemperature] = useState(0);
@@ -107,9 +105,11 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
     }, [activeMethod, methods]);
 
     const selectedMethod = methods.find((method) => method.id === activeMethod) ?? null;
+    const savedMethodRuns = methods.filter((method) => method.id.includes("::"));
     const methodAvailable = selectedMethod?.available ?? false;
     const methodUsesLlm = selectedMethod?.uses_llm ?? true;
     const supportsVerifyOverride = selectedMethod?.supports_verify_override ?? false;
+    const promptTemplates = selectedMethod?.prompt_templates ?? [];
 
     const effectiveModel = model === "__custom__" ? customModel.trim() : model;
     const selectedPreset =
@@ -244,13 +244,39 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
           )}
           {methodUsesLlm && (
             <>
+              {promptTemplates.length > 0 && (
+                <div className="field">
+                  <span className="field-label">
+                    Built-in Method Prompt{promptTemplates.length > 1 ? "s" : ""}
+                  </span>
+                  <details className="method-prompt-details">
+                    <summary>
+                      Show {promptTemplates.length} prompt
+                      {promptTemplates.length > 1 ? "s" : ""}
+                    </summary>
+                    {promptTemplates.map((template) => (
+                      <div key={`method-prompt-${template.pass_index}`} className="method-prompt-block">
+                        <span className="config-note">
+                          Pass {template.pass_index}
+                          {template.entity_types && template.entity_types.length > 0
+                            ? ` • ${template.entity_types.join(", ")}`
+                            : ""}
+                          {template.source === "saved" ? " • from saved run" : ""}
+                        </span>
+                        <textarea value={template.system_prompt} readOnly rows={8} />
+                      </div>
+                    ))}
+                  </details>
+                </div>
+              )}
               <div className="field">
-                <label htmlFor="method-system-prompt">System Prompt</label>
+                <label htmlFor="method-system-prompt">Additional Constraints (optional)</label>
                 <textarea
                   id="method-system-prompt"
                   name="method_system_prompt"
                   value={systemPrompt}
                   onChange={(e) => setSystemPrompt(e.target.value)}
+                  placeholder="Optional: appended to the selected method's built-in prompt."
                 />
               </div>
               <div className="field">
@@ -489,6 +515,21 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
           ref={ref}
           onScroll={(e) => onScroll((e.target as HTMLDivElement).scrollTop)}
         >
+          {savedMethodRuns.length > 0 && (
+            <div className="saved-run-chip-row">
+              {savedMethodRuns.map((method) => (
+                <button
+                  key={`method-run-chip-${method.id}`}
+                  type="button"
+                  className={`saved-run-chip ${activeMethod === method.id ? "active" : ""}`}
+                  onClick={() => onActiveMethodChange(method.id)}
+                  title={method.label}
+                >
+                  <span className="saved-run-chip-primary">{method.label}</span>
+                </button>
+              ))}
+            </div>
+          )}
           {spans.length === 0 && !running ? (
             <span style={{ color: "#888" }}>
               No method annotations yet for the selected method.

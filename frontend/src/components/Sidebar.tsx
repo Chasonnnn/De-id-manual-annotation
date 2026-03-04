@@ -1,5 +1,5 @@
-import { useCallback, useRef, useState } from "react";
-import type { DocumentSummary, SessionProfile } from "../types";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { AnnotationSource, DocumentSummary, SessionProfile } from "../types";
 
 interface Props {
   documents: DocumentSummary[];
@@ -7,8 +7,9 @@ interface Props {
   onSelect: (id: string) => void;
   onUpload: (file: File) => void;
   onDelete: (id: string) => void;
-  onExportSession: () => void;
+  onExportSession: (mode: "full" | "ground_truth", source: AnnotationSource) => void;
   onImportSession: (file: File) => void;
+  exportSourceOptions: Array<{ value: AnnotationSource; label: string }>;
   sessionProfile: SessionProfile;
   onSessionProfileChange: (profile: SessionProfile) => void;
   onSaveSessionProfile: () => void;
@@ -27,6 +28,7 @@ export default function Sidebar({
   onDelete,
   onExportSession,
   onImportSession,
+  exportSourceOptions,
   sessionProfile,
   onSessionProfileChange,
   onSaveSessionProfile,
@@ -40,6 +42,8 @@ export default function Sidebar({
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
+  const [exportMode, setExportMode] = useState<"full" | "ground_truth">("full");
+  const [exportSource, setExportSource] = useState<AnnotationSource>("manual");
 
   const filtered = documents.filter((d) =>
     d.filename.toLowerCase().includes(search.toLowerCase()),
@@ -65,6 +69,14 @@ export default function Sidebar({
     },
     [onUpload, uploading],
   );
+
+  useEffect(() => {
+    if (exportSourceOptions.length === 0) return;
+    const known = exportSourceOptions.some((option) => option.value === exportSource);
+    if (!known) {
+      setExportSource(exportSourceOptions[0]?.value ?? "manual");
+    }
+  }, [exportSource, exportSourceOptions]);
 
   return (
     <aside className="sidebar">
@@ -165,19 +177,6 @@ export default function Sidebar({
               placeholder="Your name"
               disabled={savingProfile}
             />
-            <label htmlFor="bundle-notes">Notes</label>
-            <textarea
-              id="bundle-notes"
-              value={sessionProfile.notes}
-              onChange={(e) =>
-                onSessionProfileChange({
-                  ...sessionProfile,
-                  notes: e.target.value,
-                })
-              }
-              placeholder="Scope, instructions, caveats for collaborators"
-              disabled={savingProfile}
-            />
             <button
               type="button"
               className="sidebar-action-btn"
@@ -190,11 +189,44 @@ export default function Sidebar({
           <button
             type="button"
             className="sidebar-action-btn"
-            onClick={onExportSession}
+            onClick={() => onExportSession(exportMode, exportSource)}
             disabled={exporting || importing || uploading || savingProfile}
           >
-            {exporting ? "Exporting..." : "Export Session"}
+            {exporting
+              ? "Exporting..."
+              : exportMode === "full"
+                ? "Export Full Session"
+                : "Export Ground Truth JSONs"}
           </button>
+          <div className="bundle-meta">
+            <label htmlFor="bundle-export-mode">Export Type</label>
+            <select
+              id="bundle-export-mode"
+              value={exportMode}
+              onChange={(e) => setExportMode(e.target.value as "full" | "ground_truth")}
+              disabled={exporting || importing || uploading || savingProfile}
+            >
+              <option value="full">Full Session Bundle</option>
+              <option value="ground_truth">Ground Truth JSONs (ZIP)</option>
+            </select>
+            {exportMode === "ground_truth" && (
+              <>
+                <label htmlFor="bundle-export-source">Ground Truth Source</label>
+                <select
+                  id="bundle-export-source"
+                  value={exportSource}
+                  onChange={(e) => setExportSource(e.target.value as AnnotationSource)}
+                  disabled={exporting || importing || uploading || savingProfile}
+                >
+                  {exportSourceOptions.map((option) => (
+                    <option key={`export-source-${option.value}`} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+          </div>
           <button
             type="button"
             className="sidebar-action-btn"

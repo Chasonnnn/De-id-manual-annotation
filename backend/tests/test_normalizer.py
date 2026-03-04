@@ -116,8 +116,14 @@ def test_parse_jsonl_file():
     ]
     raw = "\n".join(json.dumps(r) for r in records).encode()
     docs = parse_file(raw, "test.jsonl", "doc4")
-    assert len(docs) == 2
-    assert docs[0].pre_annotations[0].text == "Bob"
+    assert len(docs) == 1
+    doc = docs[0]
+    assert doc.id == "doc4"
+    assert doc.filename == "test.jsonl"
+    assert doc.raw_text == "a: Hi Bob\nb: Hello"
+    assert doc.pre_annotations[0].text == "Bob"
+    assert doc.pre_annotations[0].start == 6
+    assert doc.pre_annotations[0].end == 9
 
 
 def test_jsonl_offset_remapping():

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -22,7 +22,19 @@ class UtteranceRow(BaseModel):
 class AgentOutputs(BaseModel):
     rule: list[CanonicalSpan] = Field(default_factory=list)
     llm: list[CanonicalSpan] = Field(default_factory=list)
+    llm_runs: dict[str, list[CanonicalSpan]] = Field(default_factory=dict)
+    llm_run_metadata: dict[str, "SavedRunMetadata"] = Field(default_factory=dict)
     methods: dict[str, list[CanonicalSpan]] = Field(default_factory=dict)
+    method_run_metadata: dict[str, "SavedRunMetadata"] = Field(default_factory=dict)
+
+
+class SavedRunMetadata(BaseModel):
+    mode: Literal["manual", "rule", "llm", "method"]
+    updated_at: str
+    model: str | None = None
+    method_id: str | None = None
+    label_profile: Literal["simple", "advanced"] | None = None
+    prompt_snapshot: dict[str, Any] | None = None
 
 
 class LLMConfidenceMetric(BaseModel):

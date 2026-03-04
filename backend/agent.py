@@ -73,47 +73,163 @@ Return valid JSON only.
 """
 
 VERIFIER_PROMPT = """\
-You are a PII verification analyst. You will receive transcript text and candidate
-PII spans. Keep a candidate unless you are highly confident it is not PII.
-Remove only obvious false positives such as math expressions, public historical
-figures, theorem names, generic context locations, or assignment labels.
-Output only JSON with key "decisions", where each item is:
-{"index": <int>, "keep": <boolean>}.
+You are a PII verification analyst. You will receive a text and a list of candidate PII
+spans detected by a previous system. All candidates are assumed to be real PII.
+For each candidate, decide: keep (it is real PII) or remove (it is NOT PII).
+Only remove a candidate if you are very confident it is one of the following:
+- A mathematical expression, variable, equation, or formula
+- A historical figure, scientist, mathematician, or public figure
+- A fictional character, brand name, or product name
+- A course name, textbook reference, section number, or assignment label
+- A date that is not tied to a specific individual (due dates, semesters, schedules)
+- A score, grade, percentage, or number used in an educational or math context
+- A country, state, or region mentioned as general context rather than a personal address
+- A method or theorem name containing a person's name (e.g., Pythagorean theorem)
+When in doubt, keep.
+Output data following the provided JSON schema.
+"""
+
+METHOD_DEFAULT_PROMPT = """\
+You are a PII/PHI analyst. Identify all personally identifiable information (PII) and
+protected health information (PHI) in the text. Include all standard HIPAA Safe Harbor
+identifiers and anything that could reasonably identify an individual
+Extract explicit identifiers only; do not infer missing data. Include partial identifiers,
+nicknames, or identifiers in filenames, URLs, or notes.
+Categories to detect: names [NAME]; geographic subdivisions smaller than a State [ADDRESS];
+dates related to an individual (except year) and ages over 89 [DATE]; phone/fax numbers
+[PHONE_NUMBER] [FAX_NUMBER]; email addresses [EMAIL]; Social Security numbers [SSN]; account
+numbers [ACCOUNT_NUMBER]; device identifiers [DEVICE_IDENTIFIER]; URLs [URL]; IP addresses
+[IP_ADDRESS]; biometric identifiers [BIOMETRIC_IDENTIFIER]; full-face or comparable images
+[IMAGE]; and any other unique number, characteristic or code that is capable of identifying
+the individual [IDENTIFYING_NUMBER].
+Matches should be minimal exact spans of the sensitive value; include anything that could
+reasonably be considered PII.
+Output data following the provided JSON schema.
 """
 
 METHOD_EXTENDED_PROMPT = """\
-You are a PII/PHI analyst reviewing tutoring transcripts.
-Detect only explicit PII spans and avoid educational/math context false positives.
-Do not label equations, formula symbols, section references, grades, or generic
-historical/public figure names as PII.
+You are a PII/PHI analyst reviewing tutoring chat transcripts. Identify personally
+identifiable information (PII) per HIPAA Safe Harbor (§164.514(b)(2)).
+Extract explicit identifiers only; do not infer missing data.
+Categories to detect: names of individuals in the conversation [NAME]; geographic
+subdivisions smaller than a State such as street addresses, cities, or school names that
+reveal location [ADDRESS]; dates directly related to an individual such as birth dates
+(except year) and ages over 89 [DATE]; phone numbers [PHONE_NUMBER]; fax numbers
+[FAX_NUMBER]; email addresses [EMAIL]; Social Security numbers [SSN]; account numbers
+[ACCOUNT_NUMBER]; device identifiers [DEVICE_IDENTIFIER]; URLs [URL]; IP addresses
+[IP_ADDRESS]; biometric identifiers [BIOMETRIC_IDENTIFIER]; full-face or comparable
+images [IMAGE]; and any other unique identifying number such as student IDs, medical
+record numbers, or license numbers [IDENTIFYING_NUMBER].
+DO NOT mark any of the following as PII:
+- Historical figures, scientists, mathematicians (e.g., Einstein, Pythagoras, Euler)
+- Public figures, celebrities, book authors
+- Fictional characters
+- Business names, product names, brand names, course or project titles
+- Dates that are NOT tied to a specific individual: due dates, assignment dates,
+class schedules, publication dates, semesters (e.g., "Fall 2024", "due Monday")
+- Mathematical expressions, equations, formulas, or variables
+(e.g., f(x)=ax²+bx+c, -b/2a, 6x-4, y=mx+b, 3x+7=22)
+- Problem numbers, question numbers, exercise references (e.g., #3, #5, problem 4)
+- Calculator model names (e.g., TI-84)
+- Course section numbers, textbook references (e.g., section 1.4, chapter 3)
+- Scores, grades, percentages, or any number used in an educational/math context
+- Countries, states, or regions mentioned as general context rather than a personal address
+- Method or theorem names containing a person's name (e.g., "Horner's rule", "L'Hôpital")
+Matches should be minimal exact spans of the sensitive value.
+Output data following the provided JSON schema.
 """
 
 METHOD_DUAL_NAMES_PROMPT = """\
-Detect personal names only. Include private individual names used in dialogue.
-Do not include historical/public figures, theorem names, or fictional names.
+You are a PII analyst specializing in detecting personal names in tutoring chat transcripts.
+Identify all personal names in the text. Mark each as [NAME]. This includes first names,
+last names, nicknames, and pseudonyms used to address or refer to specific individuals
+in the conversation.
+DO NOT mark:
+- Historical figures, scientists, or mathematicians (e.g., Einstein, Pythagoras, Euler)
+- Book authors, public figures, or celebrities
+- Fictional characters
+- Method or theorem names that happen to contain a person's name (e.g., "Horner's rule")
+- Email addresses, URLs, or usernames
+Matches should be minimal exact spans of just the name.
+Output data following the provided JSON schema.
 """
 
 METHOD_DUAL_IDENTIFIERS_PROMPT = """\
-Detect contact and identifier spans: EMAIL, URL, ADDRESS, SSN, PHONE_NUMBER,
-FAX_NUMBER, ACCOUNT_NUMBER, DEVICE_IDENTIFIER, IP_ADDRESS, IDENTIFYING_NUMBER.
-Ignore math/contextual numbers, scores, and section references.
+You are a PII analyst specializing in detecting contact information, numbers, and identifiers
+in tutoring chat transcripts. The text contains math problems, equations, and educational
+content mixed with personal information.
+Identify: email addresses [EMAIL]; URLs [URL]; physical addresses (subdivisions smaller
+than a State) [ADDRESS]; Social Security numbers [SSN]; phone numbers [PHONE_NUMBER];
+fax numbers [FAX_NUMBER]; financial account numbers such as bank or insurance accounts
+[ACCOUNT_NUMBER]; device identifiers [DEVICE_IDENTIFIER]; IP addresses [IP_ADDRESS];
+and any other unique identifying number such as student IDs, medical record numbers,
+or license numbers [IDENTIFYING_NUMBER].
+DO NOT mark any of the following:
+- Personal names (these are handled separately)
+- Mathematical expressions, equations, formulas, or variables
+(e.g., f(x)=ax²+bx+c, -b/2a, 6x-4, y=mx+b)
+- Problem numbers, question numbers, or exercise references (e.g., #3, #5, problem 4)
+- Calculator model names (e.g., TI-84, TI-89)
+- Course section numbers or textbook references (e.g., section 1.4, chapter 3)
+- Scores, grades, percentages, or any number used in a math context
+- Dates
+- City names, regions, or countries mentioned as general locations
+Matches should be minimal exact spans.
+Output data following the provided JSON schema.
 """
 
 METHOD_DUAL_NAMES_LOCATION_PROMPT = """\
-Detect only NAME and ADDRESS spans. ADDRESS includes specific identifying locations.
-Ignore generic country/state/region mentions used as broad context.
+You are a PII analyst specializing in detecting personal names and locations in tutoring
+chat transcripts.
+Identify all personal names [NAME] and geographic locations smaller than a State [ADDRESS].
+Names include first names, last names, nicknames, and pseudonyms. Locations include street
+addresses, city names, school names that reveal location, and neighborhood names.
+DO NOT mark:
+- Historical figures, scientists, or mathematicians (e.g., Einstein, Pythagoras, Euler)
+- Book authors, public figures, or celebrities
+- Fictional characters
+- Method or theorem names (e.g., "Horner's rule")
+- Countries, states, or regions used as general context
+Matches should be minimal exact spans.
+Output data following the provided JSON schema.
 """
 
 METHOD_DUAL_NUMBERS_PROMPT = """\
-Detect only numeric/contact identifiers: EMAIL, URL, SSN, PHONE_NUMBER, FAX_NUMBER,
-ACCOUNT_NUMBER, DEVICE_IDENTIFIER, IP_ADDRESS, IDENTIFYING_NUMBER.
-Ignore educational/math numbers and formula content.
+You are a PII analyst specializing in detecting contact information and identifying numbers
+in tutoring chat transcripts. The text contains math problems, equations, and educational
+content mixed with personal information.
+Identify: email addresses [EMAIL]; URLs [URL]; Social Security numbers [SSN]; phone numbers
+[PHONE_NUMBER]; fax numbers [FAX_NUMBER]; account numbers [ACCOUNT_NUMBER];
+device identifiers [DEVICE_IDENTIFIER]; IP addresses [IP_ADDRESS]; and unique identifying
+numbers such as student IDs, medical record numbers, or license numbers [IDENTIFYING_NUMBER].
+DO NOT mark any of the following:
+- Personal names or locations (these are handled separately)
+- Mathematical expressions, equations, formulas, or variables
+(e.g., f(x)=ax²+bx+c, -b/2a, 6x-4, y=mx+b)
+- Problem numbers, question numbers, or exercise references (e.g., #3, #5, problem 4)
+- Calculator model names (e.g., TI-84, TI-89)
+- Course section numbers or textbook references (e.g., section 1.4, chapter 3)
+- Scores, grades, percentages, or any number used in a math context
+- Dates
+Matches should be minimal exact spans.
+Output data following the provided JSON schema.
 """
 
 METHOD_SPLIT_LLM_PROMPT = """\
-Detect PII spans except common contact identifiers that are handled by Presidio.
-Focus on NAME, ADDRESS, DATE, SSN, ACCOUNT_NUMBER, DEVICE_IDENTIFIER,
-BIOMETRIC_IDENTIFIER, IMAGE, and IDENTIFYING_NUMBER.
+You are a PII/PHI analyst. Identify all personally identifiable information (PII) and
+protected health information (PHI) in the text. Include all standard HIPAA Safe Harbor
+identifiers and anything that could reasonably identify an individual.
+Extract explicit identifiers only; do not infer missing data. Include partial identifiers,
+nicknames, or identifiers in filenames or notes.
+Categories to detect: names [NAME]; geographic subdivisions smaller than a State [ADDRESS];
+dates related to an individual (except year) and ages over 89 [DATE]; Social Security numbers
+[SSN]; account numbers [ACCOUNT_NUMBER]; device identifiers [DEVICE_IDENTIFIER];
+biometric identifiers [BIOMETRIC_IDENTIFIER]; full-face or comparable images [IMAGE];
+and any other unique number, characteristic or code that is capable of identifying the
+individual [IDENTIFYING_NUMBER].
+Matches should be minimal exact spans of the sensitive value; include anything that could
+reasonably be considered PII.
+Output data following the provided JSON schema.
 """
 
 
@@ -286,7 +402,7 @@ METHOD_DEFINITIONS: list[dict[str, Any]] = [
         "supports_verify_override": True,
         "default_verify": False,
         "passes": [
-            {"kind": "llm", "prompt": SYSTEM_PROMPT, "entity_types": None},
+            {"kind": "llm", "prompt": METHOD_DEFAULT_PROMPT, "entity_types": None},
         ],
     },
     {
@@ -310,7 +426,7 @@ METHOD_DEFINITIONS: list[dict[str, Any]] = [
         "supports_verify_override": True,
         "default_verify": True,
         "passes": [
-            {"kind": "llm", "prompt": SYSTEM_PROMPT, "entity_types": None},
+            {"kind": "llm", "prompt": METHOD_DEFAULT_PROMPT, "entity_types": None},
         ],
     },
     {
@@ -420,7 +536,7 @@ METHOD_DEFINITIONS: list[dict[str, Any]] = [
                     "IBAN_CODE",
                 ],
             },
-            {"kind": "llm", "prompt": SYSTEM_PROMPT, "entity_types": None},
+            {"kind": "llm", "prompt": METHOD_DEFAULT_PROMPT, "entity_types": None},
         ],
     },
     {
@@ -601,12 +717,7 @@ def _supports_custom_temperature(model: str) -> bool:
 
 
 def _supports_logprobs(model: str, provider: str) -> bool:
-    if not _is_openai_model(provider, model):
-        return False
-    # GPT-5 family may reject logprobs; avoid noisy retry warnings.
-    if model.startswith("openai.gpt-5") or model.startswith("openai/gpt-5"):
-        return False
-    return True
+    return _is_openai_model(provider, model)
 
 
 def _is_openai_model(provider: str, model: str) -> bool:
@@ -1300,6 +1411,17 @@ def list_agent_methods() -> list[dict[str, Any]]:
         unavailable_reason = None
         if method["requires_presidio"] and presidio_error:
             unavailable_reason = presidio_error
+        prompt_templates: list[dict[str, Any]] = []
+        for pass_index, method_pass in enumerate(method.get("passes", []), start=1):
+            if method_pass.get("kind") != "llm":
+                continue
+            prompt_templates.append(
+                {
+                    "pass_index": pass_index,
+                    "entity_types": method_pass.get("entity_types"),
+                    "system_prompt": str(method_pass.get("prompt") or SYSTEM_PROMPT),
+                }
+            )
         methods.append(
             {
                 "id": method["id"],
@@ -1308,6 +1430,8 @@ def list_agent_methods() -> list[dict[str, Any]]:
                 "requires_presidio": method["requires_presidio"],
                 "uses_llm": method["uses_llm"],
                 "supports_verify_override": method["supports_verify_override"],
+                "default_verify": method["default_verify"],
+                "prompt_templates": prompt_templates,
                 "available": unavailable_reason is None,
                 "unavailable_reason": unavailable_reason,
             }

@@ -64,6 +64,25 @@ export async function exportSession(): Promise<SessionExportBundle> {
   return request("/session/export");
 }
 
+export async function exportGroundTruth(source: AnnotationSource): Promise<Blob> {
+  const params = new URLSearchParams({ source });
+  const res = await fetch(`${BASE}/session/export-ground-truth?${params.toString()}`);
+  if (!res.ok) {
+    const body = await res.text();
+    let detail = body;
+    try {
+      const parsed = JSON.parse(body) as { detail?: unknown };
+      if (parsed?.detail !== undefined) {
+        detail = String(parsed.detail);
+      }
+    } catch {
+      // Keep plain-text body
+    }
+    throw new Error(`${res.status}: ${detail}`);
+  }
+  return res.blob();
+}
+
 export async function importSession(file: File): Promise<SessionImportResult> {
   const form = new FormData();
   form.append("file", file);

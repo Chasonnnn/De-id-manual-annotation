@@ -200,11 +200,63 @@ def parse_jsonl_record(data: dict, filename: str, doc_id: str) -> CanonicalDocum
     )
 
 
+def _merge_jsonl_documents(
+    record_docs: list[CanonicalDocument], filename: str, doc_id: str
+) -> CanonicalDocument:
+    parts: list[str] = []
+    utterances: list[UtteranceRow] = []
+    spans: list[CanonicalSpan] = []
+    offset = 0
+
+    for index, record_doc in enumerate(record_docs):
+        if index > 0:
+            offset += 1  # for \n separator
+        parts.append(record_doc.raw_text)
+
+        for row in record_doc.utterances:
+            utterances.append(
+                UtteranceRow(
+                    speaker=row.speaker,
+                    text=row.text,
+                    global_start=row.global_start + offset,
+                    global_end=row.global_end + offset,
+                )
+            )
+
+        for span in record_doc.pre_annotations:
+            spans.append(
+                CanonicalSpan(
+                    start=span.start + offset,
+                    end=span.end + offset,
+                    label=span.label,
+                    text=span.text,
+                )
+            )
+
+        offset += len(record_doc.raw_text)
+
+    full_text = "\n".join(parts)
+    deduped = _dedup_spans(spans)
+    labels_from_docs = [label for doc in record_docs for label in doc.label_set]
+    labels_from_spans = [s.label for s in deduped]
+
+    return CanonicalDocument(
+        id=doc_id,
+        filename=filename,
+        format="jsonl",
+        raw_text=full_text,
+        utterances=utterances,
+        pre_annotations=deduped,
+        label_set=_collect_label_set(labels_from_docs, labels_from_spans),
+    )
+
+
 def parse_file(raw_bytes: bytes, filename: str, doc_id: str) -> list[CanonicalDocument]:
     text = raw_bytes.decode("utf-8")
     docs: list[CanonicalDocument] = []
 
     if filename.endswith(".jsonl"):
+        record_docs: list[CanonicalDocument] = []
         for i, line in enumerate(text.strip().splitlines()):
             line = line.strip()
             if not line:
@@ -212,7 +264,9 @@ def parse_file(raw_bytes: bytes, filename: str, doc_id: str) -> list[CanonicalDo
             data = json.loads(line)
             rid = f"{doc_id}_line{i}"
             record_name = f"{filename}#record-{i}"
-            docs.append(parse_jsonl_record(data, record_name, rid))
+            record_docs.append(parse_jsonl_record(data, record_name, rid))
+        if record_docs:
+            docs.append(_merge_jsonl_documents(record_docs, filename, doc_id))
     else:
         data = json.loads(text)
         fmt = _detect_format(data)

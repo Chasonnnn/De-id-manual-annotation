@@ -1,4 +1,6 @@
 import json
+import zipfile
+from io import BytesIO
 from types import SimpleNamespace
 from typing import Literal
 
@@ -307,17 +309,43 @@ def test_session_profile_get_and_update(client):
         json={
             "project_name": "HIPS QA",
             "author": "Chason",
-            "notes": "Compare pre-annotations vs manual and llm outputs",
         },
     )
     assert put_resp.status_code == 200
     profile = put_resp.json()
     assert profile["project_name"] == "HIPS QA"
     assert profile["author"] == "Chason"
+    assert "notes" not in profile
 
     export_resp = client.get("/api/session/export")
     assert export_resp.status_code == 200
     assert export_resp.json()["project"]["project_name"] == "HIPS QA"
+    assert "notes" not in export_resp.json()["project"]
+
+
+def test_session_import_legacy_project_notes_are_ignored(client):
+    payload = {
+        "format": "annotation_tool_session",
+        "version": 3,
+        "project": {
+            "project_name": "Legacy Bundle",
+            "author": "Teammate",
+            "notes": "Legacy notes field should be ignored",
+        },
+        "documents": [],
+    }
+    import_resp = client.post(
+        "/api/session/import",
+        files={"file": ("session_bundle.json", json.dumps(payload).encode(), "application/json")},
+    )
+    assert import_resp.status_code == 200
+
+    profile_resp = client.get("/api/session/profile")
+    assert profile_resp.status_code == 200
+    profile = profile_resp.json()
+    assert profile["project_name"] == "Legacy Bundle"
+    assert profile["author"] == "Teammate"
+    assert "notes" not in profile
 
 
 def test_session_import_rejects_unknown_bundle_version(client):
@@ -1647,6 +1675,66 @@ def test_prompt_lab_preset_variant_requires_preset_method_id(client):
     assert "preset_method_id required" in resp.json()["detail"]
 
 
+def test_prompt_lab_preset_variant_allows_presidio_plus_default(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    calls = {"method": 0}
+
+    def fake_run_method_with_metadata(**kwargs):
+        calls["method"] += 1
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            warnings=[],
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    upload_resp = _upload(client)
+    doc_id = upload_resp.json()["id"]
+    create_resp = client.post(
+        "/api/prompt-lab/runs",
+        json={
+            "doc_ids": [doc_id],
+            "prompts": [
+                {
+                    "id": "p1",
+                    "label": "Presidio + Default",
+                    "variant_type": "preset",
+                    "preset_method_id": "presidio+default",
+                }
+            ],
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "reference_source": "manual",
+                "fallback_reference_source": "pre",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+    final = _wait_for_prompt_lab_terminal(client, run_id)
+    assert final["status"] == "completed"
+    assert calls["method"] >= 1
+    assert final["prompts"][0]["preset_method_id"] == "presidio+default"
+
+
 def test_prompt_lab_enforces_variant_limits(client):
     upload_resp = _upload(client)
     assert upload_resp.status_code == 200
@@ -1840,3 +1928,217 @@ def test_prompt_lab_export_import_remaps_doc_ids(client, monkeypatch):
     assert detail_resp.status_code == 200
     detail = detail_resp.json()
     assert new_doc_id in detail["doc_ids"]
+
+
+def test_agent_llm_persists_outputs_per_model(client, monkeypatch):
+    supported_models = {"openai.gpt-5.2-chat", "openai.gpt-5.3-codex"}
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: sorted(supported_models),
+    )
+
+    def fake_run_llm_with_metadata(**kwargs):
+        model = str(kwargs.get("model"))
+        if model == "openai.gpt-5.2-chat":
+            spans = [CanonicalSpan(start=6, end=10, label="NAME", text="Anna")]
+        else:
+            spans = [CanonicalSpan(start=0, end=5, label="NAME", text="Hello")]
+        return SimpleNamespace(
+            spans=spans,
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(model=model),
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    run_a = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "llm",
+            "model": "openai.gpt-5.2-chat",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com/v1",
+        },
+    )
+    assert run_a.status_code == 200
+    run_b = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "llm",
+            "model": "openai.gpt-5.3-codex",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com/v1",
+        },
+    )
+    assert run_b.status_code == 200
+
+    doc_resp = client.get(f"/api/documents/{doc_id}")
+    assert doc_resp.status_code == 200
+    payload = doc_resp.json()
+    assert payload["agent_outputs"]["llm"][0]["text"] == "Hello"
+    assert set(payload["agent_outputs"]["llm_runs"].keys()) == supported_models
+    assert payload["agent_outputs"]["llm_runs"]["openai.gpt-5.2-chat"][0]["text"] == "Anna"
+    assert payload["agent_outputs"]["llm_runs"]["openai.gpt-5.3-codex"][0]["text"] == "Hello"
+    assert payload["agent_outputs"]["llm_run_metadata"]["openai.gpt-5.2-chat"]["mode"] == "llm"
+    assert (
+        payload["agent_outputs"]["llm_run_metadata"]["openai.gpt-5.2-chat"]["model"]
+        == "openai.gpt-5.2-chat"
+    )
+    llm_prompt_snapshot = payload["agent_outputs"]["llm_run_metadata"]["openai.gpt-5.2-chat"][
+        "prompt_snapshot"
+    ]
+    assert llm_prompt_snapshot["format_guardrail_appended"] is True
+    assert "requested_system_prompt" in llm_prompt_snapshot
+    assert "effective_system_prompt" in llm_prompt_snapshot
+    assert "updated_at" in payload["agent_outputs"]["llm_run_metadata"]["openai.gpt-5.2-chat"]
+
+    metrics_resp = client.get(
+        f"/api/documents/{doc_id}/metrics",
+        params={
+            "reference": "pre",
+            "hypothesis": "agent.llm_run.openai.gpt-5.2-chat",
+            "match_mode": "exact",
+        },
+    )
+    assert metrics_resp.status_code == 200
+
+
+def test_method_persists_outputs_per_method_model(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.2-chat", "openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_method_with_metadata(**kwargs):
+        model = str(kwargs.get("model"))
+        if model == "openai.gpt-5.2-chat":
+            spans = [CanonicalSpan(start=6, end=10, label="NAME", text="Anna")]
+        else:
+            spans = [CanonicalSpan(start=17, end=20, label="NAME", text="Sue")]
+        return SimpleNamespace(spans=spans, warnings=[])
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    run_a = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "method",
+            "method_id": "default",
+            "model": "openai.gpt-5.2-chat",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com/v1",
+        },
+    )
+    assert run_a.status_code == 200
+    run_b = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "method",
+            "method_id": "default",
+            "model": "openai.gpt-5.3-codex",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com/v1",
+        },
+    )
+    assert run_b.status_code == 200
+
+    doc_resp = client.get(f"/api/documents/{doc_id}")
+    assert doc_resp.status_code == 200
+    payload = doc_resp.json()
+    method_outputs = payload["agent_outputs"]["methods"]
+    assert method_outputs["default"][0]["text"] == "Sue"
+    assert method_outputs["default::openai.gpt-5.2-chat"][0]["text"] == "Anna"
+    assert method_outputs["default::openai.gpt-5.3-codex"][0]["text"] == "Sue"
+    assert payload["agent_outputs"]["method_run_metadata"]["default::openai.gpt-5.2-chat"][
+        "mode"
+    ] == "method"
+    assert payload["agent_outputs"]["method_run_metadata"]["default::openai.gpt-5.2-chat"][
+        "method_id"
+    ] == "default"
+    assert payload["agent_outputs"]["method_run_metadata"]["default::openai.gpt-5.2-chat"][
+        "model"
+    ] == "openai.gpt-5.2-chat"
+    method_prompt_snapshot = payload["agent_outputs"]["method_run_metadata"][
+        "default::openai.gpt-5.2-chat"
+    ]["prompt_snapshot"]
+    assert method_prompt_snapshot["method_id"] == "default"
+    assert "passes" in method_prompt_snapshot
+    assert isinstance(method_prompt_snapshot["passes"], list)
+    assert len(method_prompt_snapshot["passes"]) >= 1
+
+
+def test_export_ground_truth_zip_for_selected_source(client):
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    manual_resp = client.put(
+        f"/api/documents/{doc_id}/manual-annotations",
+        json=[{"start": 6, "end": 10, "label": "NAME", "text": "Anna"}],
+    )
+    assert manual_resp.status_code == 200
+
+    export_resp = client.get(
+        "/api/session/export-ground-truth",
+        params={"source": "manual"},
+    )
+    assert export_resp.status_code == 200
+    assert "application/zip" in export_resp.headers["content-type"]
+
+    with zipfile.ZipFile(BytesIO(export_resp.content), mode="r") as archive:
+        names = archive.namelist()
+        assert len(names) == 1
+        payload = json.loads(archive.read(names[0]).decode("utf-8"))
+        assert payload["id"] == doc_id
+        assert payload["ground_truth_source"] == "manual"
+        assert payload["spans"][0]["text"] == "Anna"
+
+
+def test_session_export_includes_saved_run_metadata(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.2-chat"],
+    )
+
+    def fake_run_llm_with_metadata(**kwargs):
+        model = str(kwargs.get("model"))
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(model=model),
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    run_resp = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "llm",
+            "model": "openai.gpt-5.2-chat",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com/v1",
+        },
+    )
+    assert run_resp.status_code == 200
+
+    export_resp = client.get("/api/session/export")
+    assert export_resp.status_code == 200
+    bundle = export_resp.json()
+    assert len(bundle["documents"]) == 1
+    saved = bundle["documents"][0]["agent_saved_outputs"]
+    assert "llm_runs" in saved
+    assert "llm_run_metadata" in saved
+    assert saved["llm_run_metadata"]["openai.gpt-5.2-chat"]["mode"] == "llm"
+    assert "prompt_snapshot" in saved["llm_run_metadata"]["openai.gpt-5.2-chat"]

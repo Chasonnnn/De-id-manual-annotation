@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent import (
+    METHOD_DEFINITION_BY_ID,
     MODEL_PRESETS,
     SYSTEM_PROMPT,
     _strip_code_fences,
@@ -620,6 +621,19 @@ class TestRunLLM:
         assert any("rejected logprobs" in warning for warning in result.warnings)
 
     @patch("agent.completion")
+    def test_openai_gpt5_family_attempts_logprobs(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response("[]", token_logprobs=[-0.2, -0.1])
+        result = run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            model="openai.gpt-5.3-codex",
+        )
+        call_kwargs = mock_completion.call_args
+        assert call_kwargs.kwargs["logprobs"] is True
+        assert result.llm_confidence.available is True
+        assert result.llm_confidence.reason == "ok"
+
+    @patch("agent.completion")
     def test_response_format_fallback_retries_without_schema(self, mock_completion):
         calls: list[dict] = []
 
@@ -753,3 +767,16 @@ def test_model_presets_include_requested_options():
     assert "anthropic.claude-4.6-opus" in model_ids
     assert "google.gemini-3.1-pro-preview" in model_ids
     assert "google.gemini-3-flash-preview" in model_ids
+
+
+def test_method_prompts_are_migrated_from_experiment_presets():
+    extended_prompt = METHOD_DEFINITION_BY_ID["extended"]["passes"][0]["prompt"]
+    assert "HIPAA Safe Harbor" in extended_prompt
+    assert "Method or theorem names containing a person's name" in extended_prompt
+
+    dual_numbers_prompt = METHOD_DEFINITION_BY_ID["dual-split"]["passes"][1]["prompt"]
+    assert "Mathematical expressions" in dual_numbers_prompt
+    assert "Output data following the provided JSON schema." in dual_numbers_prompt
+
+    split_prompt = METHOD_DEFINITION_BY_ID["presidio+llm-split"]["passes"][1]["prompt"]
+    assert "reasonably identify an individual" in split_prompt

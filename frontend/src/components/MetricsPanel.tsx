@@ -27,6 +27,10 @@ export default function MetricsPanel({
   const confidencePct =
     confidence?.confidence != null ? `${(confidence.confidence * 100).toFixed(1)}%` : "N/A";
   const confidenceBand = confidence?.band.toUpperCase() ?? "N/A";
+  const meanLogprob =
+    confidence?.mean_logprob != null ? confidence.mean_logprob.toFixed(4) : "N/A";
+  const perplexity =
+    confidence?.perplexity != null ? confidence.perplexity.toFixed(3) : "N/A";
 
   return (
     <div className={`metrics-panel ${collapsed ? "collapsed" : ""}`}>
@@ -78,6 +82,8 @@ export default function MetricsPanel({
                       status={confidence.reason}
                     </span>
                   )}
+                  <span style={{ marginLeft: 8 }}>mean_logprob={meanLogprob}</span>
+                  <span style={{ marginLeft: 8 }}>perplexity={perplexity}</span>
                 </div>
               )}
               <div className="metric-cards">

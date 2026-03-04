@@ -14,15 +14,18 @@ interface Props {
   methods: AgentMethodOption[];
   onRun: (payload: PromptLabRunCreateRequest) => Promise<void>;
   running: boolean;
+  forceCollapsed?: boolean;
 }
 
 const REASONING_EFFORT_OPTIONS = ["none", "low", "medium", "high", "xhigh"] as const;
-const PROMPT_LAB_PRESET_METHOD_IDS = [
+const FALLBACK_PRESET_METHOD_IDS = [
   "default",
   "extended",
   "verified",
   "dual",
   "dual-split",
+  "presidio",
+  "presidio+default",
   "presidio+llm-split",
 ] as const;
 
@@ -58,6 +61,7 @@ export default function PromptLabRunForm({
   methods,
   onRun,
   running,
+  forceCollapsed = false,
 }: Props) {
   const [name, setName] = useState("");
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
@@ -93,6 +97,12 @@ export default function PromptLabRunForm({
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
+    if (forceCollapsed) {
+      setCollapsed(true);
+    }
+  }, [forceCollapsed]);
+
+  useEffect(() => {
     if (!selectedDocumentId) return;
     setSelectedDocIds((prev) => (prev.length > 0 ? prev : [selectedDocumentId]));
   }, [selectedDocumentId]);
@@ -121,21 +131,16 @@ export default function PromptLabRunForm({
   );
   const presetMethodOptions = useMemo(
     () => {
-      const filtered = methods.filter((method) =>
-        PROMPT_LAB_PRESET_METHOD_IDS.includes(
-          method.id as (typeof PROMPT_LAB_PRESET_METHOD_IDS)[number],
-        ),
-      );
-      if (filtered.length > 0) {
-        return filtered;
+      if (methods.length > 0) {
+        return methods;
       }
-      return PROMPT_LAB_PRESET_METHOD_IDS.map((id) => ({
+      return FALLBACK_PRESET_METHOD_IDS.map((id) => ({
         id,
         label: id,
         description: "",
         requires_presidio: id.includes("presidio"),
-        uses_llm: true,
-        supports_verify_override: id === "verified",
+        uses_llm: id !== "presidio",
+        supports_verify_override: id !== "presidio",
         available: true,
         unavailable_reason: null,
       }));

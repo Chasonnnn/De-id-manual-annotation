@@ -154,6 +154,7 @@ export default function PromptLabTab({
         methods={methodCatalog}
         onRun={handleCreateRun}
         running={creatingRun}
+        forceCollapsed={Boolean(runDetail)}
       />
 
       <div className="prompt-lab-body">

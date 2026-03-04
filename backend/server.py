@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import copy
+import io
 import json
 import math
 import os
+import re
 import threading
 import uuid
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, HTTPException, UploadFile, File, Query
+from fastapi import FastAPI, HTTPException, UploadFile, File, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -23,6 +26,7 @@ from models import (
     CanonicalDocument,
     CanonicalSpan,
     LLMConfidenceMetric,
+    SavedRunMetadata,
 )
 from normalizer import parse_file
 from agent import (
@@ -64,14 +68,9 @@ DEFAULT_CHUNK_SIZE_CHARS = 10_000
 MIN_CHUNK_SIZE_CHARS = 2_000
 MAX_CHUNK_SIZE_CHARS = 30_000
 FALLBACK_CHUNK_OVERLAP_CHARS = 200
-PROMPT_LAB_ALLOWED_PRESET_METHODS = {
-    "default",
-    "extended",
-    "verified",
-    "dual",
-    "dual-split",
-    "presidio+llm-split",
-}
+DEFAULT_CHUNK_PARALLEL_WORKERS = 4
+MAX_CHUNK_PARALLEL_WORKERS = 8
+PROMPT_LAB_ALLOWED_PRESET_METHODS = set(METHOD_DEFINITION_BY_ID.keys())
 
 COARSE_SIMPLE_LABEL_MAP: dict[str, str] = {
     # Simple labels remain unchanged.
@@ -112,8 +111,14 @@ DEFAULT_CONFIG = {
 DEFAULT_SESSION_PROFILE = {
     "project_name": "",
     "author": "",
-    "notes": "",
 }
+
+MANUAL_RUNS_SIDECAR_KIND = "manual.runs"
+MANUAL_RUNS_METADATA_SIDECAR_KIND = "manual.runs.meta"
+LLM_RUNS_SIDECAR_KIND = "agent.llm.runs"
+METHOD_RUNS_SIDECAR_KIND = "agent.method.runs"
+LLM_RUNS_METADATA_SIDECAR_KIND = "agent.llm.runs.meta"
+METHOD_RUNS_METADATA_SIDECAR_KIND = "agent.method.runs.meta"
 
 
 def _ensure_dirs():
@@ -212,6 +217,108 @@ def _load_json_sidecar(
     if not isinstance(raw, dict):
         return None
     return raw
+
+
+def _load_span_map_sidecar(
+    doc_id: str,
+    kind: str,
+    session_id: str = "default",
+) -> dict[str, list[CanonicalSpan]]:
+    payload = _load_json_sidecar(doc_id, kind, session_id)
+    if not isinstance(payload, dict):
+        return {}
+    result: dict[str, list[CanonicalSpan]] = {}
+    for raw_key, raw_spans in payload.items():
+        if not isinstance(raw_key, str) or not isinstance(raw_spans, list):
+            continue
+        spans: list[CanonicalSpan] = []
+        malformed = False
+        for item in raw_spans:
+            try:
+                spans.append(CanonicalSpan.model_validate(item))
+            except Exception:
+                malformed = True
+                break
+        if not malformed:
+            result[raw_key] = spans
+    return result
+
+
+def _save_span_map_sidecar(
+    doc_id: str,
+    kind: str,
+    payload: dict[str, list[CanonicalSpan]],
+    session_id: str = "default",
+):
+    serialized = {
+        key: [span.model_dump() for span in spans]
+        for key, spans in payload.items()
+        if isinstance(key, str) and key.strip() != ""
+    }
+    _save_json_sidecar(doc_id, kind, serialized, session_id)
+
+
+def _upsert_span_map_entry(
+    doc_id: str,
+    kind: str,
+    key: str,
+    spans: list[CanonicalSpan],
+    session_id: str = "default",
+):
+    normalized_key = key.strip()
+    if not normalized_key:
+        return
+    existing = _load_span_map_sidecar(doc_id, kind, session_id)
+    existing[normalized_key] = spans
+    _save_span_map_sidecar(doc_id, kind, existing, session_id)
+
+
+def _load_run_metadata_map_sidecar(
+    doc_id: str,
+    kind: str,
+    session_id: str = "default",
+) -> dict[str, SavedRunMetadata]:
+    payload = _load_json_sidecar(doc_id, kind, session_id)
+    if not isinstance(payload, dict):
+        return {}
+    result: dict[str, SavedRunMetadata] = {}
+    for raw_key, raw_value in payload.items():
+        if not isinstance(raw_key, str):
+            continue
+        try:
+            result[raw_key] = SavedRunMetadata.model_validate(raw_value)
+        except Exception:
+            continue
+    return result
+
+
+def _save_run_metadata_map_sidecar(
+    doc_id: str,
+    kind: str,
+    payload: dict[str, SavedRunMetadata],
+    session_id: str = "default",
+):
+    serialized = {
+        key: metadata.model_dump()
+        for key, metadata in payload.items()
+        if isinstance(key, str) and key.strip() != ""
+    }
+    _save_json_sidecar(doc_id, kind, serialized, session_id)
+
+
+def _upsert_run_metadata(
+    doc_id: str,
+    kind: str,
+    key: str,
+    metadata: SavedRunMetadata,
+    session_id: str = "default",
+):
+    normalized_key = key.strip()
+    if not normalized_key:
+        return
+    existing = _load_run_metadata_map_sidecar(doc_id, kind, session_id)
+    existing[normalized_key] = metadata
+    _save_run_metadata_map_sidecar(doc_id, kind, existing, session_id)
 
 
 def _normalize_optional_llm_confidence(raw: object) -> LLMConfidenceMetric | None:
@@ -585,7 +692,22 @@ def _enrich_doc(
     manual = _load_sidecar(doc.id, "manual", session_id)
     agent_rule = _load_sidecar(doc.id, "agent.rule", session_id)
     agent_llm = _load_sidecar(doc.id, "agent.llm", session_id)
+    agent_llm_runs = _load_span_map_sidecar(doc.id, LLM_RUNS_SIDECAR_KIND, session_id)
+    agent_llm_run_metadata = _load_run_metadata_map_sidecar(
+        doc.id,
+        LLM_RUNS_METADATA_SIDECAR_KIND,
+        session_id,
+    )
     agent_methods = _load_method_sidecars(doc.id, session_id)
+    method_runs = _load_span_map_sidecar(doc.id, METHOD_RUNS_SIDECAR_KIND, session_id)
+    method_run_metadata = _load_run_metadata_map_sidecar(
+        doc.id,
+        METHOD_RUNS_METADATA_SIDECAR_KIND,
+        session_id,
+    )
+    for run_key, run_spans in method_runs.items():
+        if run_key not in agent_methods:
+            agent_methods[run_key] = run_spans
     # Backward compat: also check old sidecar name
     agent_openai = _load_sidecar(doc.id, "agent.openai", session_id)
     llm_metric_raw = _load_json_sidecar(doc.id, "agent.llm.metrics", session_id)
@@ -614,7 +736,10 @@ def _enrich_doc(
     doc.agent_outputs = AgentOutputs(
         rule=agent_rule or [],
         llm=llm_spans,
+        llm_runs=agent_llm_runs,
+        llm_run_metadata=agent_llm_run_metadata,
         methods=agent_methods,
+        method_run_metadata=method_run_metadata,
     )
     # "Agent (combined)" must remain deterministic and limited to agent-native outputs.
     # Method outputs are exposed separately under agent_outputs.methods.
@@ -682,6 +807,11 @@ def _spans_from_source(
         return doc.agent_outputs.rule
     if source == "agent.llm":
         return doc.agent_outputs.llm
+    if source.startswith("agent.llm_run."):
+        run_key = source[len("agent.llm_run.") :]
+        if not run_key:
+            raise HTTPException(status_code=400, detail=f"Unknown source: {source}")
+        return doc.agent_outputs.llm_runs.get(run_key, [])
     if source.startswith("agent.method."):
         method_id = source[len("agent.method.") :]
         if not method_id:
@@ -906,6 +1036,12 @@ def _delete_doc_files(doc_id: str, session_id: str = "default") -> bool:
         base / f"{doc_id}.agent.rule.json",
         base / f"{doc_id}.agent.llm.json",
         base / f"{doc_id}.agent.llm.metrics.json",
+        base / f"{doc_id}.{LLM_RUNS_SIDECAR_KIND}.json",
+        base / f"{doc_id}.{LLM_RUNS_METADATA_SIDECAR_KIND}.json",
+        base / f"{doc_id}.{METHOD_RUNS_SIDECAR_KIND}.json",
+        base / f"{doc_id}.{METHOD_RUNS_METADATA_SIDECAR_KIND}.json",
+        base / f"{doc_id}.{MANUAL_RUNS_SIDECAR_KIND}.json",
+        base / f"{doc_id}.{MANUAL_RUNS_METADATA_SIDECAR_KIND}.json",
         base / f"{doc_id}.agent.openai.json",
     ]
     deleted = False
@@ -956,7 +1092,6 @@ def _normalize_session_profile(raw: object) -> dict[str, str]:
     return {
         "project_name": _clean("project_name", 120),
         "author": _clean("author", 120),
-        "notes": _clean("notes", 5000),
     }
 
 
@@ -1127,6 +1262,64 @@ def _resolve_llm_runtime_config(body: "AgentRunBody") -> dict[str, object]:
     }
 
 
+def _build_llm_prompt_snapshot(requested_system_prompt: str) -> dict[str, Any]:
+    requested = str(requested_system_prompt or "")
+    return {
+        "requested_system_prompt": requested,
+        "format_guardrail_appended": True,
+        "effective_system_prompt": f"{requested}\n\n{FORMAT_GUARDRAIL}",
+    }
+
+
+def _build_method_prompt_snapshot(
+    *,
+    method_id: str,
+    additional_constraints: str,
+    method_verify: bool | None,
+) -> dict[str, Any]:
+    method_definition = METHOD_DEFINITION_BY_ID.get(method_id)
+    if method_definition is None:
+        return {
+            "method_id": method_id,
+            "additional_constraints": additional_constraints,
+            "passes": [],
+        }
+
+    constraints = str(additional_constraints or "").strip()
+    verify_enabled = (
+        bool(method_definition.get("default_verify", False))
+        if method_verify is None
+        else bool(method_verify)
+    )
+    passes: list[dict[str, Any]] = []
+    for idx, method_pass in enumerate(method_definition.get("passes", []), start=1):
+        pass_kind = str(method_pass.get("kind", ""))
+        if pass_kind != "llm":
+            continue
+        base_prompt = str(method_pass.get("prompt") or SYSTEM_PROMPT)
+        resolved_prompt = (
+            f"{base_prompt}\n\nAdditional constraints:\n{constraints}"
+            if constraints
+            else base_prompt
+        )
+        passes.append(
+            {
+                "pass_index": idx,
+                "entity_types": method_pass.get("entity_types"),
+                "base_system_prompt": base_prompt,
+                "resolved_system_prompt": resolved_prompt,
+                "effective_system_prompt": f"{resolved_prompt}\n\n{FORMAT_GUARDRAIL}",
+            }
+        )
+
+    return {
+        "method_id": method_id,
+        "additional_constraints": constraints,
+        "verify_enabled": verify_enabled,
+        "passes": passes,
+    }
+
+
 def _validate_gateway_model_access(*, model: str, api_base: str, api_key: str):
     if "." in model and "/" not in model and not api_base:
         raise HTTPException(
@@ -1156,6 +1349,18 @@ def _should_use_chunking(text_len: int, chunk_mode: str, chunk_size: int) -> boo
     if mode == "force":
         return True
     return text_len > chunk_size
+
+
+def _resolve_chunk_parallel_workers(chunk_count: int) -> int:
+    if chunk_count <= 1:
+        return 1
+    raw_value = os.environ.get("ANNOTATION_CHUNK_WORKERS", str(DEFAULT_CHUNK_PARALLEL_WORKERS))
+    try:
+        requested = int(raw_value)
+    except Exception:
+        requested = DEFAULT_CHUNK_PARALLEL_WORKERS
+    bounded = max(1, min(requested, MAX_CHUNK_PARALLEL_WORKERS))
+    return min(chunk_count, bounded)
 
 
 def _run_llm_for_document(
@@ -1192,11 +1397,14 @@ def _run_llm_for_document(
         )
         return spans, llm_result.warnings, llm_result.llm_confidence
 
+    chunks = _build_text_chunks(doc, chunk_size_chars)
     warnings: list[str] = []
     all_spans: list[CanonicalSpan] = []
     chunk_metrics: list[LLMConfidenceMetric] = []
-    chunks = _build_text_chunks(doc, chunk_size_chars)
-    for idx, (start, end) in enumerate(chunks):
+    chunk_count = len(chunks)
+    chunk_workers = _resolve_chunk_parallel_workers(chunk_count)
+
+    def _run_chunk(idx: int, start: int, end: int) -> tuple[int, list[CanonicalSpan], list[str], LLMConfidenceMetric]:
         chunk_text = doc.raw_text[start:end]
         llm_result = run_llm_with_metadata(
             text=chunk_text,
@@ -1210,19 +1418,47 @@ def _run_llm_for_document(
             anthropic_thinking_budget_tokens=anthropic_thinking_budget_tokens,  # type: ignore[arg-type]
             label_profile=label_profile,
         )
-        warnings.extend([f"Chunk {idx + 1}/{len(chunks)}: {item}" for item in llm_result.warnings])
-        all_spans.extend(
-            _shift_spans(
-                normalize_method_spans(llm_result.spans, label_profile=label_profile),
-                start,
-            )
+        shifted = _shift_spans(
+            normalize_method_spans(llm_result.spans, label_profile=label_profile),
+            start,
         )
-        chunk_metrics.append(llm_result.llm_confidence)
+        chunk_warnings = [f"Chunk {idx + 1}/{chunk_count}: {item}" for item in llm_result.warnings]
+        return idx, shifted, chunk_warnings, llm_result.llm_confidence
+
+    chunk_results: dict[int, tuple[list[CanonicalSpan], list[str], LLMConfidenceMetric]] = {}
+    if chunk_workers == 1:
+        for idx, (start, end) in enumerate(chunks):
+            _, shifted, chunk_warnings, chunk_conf = _run_chunk(idx, start, end)
+            chunk_results[idx] = (shifted, chunk_warnings, chunk_conf)
+    else:
+        with ThreadPoolExecutor(max_workers=chunk_workers) as pool:
+            future_map = {
+                pool.submit(_run_chunk, idx, start, end): idx
+                for idx, (start, end) in enumerate(chunks)
+            }
+            for future in as_completed(future_map):
+                idx = future_map[future]
+                try:
+                    _, shifted, chunk_warnings, chunk_conf = future.result()
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Chunk {idx + 1}/{chunk_count} failed during parallel LLM execution: {exc}"
+                    ) from exc
+                chunk_results[idx] = (shifted, chunk_warnings, chunk_conf)
+
+    for idx in range(chunk_count):
+        shifted, chunk_warnings, chunk_conf = chunk_results[idx]
+        all_spans.extend(shifted)
+        warnings.extend(chunk_warnings)
+        chunk_metrics.append(chunk_conf)
 
     normalized = _normalize_and_validate_spans(_dedup_spans(all_spans), doc.raw_text)
     warnings.insert(
         0,
-        f"Chunked LLM run used {len(chunks)} chunk(s) at ~{chunk_size_chars} chars (mode={chunk_mode}).",
+        (
+            f"Chunked LLM run used {chunk_count} chunk(s) at ~{chunk_size_chars} chars "
+            f"(mode={chunk_mode}, workers={chunk_workers})."
+        ),
     )
     return normalized, warnings, _aggregate_llm_confidence(chunk_metrics)
 
@@ -1265,10 +1501,13 @@ def _run_method_for_document(
         )
         return spans, method_result.warnings
 
+    chunks = _build_text_chunks(doc, chunk_size_chars)
     warnings: list[str] = []
     all_spans: list[CanonicalSpan] = []
-    chunks = _build_text_chunks(doc, chunk_size_chars)
-    for idx, (start, end) in enumerate(chunks):
+    chunk_count = len(chunks)
+    chunk_workers = _resolve_chunk_parallel_workers(chunk_count)
+
+    def _run_chunk(idx: int, start: int, end: int) -> tuple[int, list[CanonicalSpan], list[str]]:
         chunk_text = doc.raw_text[start:end]
         method_result = run_method_with_metadata(
             text=chunk_text,
@@ -1284,18 +1523,46 @@ def _run_method_for_document(
             method_verify=method_verify,
             label_profile=label_profile,
         )
-        warnings.extend([f"Chunk {idx + 1}/{len(chunks)}: {item}" for item in method_result.warnings])
-        all_spans.extend(
-            _shift_spans(
-                normalize_method_spans(method_result.spans, label_profile=label_profile),
-                start,
-            )
+        shifted = _shift_spans(
+            normalize_method_spans(method_result.spans, label_profile=label_profile),
+            start,
         )
+        chunk_warnings = [f"Chunk {idx + 1}/{chunk_count}: {item}" for item in method_result.warnings]
+        return idx, shifted, chunk_warnings
+
+    chunk_results: dict[int, tuple[list[CanonicalSpan], list[str]]] = {}
+    if chunk_workers == 1:
+        for idx, (start, end) in enumerate(chunks):
+            _, shifted, chunk_warnings = _run_chunk(idx, start, end)
+            chunk_results[idx] = (shifted, chunk_warnings)
+    else:
+        with ThreadPoolExecutor(max_workers=chunk_workers) as pool:
+            future_map = {
+                pool.submit(_run_chunk, idx, start, end): idx
+                for idx, (start, end) in enumerate(chunks)
+            }
+            for future in as_completed(future_map):
+                idx = future_map[future]
+                try:
+                    _, shifted, chunk_warnings = future.result()
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Chunk {idx + 1}/{chunk_count} failed during parallel method execution: {exc}"
+                    ) from exc
+                chunk_results[idx] = (shifted, chunk_warnings)
+
+    for idx in range(chunk_count):
+        shifted, chunk_warnings = chunk_results[idx]
+        all_spans.extend(shifted)
+        warnings.extend(chunk_warnings)
 
     normalized = _normalize_and_validate_spans(_dedup_spans(all_spans), doc.raw_text)
     warnings.insert(
         0,
-        f"Chunked method run used {len(chunks)} chunk(s) at ~{chunk_size_chars} chars (mode={chunk_mode}).",
+        (
+            f"Chunked method run used {chunk_count} chunk(s) at ~{chunk_size_chars} chars "
+            f"(mode={chunk_mode}, workers={chunk_workers})."
+        ),
     )
     return normalized, warnings
 
@@ -1381,6 +1648,23 @@ async def save_manual_annotations(doc_id: str, spans: list[CanonicalSpan]):
         raise HTTPException(status_code=404, detail="Document not found")
     normalized = _normalize_and_validate_spans(spans, doc.raw_text)
     _save_sidecar(doc_id, "manual", normalized, session_id)
+    _upsert_span_map_entry(
+        doc_id,
+        MANUAL_RUNS_SIDECAR_KIND,
+        "manual",
+        normalized,
+        session_id,
+    )
+    _upsert_run_metadata(
+        doc_id,
+        MANUAL_RUNS_METADATA_SIDECAR_KIND,
+        "manual",
+        SavedRunMetadata(
+            mode="manual",
+            updated_at=_now_iso(),
+        ),
+        session_id,
+    )
     return _enrich_doc(doc, session_id)
 
 
@@ -1404,7 +1688,6 @@ class AgentRunBody(BaseModel):
 class SessionProfileBody(BaseModel):
     project_name: str | None = None
     author: str | None = None
-    notes: str | None = None
 
 
 class PromptLabPromptInput(BaseModel):
@@ -1936,6 +2219,26 @@ async def run_agent(doc_id: str, body: AgentRunBody):
             raise HTTPException(status_code=502, detail=detail) from exc
         _save_sidecar(doc_id, "agent.llm", spans, session_id)
         _delete_sidecar(doc_id, "agent.openai", session_id)
+        _upsert_span_map_entry(
+            doc_id,
+            LLM_RUNS_SIDECAR_KIND,
+            model,
+            spans,
+            session_id,
+        )
+        _upsert_run_metadata(
+            doc_id,
+            LLM_RUNS_METADATA_SIDECAR_KIND,
+            model,
+            SavedRunMetadata(
+                mode="llm",
+                updated_at=_now_iso(),
+                model=model,
+                label_profile=label_profile,  # type: ignore[arg-type]
+                prompt_snapshot=_build_llm_prompt_snapshot(requested_system_prompt),
+            ),
+            session_id,
+        )
         _save_json_sidecar(
             doc_id,
             "agent.llm.metrics",
@@ -2020,6 +2323,32 @@ async def run_agent(doc_id: str, body: AgentRunBody):
             raise HTTPException(status_code=status_code, detail=message) from exc
 
         _save_sidecar(doc_id, f"agent.method.{method_id}", spans, session_id)
+        method_run_key = f"{method_id}::{model if method_definition['uses_llm'] else 'rule'}"
+        _upsert_span_map_entry(
+            doc_id,
+            METHOD_RUNS_SIDECAR_KIND,
+            method_run_key,
+            spans,
+            session_id,
+        )
+        _upsert_run_metadata(
+            doc_id,
+            METHOD_RUNS_METADATA_SIDECAR_KIND,
+            method_run_key,
+            SavedRunMetadata(
+                mode="method",
+                updated_at=_now_iso(),
+                method_id=method_id,
+                model=model if method_definition["uses_llm"] else None,
+                label_profile=label_profile,  # type: ignore[arg-type]
+                prompt_snapshot=_build_method_prompt_snapshot(
+                    method_id=method_id,
+                    additional_constraints=requested_system_prompt,
+                    method_verify=body.method_verify,
+                ),
+            ),
+            session_id,
+        )
         _save_json_sidecar(
             doc_id,
             "agent.last_run",
@@ -2237,6 +2566,18 @@ async def export_session_bundle():
         agent_rule = _load_sidecar(did, "agent.rule", session_id) or []
         agent_llm = _load_sidecar(did, "agent.llm", session_id) or []
         agent_methods = _load_method_sidecars(did, session_id)
+        agent_llm_runs = _load_span_map_sidecar(did, LLM_RUNS_SIDECAR_KIND, session_id)
+        agent_method_runs = _load_span_map_sidecar(did, METHOD_RUNS_SIDECAR_KIND, session_id)
+        agent_llm_run_meta = _load_run_metadata_map_sidecar(
+            did,
+            LLM_RUNS_METADATA_SIDECAR_KIND,
+            session_id,
+        )
+        agent_method_run_meta = _load_run_metadata_map_sidecar(
+            did,
+            METHOD_RUNS_METADATA_SIDECAR_KIND,
+            session_id,
+        )
         llm_confidence = _load_json_sidecar(did, "agent.llm.metrics", session_id)
         last_run = _load_json_sidecar(did, "agent.last_run", session_id)
         label_profile: str | None = None
@@ -2256,6 +2597,25 @@ async def export_session_bundle():
                 },
             },
         }
+        if agent_llm_runs or agent_method_runs or agent_llm_run_meta or agent_method_run_meta:
+            export_item["agent_saved_outputs"] = {
+                "llm_runs": {
+                    model_key: [span.model_dump() for span in spans]
+                    for model_key, spans in agent_llm_runs.items()
+                },
+                "method_runs": {
+                    run_key: [span.model_dump() for span in spans]
+                    for run_key, spans in agent_method_runs.items()
+                },
+                "llm_run_metadata": {
+                    model_key: metadata.model_dump()
+                    for model_key, metadata in agent_llm_run_meta.items()
+                },
+                "method_run_metadata": {
+                    run_key: metadata.model_dump()
+                    for run_key, metadata in agent_method_run_meta.items()
+                },
+            }
         if llm_confidence is not None or label_profile is not None:
             metrics_payload: dict[str, object] = {}
             if llm_confidence is not None:
@@ -2278,6 +2638,47 @@ async def export_session_bundle():
         "prompt_lab_runs": _export_prompt_lab_runs(session_id),
         "config": _load_config(),
     }
+
+
+@app.get("/api/session/export-ground-truth")
+async def export_ground_truth_only(
+    source: str = Query("manual"),
+):
+    session_id = "default"
+    ids = _load_session_index(session_id)
+    buffer = io.BytesIO()
+    source_value = source.strip()
+    if not source_value:
+        raise HTTPException(status_code=400, detail="source is required")
+
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for did in ids:
+            doc = _load_doc(did, session_id)
+            if doc is None:
+                continue
+            enriched = _enrich_doc(doc, session_id)
+            spans = _spans_from_source(enriched, source_value)
+            payload = {
+                "id": enriched.id,
+                "filename": enriched.filename,
+                "ground_truth_source": source_value,
+                "spans": [span.model_dump() for span in spans],
+            }
+            stem = Path(enriched.filename).stem or enriched.id
+            safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-") or enriched.id
+            member_name = f"{safe_stem}.{enriched.id}.ground_truth.json"
+            archive.writestr(member_name, json.dumps(payload, indent=2))
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    safe_source = re.sub(r"[^A-Za-z0-9._-]+", "_", source_value).strip("._-") or "source"
+    filename = f"ground-truth-{safe_source}-{stamp}.zip"
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
 
 
 @app.post("/api/session/import")
@@ -2355,6 +2756,13 @@ async def import_session_bundle(file: UploadFile = File(...)):
         if not isinstance(agent_outputs, dict):
             skipped.append({"index": idx, "reason": "agent_outputs must be an object"})
             continue
+        agent_saved_outputs = item.get(
+            "agent_saved_outputs",
+            source_raw.get("agent_saved_outputs", {}),
+        )
+        if agent_saved_outputs is not None and not isinstance(agent_saved_outputs, dict):
+            skipped.append({"index": idx, "reason": "agent_saved_outputs must be an object"})
+            continue
         agent_metrics = item.get("agent_metrics", source_raw.get("agent_run_metrics", {}))
         if agent_metrics is not None and not isinstance(agent_metrics, dict):
             skipped.append({"index": idx, "reason": "agent_metrics must be an object"})
@@ -2376,6 +2784,71 @@ async def import_session_bundle(file: UploadFile = File(...)):
                 normalized_method = _normalize_optional_spans(method_items, doc.raw_text)
                 if normalized_method:
                     method_spans[method_id] = normalized_method
+            llm_runs_raw = {}
+            method_runs_raw = {}
+            llm_run_meta_raw = {}
+            method_run_meta_raw = {}
+            if isinstance(agent_saved_outputs, dict):
+                llm_runs_raw = agent_saved_outputs.get("llm_runs", {})
+                method_runs_raw = agent_saved_outputs.get("method_runs", {})
+                llm_run_meta_raw = agent_saved_outputs.get("llm_run_metadata", {})
+                method_run_meta_raw = agent_saved_outputs.get("method_run_metadata", {})
+            if llm_runs_raw is None:
+                llm_runs_raw = {}
+            if method_runs_raw is None:
+                method_runs_raw = {}
+            if llm_run_meta_raw is None:
+                llm_run_meta_raw = {}
+            if method_run_meta_raw is None:
+                method_run_meta_raw = {}
+            if not isinstance(llm_runs_raw, dict):
+                raise ValueError("agent_saved_outputs.llm_runs must be an object")
+            if not isinstance(method_runs_raw, dict):
+                raise ValueError("agent_saved_outputs.method_runs must be an object")
+            if not isinstance(llm_run_meta_raw, dict):
+                raise ValueError("agent_saved_outputs.llm_run_metadata must be an object")
+            if not isinstance(method_run_meta_raw, dict):
+                raise ValueError("agent_saved_outputs.method_run_metadata must be an object")
+            llm_runs: dict[str, list[CanonicalSpan]] = {}
+            for run_key, run_items in llm_runs_raw.items():
+                if not isinstance(run_key, str) or run_key.strip() == "":
+                    raise ValueError("agent_saved_outputs.llm_runs keys must be non-empty strings")
+                normalized_runs = _normalize_optional_spans(run_items, doc.raw_text)
+                if normalized_runs:
+                    llm_runs[run_key] = normalized_runs
+            method_runs: dict[str, list[CanonicalSpan]] = {}
+            for run_key, run_items in method_runs_raw.items():
+                if not isinstance(run_key, str) or run_key.strip() == "":
+                    raise ValueError(
+                        "agent_saved_outputs.method_runs keys must be non-empty strings"
+                    )
+                normalized_runs = _normalize_optional_spans(run_items, doc.raw_text)
+                if normalized_runs:
+                    method_runs[run_key] = normalized_runs
+            llm_run_metadata: dict[str, SavedRunMetadata] = {}
+            for run_key, raw_meta in llm_run_meta_raw.items():
+                if not isinstance(run_key, str) or run_key.strip() == "":
+                    raise ValueError(
+                        "agent_saved_outputs.llm_run_metadata keys must be non-empty strings"
+                    )
+                try:
+                    llm_run_metadata[run_key] = SavedRunMetadata.model_validate(raw_meta)
+                except Exception as exc:
+                    raise ValueError(
+                        f"Invalid metadata for agent_saved_outputs.llm_run_metadata['{run_key}']: {exc}"
+                    ) from exc
+            method_run_metadata: dict[str, SavedRunMetadata] = {}
+            for run_key, raw_meta in method_run_meta_raw.items():
+                if not isinstance(run_key, str) or run_key.strip() == "":
+                    raise ValueError(
+                        "agent_saved_outputs.method_run_metadata keys must be non-empty strings"
+                    )
+                try:
+                    method_run_metadata[run_key] = SavedRunMetadata.model_validate(raw_meta)
+                except Exception as exc:
+                    raise ValueError(
+                        f"Invalid metadata for agent_saved_outputs.method_run_metadata['{run_key}']: {exc}"
+                    ) from exc
             llm_confidence = _normalize_optional_llm_confidence(
                 agent_metrics.get("llm_confidence") if isinstance(agent_metrics, dict) else None
             )
@@ -2406,6 +2879,24 @@ async def import_session_bundle(file: UploadFile = File(...)):
             _save_sidecar(new_id, "agent.llm", llm_spans, session_id)
         for method_id, spans in method_spans.items():
             _save_sidecar(new_id, f"agent.method.{method_id}", spans, session_id)
+        if llm_runs:
+            _save_span_map_sidecar(new_id, LLM_RUNS_SIDECAR_KIND, llm_runs, session_id)
+        if method_runs:
+            _save_span_map_sidecar(new_id, METHOD_RUNS_SIDECAR_KIND, method_runs, session_id)
+        if llm_run_metadata:
+            _save_run_metadata_map_sidecar(
+                new_id,
+                LLM_RUNS_METADATA_SIDECAR_KIND,
+                llm_run_metadata,
+                session_id,
+            )
+        if method_run_metadata:
+            _save_run_metadata_map_sidecar(
+                new_id,
+                METHOD_RUNS_METADATA_SIDECAR_KIND,
+                method_run_metadata,
+                session_id,
+            )
         if llm_confidence is not None:
             _save_json_sidecar(
                 new_id,

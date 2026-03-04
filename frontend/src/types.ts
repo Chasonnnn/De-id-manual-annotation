@@ -72,6 +72,15 @@ export interface AgentRunMetrics {
   label_profile?: LabelProfile | null;
 }
 
+export interface SavedRunMetadata {
+  mode: "manual" | "rule" | "llm" | "method";
+  updated_at: string;
+  model?: string | null;
+  method_id?: string | null;
+  label_profile?: LabelProfile | null;
+  prompt_snapshot?: Record<string, unknown> | null;
+}
+
 export interface UtteranceRow {
   speaker: string;
   text: string;
@@ -91,7 +100,10 @@ export interface CanonicalDocument {
   agent_outputs: {
     rule: CanonicalSpan[];
     llm: CanonicalSpan[];
+    llm_runs?: Record<string, CanonicalSpan[]>;
+    llm_run_metadata?: Record<string, SavedRunMetadata>;
     methods: Record<string, CanonicalSpan[]>;
+    method_run_metadata?: Record<string, SavedRunMetadata>;
   };
   agent_run_warnings: string[];
   agent_run_metrics: AgentRunMetrics;
@@ -191,6 +203,12 @@ export interface SessionExportBundle {
       llm: CanonicalSpan[];
       methods?: Record<string, CanonicalSpan[]>;
     };
+    agent_saved_outputs?: {
+      llm_runs?: Record<string, CanonicalSpan[]>;
+      method_runs?: Record<string, CanonicalSpan[]>;
+      llm_run_metadata?: Record<string, SavedRunMetadata>;
+      method_run_metadata?: Record<string, SavedRunMetadata>;
+    };
     agent_metrics?: {
       llm_confidence?: LLMConfidenceMetric | null;
       label_profile?: LabelProfile | null;
@@ -213,7 +231,6 @@ export interface SessionImportResult {
 export interface SessionProfile {
   project_name: string;
   author: string;
-  notes: string;
 }
 
 export interface AgentConfig {
@@ -233,6 +250,13 @@ export interface AgentConfig {
   method_verify?: boolean;
 }
 
+export interface AgentMethodPromptTemplate {
+  pass_index: number;
+  entity_types: string[] | null;
+  system_prompt: string;
+  source?: "builtin" | "saved";
+}
+
 export interface AgentMethodOption {
   id: string;
   label: string;
@@ -240,6 +264,8 @@ export interface AgentMethodOption {
   requires_presidio: boolean;
   uses_llm: boolean;
   supports_verify_override: boolean;
+  default_verify?: boolean;
+  prompt_templates?: AgentMethodPromptTemplate[];
   available: boolean;
   unavailable_reason: string | null;
 }
@@ -403,4 +429,5 @@ export type AnnotationSource =
   | "agent"
   | "agent.rule"
   | "agent.llm"
+  | `agent.llm_run.${string}`
   | `agent.method.${string}`;
