@@ -121,6 +121,7 @@ def _mock_completion_response(
     content: object,
     token_logprobs: list[float] | None = None,
     finish_reason: str | None = None,
+    completion_tokens: int | None = None,
 ):
     """Build a mock LiteLLM completion response (OpenAI format)."""
     message = MagicMock()
@@ -140,6 +141,12 @@ def _mock_completion_response(
         choice.logprobs = None
     resp = MagicMock()
     resp.choices = [choice]
+    if completion_tokens is not None:
+        usage = MagicMock()
+        usage.completion_tokens = completion_tokens
+        resp.usage = usage
+    else:
+        resp.usage = None
     return resp
 
 
@@ -633,6 +640,19 @@ class TestRunLLM:
         assert result.llm_confidence.available is False
         assert result.llm_confidence.reason == "missing_logprobs"
         assert result.llm_confidence.band == "na"
+        assert any("did not include token logprobs" in warning for warning in result.warnings)
+
+    @patch("agent.completion")
+    def test_openai_missing_logprobs_uses_usage_completion_tokens(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response("[]", completion_tokens=42)
+        result = run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            model="openai/gpt-4o",
+        )
+        assert result.llm_confidence.available is False
+        assert result.llm_confidence.reason == "missing_logprobs"
+        assert result.llm_confidence.token_count == 42
 
     @patch("agent.completion")
     def test_openai_logprobs_fallback_retries_without_param(self, mock_completion):
@@ -664,6 +684,34 @@ class TestRunLLM:
         assert call_kwargs.kwargs["logprobs"] is True
         assert result.llm_confidence.available is True
         assert result.llm_confidence.reason == "ok"
+
+    @patch("agent.completion")
+    def test_openai_gpt5_chat_skips_logprobs_probe(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response("[]")
+        result = run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            model="openai.gpt-5.2-chat",
+            reasoning_effort="xhigh",
+        )
+        call_kwargs = mock_completion.call_args
+        assert "logprobs" not in call_kwargs.kwargs
+        assert any("currently unavailable for model 'openai.gpt-5.2-chat'" in warning for warning in result.warnings)
+
+    @patch("agent.completion")
+    def test_openai_gpt5_chat_with_none_still_skips_logprobs_probe(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response("[]")
+        result = run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            model="openai.gpt-5.2-chat",
+            reasoning_effort="none",
+        )
+        call_kwargs = mock_completion.call_args
+        assert "logprobs" not in call_kwargs.kwargs
+        assert result.llm_confidence.available is False
+        assert result.llm_confidence.reason == "missing_logprobs"
+        assert any("currently unavailable for model 'openai.gpt-5.2-chat'" in warning for warning in result.warnings)
 
     @patch("agent.completion")
     def test_response_format_fallback_retries_without_schema(self, mock_completion):
@@ -706,6 +754,47 @@ class TestRunLLM:
         assert "PERSON" in enum_values
         assert "COURSE" in enum_values
         assert "US_SSN" in enum_values
+
+    @patch("agent.completion")
+    def test_simple_profile_response_schema_enforces_label_enum(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response("[]")
+        run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            model="openai/gpt-4o",
+            label_profile="simple",
+        )
+        call_kwargs = mock_completion.call_args
+        enum_values = (
+            call_kwargs.kwargs["response_format"]["json_schema"]["schema"]["properties"]["spans"][
+                "items"
+            ]["properties"]["label"]["enum"]
+        )
+        assert "NAME" in enum_values
+        assert "EMAIL" in enum_values
+        assert "MISC_ID" in enum_values
+
+    @patch("agent.completion")
+    def test_simple_profile_maps_person_name_and_time_labels(self, mock_completion):
+        payload = json.dumps(
+            [
+                {"start": 0, "end": 4, "label": "PERSON_NAME", "text": "John"},
+                {"start": 13, "end": 29, "label": "EMAIL", "text": "john@example.com"},
+                {"start": 33, "end": 40, "label": "TIME", "text": "3:00 PM"},
+            ]
+        )
+        mock_completion.return_value = _mock_completion_response(payload)
+        result = run_llm_with_metadata(
+            text="John emailed john@example.com at 3:00 PM",
+            api_key="k",
+            model="openai/gpt-4o",
+            label_profile="simple",
+        )
+        assert [(span.label, span.text) for span in result.spans] == [
+            ("NAME", "John"),
+            ("EMAIL", "john@example.com"),
+            ("DATE", "3:00 PM"),
+        ]
 
     @patch("agent.completion")
     def test_parse_failure_uses_one_repair_retry(self, mock_completion):

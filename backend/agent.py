@@ -291,11 +291,19 @@ TOOL_LABEL_MAP: dict[str, str] = {
     "PERSON": "NAME",
     "PER": "NAME",
     "NAME": "NAME",
+    "PERSON_NAME": "NAME",
+    "FIRST_NAME": "NAME",
+    "LAST_NAME": "NAME",
+    "FULL_NAME": "NAME",
+    "GIVEN_NAME": "NAME",
+    "SURNAME": "NAME",
     "ADDRESS": "LOCATION",
     "LOCATION": "LOCATION",
     "SCHOOL": "SCHOOL",
     "DATE": "DATE",
     "DATE_TIME": "DATE",
+    "TIME": "DATE",
+    "TIMESTAMP": "DATE",
     "AGE": "AGE",
     "PHONE": "PHONE",
     "PHONE_NUMBER": "PHONE",
@@ -717,8 +725,22 @@ def _supports_custom_temperature(model: str) -> bool:
     return True
 
 
-def _supports_logprobs(model: str, provider: str) -> bool:
-    return _is_openai_model(provider, model)
+def _supports_logprobs(
+    model: str,
+    provider: str,
+    *,
+    reasoning_effort: ReasoningEffort = "none",
+) -> bool:
+    if not _is_openai_model(provider, model):
+        return False
+    normalized = model.lower()
+    # Empirically incompatible on current OpenAI-compatible gateway route.
+    if normalized in {"openai.gpt-5.2-chat", "openai/gpt-5.2-chat"}:
+        return False
+    # GPT-5 variants can reject logprobs when non-default reasoning is enabled.
+    if ("gpt-5" in normalized or "gpt5" in normalized) and reasoning_effort != "none":
+        return False
+    return True
 
 
 def _is_openai_model(provider: str, model: str) -> bool:
@@ -731,6 +753,8 @@ def _build_unavailable_confidence_metric(
     provider: str,
     model: str,
     reason: Literal["unsupported_provider", "missing_logprobs", "empty_completion"],
+    *,
+    token_count: int = 0,
 ) -> LLMConfidenceMetric:
     metric_provider = "openai" if _is_openai_model(provider, model) else provider
     return LLMConfidenceMetric(
@@ -738,7 +762,7 @@ def _build_unavailable_confidence_metric(
         provider=metric_provider,
         model=model,
         reason=reason,
-        token_count=0,
+        token_count=max(0, int(token_count)),
         mean_logprob=None,
         confidence=None,
         perplexity=None,
@@ -803,8 +827,26 @@ def _compute_llm_confidence_metric(
     if not _is_openai_model(provider, model):
         return _build_unavailable_confidence_metric(provider, model, "unsupported_provider")
 
+    def _extract_completion_token_count(value: Any) -> int:
+        usage = getattr(value, "usage", None)
+        if usage is None and isinstance(value, dict):
+            usage = value.get("usage")
+        if usage is None:
+            return 0
+        candidates = ("completion_tokens", "output_tokens", "completionTokens", "outputTokens")
+        for key in candidates:
+            raw: Any = None
+            if isinstance(usage, dict):
+                raw = usage.get(key)
+            else:
+                raw = getattr(usage, key, None)
+            if isinstance(raw, (int, float)) and raw >= 0:
+                return int(raw)
+        return 0
+
     message_content = _extract_response_content(resp)
     normalized_content = message_content.strip()
+    completion_token_count = _extract_completion_token_count(resp)
     logprob_container = getattr(resp.choices[0], "logprobs", None)
     token_logprobs = (
         getattr(logprob_container, "content", None) if logprob_container is not None else None
@@ -814,7 +856,12 @@ def _compute_llm_confidence_metric(
         missing_reason: Literal["missing_logprobs", "empty_completion"] = (
             "empty_completion" if normalized_content == "" else "missing_logprobs"
         )
-        return _build_unavailable_confidence_metric("openai", model, missing_reason)
+        return _build_unavailable_confidence_metric(
+            "openai",
+            model,
+            missing_reason,
+            token_count=completion_token_count,
+        )
 
     numeric_logprobs: list[float] = []
     for token in token_logprobs:
@@ -824,7 +871,12 @@ def _compute_llm_confidence_metric(
 
     if not numeric_logprobs:
         missing_reason = "empty_completion" if normalized_content == "" else "missing_logprobs"
-        return _build_unavailable_confidence_metric("openai", model, missing_reason)
+        return _build_unavailable_confidence_metric(
+            "openai",
+            model,
+            missing_reason,
+            token_count=completion_token_count,
+        )
 
     mean_logprob = sum(numeric_logprobs) / len(numeric_logprobs)
     confidence = math.exp(mean_logprob)
@@ -913,7 +965,7 @@ def _build_span_response_format(
     if label_profile == "advanced":
         label_schema = {"type": "string", "enum": ADVANCED_LABELS}
     else:
-        label_schema = {"type": "string"}
+        label_schema = {"type": "string", "enum": SIMPLE_LABELS}
     return {
         "type": "json_schema",
         "json_schema": {
@@ -1394,7 +1446,26 @@ def normalize_method_label(
         mapped = ADVANCED_TOOL_LABEL_MAP.get(normalized, normalized)
         return mapped if mapped in ADVANCED_LABEL_SET else ""
     mapped = TOOL_LABEL_MAP.get(normalized, normalized)
-    return mapped if mapped in SIMPLE_LABEL_SET else "MISC_ID"
+    if mapped in SIMPLE_LABEL_SET:
+        return mapped
+    # Heuristic fallback for near-miss label names from model outputs.
+    if "NAME" in normalized or normalized in {"PERSONAL", "PERSONAL_NAME"}:
+        return "NAME"
+    if "EMAIL" in normalized:
+        return "EMAIL"
+    if "PHONE" in normalized or "FAX" in normalized:
+        return "PHONE"
+    if "URL" in normalized or "URI" in normalized:
+        return "URL"
+    if "DATE" in normalized or "TIME" in normalized:
+        return "DATE"
+    if "LOC" in normalized or "ADDR" in normalized or normalized == "GPE":
+        return "LOCATION"
+    if "SCHOOL" in normalized:
+        return "SCHOOL"
+    if "AGE" in normalized:
+        return "AGE"
+    return "MISC_ID"
 
 
 def normalize_method_spans(
@@ -1809,8 +1880,26 @@ def run_llm_with_metadata(
         ],
         "api_key": api_key,
     }
-    if _supports_logprobs(model, provider):
+    supports_logprobs = _supports_logprobs(
+        model,
+        provider,
+        reasoning_effort=reasoning_effort,
+    )
+    if supports_logprobs:
         base_request_kwargs["logprobs"] = True
+    elif model.lower() in {"openai.gpt-5.2-chat", "openai/gpt-5.2-chat"}:
+        warnings.append(
+            "Token logprobs are currently unavailable for model 'openai.gpt-5.2-chat' on this API route."
+        )
+    elif (
+        _is_openai_model(provider, model)
+        and ("gpt-5" in model.lower() or "gpt5" in model.lower())
+        and reasoning_effort != "none"
+    ):
+        warnings.append(
+            "Logprobs are unavailable for this GPT-5 run when reasoning_effort is not 'none'. "
+            "Set reasoning_effort='none' to enable logprob confidence."
+        )
     base_request_kwargs["response_format"] = _build_span_response_format(
         label_profile=label_profile
     )
@@ -1895,6 +1984,11 @@ def run_llm_with_metadata(
                     "LLM output may be truncated (finish_reason=length); results can be incomplete."
                 )
             llm_confidence = _compute_llm_confidence_metric(parsed_resp, provider, model)
+            if llm_confidence.reason == "missing_logprobs" and _is_openai_model(provider, model):
+                warnings.append(
+                    "Model response did not include token logprobs. "
+                    "This can happen with some gateway/model combinations even when the request succeeds."
+                )
             if idx > 0:
                 warnings.append(
                     f"Primary api_base failed; succeeded after retrying with '{candidate}'."
