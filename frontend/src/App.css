@@ -984,6 +984,33 @@ textarea:focus-visible {
   flex-wrap: nowrap;
 }
 
+.pane-header-manual {
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pane-header-manual > span:first-child {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.pane-header-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+.pane-header-toggle input[type="checkbox"] {
+  margin: 0;
+}
+
 .pane-header-agent-left {
   display: flex;
   align-items: center;
@@ -1095,17 +1122,37 @@ textarea:focus-visible {
 /* Annotation spans */
 .ann-span {
   border-radius: 3px;
-  padding: 1px 3px;
   cursor: default;
   position: relative;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  background: linear-gradient(
+    180deg,
+    transparent 0.08em,
+    var(--ann-color, rgba(250, 204, 21, 0.85)) 0.08em,
+    var(--ann-color, rgba(250, 204, 21, 0.85)) calc(100% - 0.08em),
+    transparent calc(100% - 0.08em)
+  );
 }
 
 .ann-span-label {
-  font-size: 9px;
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  transform: translate(-50%, -2px);
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.84);
+  color: #fff;
+  font-size: 8px;
   font-weight: 700;
-  vertical-align: super;
-  margin-left: 2px;
-  opacity: 0.7;
+  line-height: 1.1;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0.92;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.22);
+  z-index: 1;
 }
 
 .ann-span.clickable {

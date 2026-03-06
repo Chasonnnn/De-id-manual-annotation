@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import type { CanonicalSpan } from "../types";
 import { getLabelColor } from "../types";
 
@@ -41,7 +42,7 @@ export default function AnnotatedText({
       <span
         key={`span-${i}`}
         className={`ann-span ${clickable ? "clickable" : ""} ${diffClass}`}
-        style={{ background: color }}
+        style={{ "--ann-color": color } as CSSProperties}
         data-offset={span.start}
         data-offset-end={span.end}
         onClick={
@@ -51,7 +52,13 @@ export default function AnnotatedText({
         }
       >
         {spanText}
-        <sup className="ann-span-label">{span.label}</sup>
+        <span
+          className="ann-span-label"
+          data-annotation-label="true"
+          aria-hidden="true"
+        >
+          {span.label}
+        </span>
       </span>,
     );
     pos = span.end;

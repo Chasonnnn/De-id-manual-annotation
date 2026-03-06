@@ -9,6 +9,7 @@ import type {
   DashboardMetricsResult,
   LLMConfidenceBand,
   LLMConfidenceMetric,
+  MatchMode,
   DocumentSummary,
   MetricsResult,
   SessionExportBundle,
@@ -207,7 +208,7 @@ export async function getMetrics(
   docId: string,
   reference: AnnotationSource,
   hypothesis: AnnotationSource,
-  matchMode: "exact" | "overlap",
+  matchMode: MatchMode,
   labelProjection: "native" | "coarse_simple" = "native",
 ): Promise<MetricsResult> {
   const params = new URLSearchParams({
@@ -225,7 +226,7 @@ export async function getMetrics(
 export async function getMetricsDashboard(
   reference: AnnotationSource,
   hypothesis: AnnotationSource,
-  matchMode: "exact" | "overlap",
+  matchMode: MatchMode,
   labelProjection: "native" | "coarse_simple" = "native",
 ): Promise<DashboardMetricsResult> {
   const params = new URLSearchParams({
@@ -351,6 +352,8 @@ function normalizePromptLabRunDetail(raw: Record<string, unknown>): PromptLabRun
       match_mode:
         runtimeRaw.match_mode === "overlap"
           ? "overlap"
+          : runtimeRaw.match_mode === "boundary"
+            ? "boundary"
           : "exact",
       reference_source:
         runtimeRaw.reference_source === "pre"
@@ -498,7 +501,7 @@ function normalizeDashboardMetrics(
   raw: Record<string, unknown>,
   reference: AnnotationSource,
   hypothesis: AnnotationSource,
-  matchMode: "exact" | "overlap",
+  matchMode: MatchMode,
   labelProjection: "native" | "coarse_simple",
 ): DashboardMetricsResult {
   const defaultBandCounts: Record<LLMConfidenceBand, number> = {
@@ -547,7 +550,12 @@ function normalizeDashboardMetrics(
   return {
     reference: (raw.reference as AnnotationSource | undefined) ?? reference,
     hypothesis: (raw.hypothesis as AnnotationSource | undefined) ?? hypothesis,
-    match_mode: (raw.match_mode as "exact" | "overlap" | undefined) ?? matchMode,
+    match_mode:
+      raw.match_mode === "overlap"
+        ? "overlap"
+        : raw.match_mode === "boundary"
+          ? "boundary"
+          : matchMode,
     label_projection:
       raw.label_projection === "coarse_simple"
         ? "coarse_simple"

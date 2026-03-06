@@ -401,6 +401,42 @@ def test_manual_annotations(client):
     assert len(resp.json()["manual_annotations"]) == 1
 
 
+def test_metrics_boundary_mode_ignores_edge_space_and_punctuation(client):
+    resp = _upload(
+        client,
+        data=_make_hips_v1_custom(
+            "David met Ana.",
+            pii_occurrences=[
+                {"start": 0, "end": 5, "text": "David", "pii_type": "NAME"},
+                {"start": 10, "end": 13, "text": "Ana", "pii_type": "NAME"},
+            ],
+        ),
+    )
+    doc_id = resp.json()["id"]
+
+    manual_spans = [
+        {"start": 0, "end": 6, "label": "NAME", "text": "David "},
+        {"start": 10, "end": 14, "label": "NAME", "text": "Ana."},
+    ]
+    save_resp = client.put(f"/api/documents/{doc_id}/manual-annotations", json=manual_spans)
+    assert save_resp.status_code == 200
+
+    exact_resp = client.get(
+        f"/api/documents/{doc_id}/metrics",
+        params={"reference": "pre", "hypothesis": "manual", "match_mode": "exact"},
+    )
+    assert exact_resp.status_code == 200
+    assert exact_resp.json()["micro"]["f1"] == 0.0
+
+    boundary_resp = client.get(
+        f"/api/documents/{doc_id}/metrics",
+        params={"reference": "pre", "hypothesis": "manual", "match_mode": "boundary"},
+    )
+    assert boundary_resp.status_code == 200
+    assert boundary_resp.json()["micro"]["f1"] == 1.0
+    assert boundary_resp.json()["match_mode"] == "boundary"
+
+
 def test_agent_rule(client):
     # Upload a doc with an email in it
     data = json.dumps(

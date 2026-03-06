@@ -125,6 +125,7 @@ export default function MetricsPanel({
                       onChange={(e) => onMatchModeChange(e.target.value as MatchMode)}
                     >
                       <option value="exact">Exact</option>
+                      <option value="boundary">Trim Space/Punct</option>
                       <option value="overlap">Overlap</option>
                     </select>
                   </label>

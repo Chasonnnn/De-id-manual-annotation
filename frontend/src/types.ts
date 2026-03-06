@@ -432,7 +432,7 @@ export interface PromptLabRunExport {
 }
 
 export type PaneType = "raw" | "pre" | "manual" | "agent" | "methods";
-export type MatchMode = "exact" | "overlap";
+export type MatchMode = "exact" | "boundary" | "overlap";
 export type AgentView = "combined" | "rule" | "llm";
 export type MethodView = string;
 export type AnnotationSource =

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import unicodedata
+
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
@@ -16,6 +18,37 @@ def _iou(a: CanonicalSpan, b: CanonicalSpan) -> float:
         return 0.0
     union = (a.end - a.start) + (b.end - b.start) - inter
     return inter / union if union > 0 else 0.0
+
+
+def _is_boundary_ignorable(char: str) -> bool:
+    return char.isspace() or unicodedata.category(char).startswith("P")
+
+
+def _trim_ignorable_boundary_offsets(span: CanonicalSpan) -> tuple[int, int]:
+    text = span.text or ""
+    if not text:
+        return span.start, span.end
+
+    left = 0
+    right = len(text)
+    while left < right and _is_boundary_ignorable(text[left]):
+        left += 1
+    while right > left and _is_boundary_ignorable(text[right - 1]):
+        right -= 1
+
+    trimmed_start = span.start + left
+    trimmed_end = span.end - (len(text) - right)
+    if trimmed_start >= trimmed_end:
+        return span.start, span.end
+    return trimmed_start, trimmed_end
+
+
+def _boundary_match(a: CanonicalSpan, b: CanonicalSpan) -> bool:
+    if a.label != b.label:
+        return False
+    a_start, a_end = _trim_ignorable_boundary_offsets(a)
+    b_start, b_end = _trim_ignorable_boundary_offsets(b)
+    return a_start == b_start and a_end == b_end
 
 
 def match_spans(
@@ -45,6 +78,9 @@ def match_spans(
             if mode == "exact":
                 if g.start == p.start and g.end == p.end and g.label == p.label:
                     cost[i, j] = 0.0  # perfect match
+            elif mode == "boundary":
+                if _boundary_match(g, p):
+                    cost[i, j] = 0.0
             else:  # overlap
                 if g.label == p.label:
                     iou = _iou(g, p)

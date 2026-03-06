@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useRef, useState } from "react";
 import type { CanonicalSpan } from "../types";
 import AnnotatedText from "./AnnotatedText";
 import AnnotationPopup from "./AnnotationPopup";
@@ -20,6 +20,8 @@ interface PopupState {
   selText: string;
   editIndex: number | null;
 }
+
+const BOUNDARY_IGNORABLE_RE = /[\p{P}\s]/u;
 
 /**
  * Walk up from a DOM node to find the nearest ancestor (or self) that has
@@ -58,8 +60,15 @@ function resolveCharOffset(node: Node, domOffset: number): number | null {
     let charsBefore = 0;
     for (const child of parent.childNodes) {
       if (child === node) break;
-      // Skip <sup> label elements -- they don't correspond to raw text
-      if (child instanceof HTMLElement && child.tagName === "SUP") continue;
+      // Skip annotation label overlays -- they don't correspond to raw text
+      if (
+        child instanceof HTMLElement &&
+        (child.tagName === "SUP" ||
+          child.dataset.annotationLabel === "true" ||
+          child.classList.contains("ann-span-label"))
+      ) {
+        continue;
+      }
       charsBefore += child.textContent?.length ?? 0;
     }
 
@@ -82,11 +91,50 @@ function resolveCharOffset(node: Node, domOffset: number): number | null {
   return null;
 }
 
+function trimBoundarySelection(
+  rawText: string,
+  start: number,
+  end: number,
+): { start: number; end: number; text: string } {
+  let nextStart = start;
+  let nextEnd = end;
+  while (nextStart < nextEnd && BOUNDARY_IGNORABLE_RE.test(rawText[nextStart] ?? "")) {
+    nextStart += 1;
+  }
+  while (nextEnd > nextStart && BOUNDARY_IGNORABLE_RE.test(rawText[nextEnd - 1] ?? "")) {
+    nextEnd -= 1;
+  }
+  if (nextStart >= nextEnd) {
+    return { start, end, text: rawText.slice(start, end) };
+  }
+  return {
+    start: nextStart,
+    end: nextEnd,
+    text: rawText.slice(nextStart, nextEnd),
+  };
+}
+
 const ManualAnnotationPane = forwardRef<HTMLDivElement, Props>(
   ({ text, spans, labels, diffSpans = [], onSpansChange, onScroll }, ref) => {
     const [popup, setPopup] = useState<PopupState | null>(null);
+    const [trimBoundaries, setTrimBoundaries] = useState(() => {
+      try {
+        const saved = sessionStorage.getItem("manual_trim_boundaries");
+        return saved == null ? true : saved === "true";
+      } catch {
+        return true;
+      }
+    });
     // Internal ref for DOM access -- merged with forwarded ref
     const localRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+      try {
+        sessionStorage.setItem("manual_trim_boundaries", String(trimBoundaries));
+      } catch {
+        // Best-effort persistence only.
+      }
+    }, [trimBoundaries]);
 
     // Merge callback: sets both our local ref and the forwarded ref
     const mergedRefCallback = useCallback(
@@ -133,17 +181,22 @@ const ManualAnnotationPane = forwardRef<HTMLDivElement, Props>(
         return;
       }
 
+      const normalizedSelection = trimBoundaries
+        ? trimBoundarySelection(text, start, end)
+        : { start, end, text: verifiedText };
+      if (!normalizedSelection.text.trim()) return;
+
       const rect = range.getBoundingClientRect();
       setPopup({
         x: rect.left,
         y: rect.bottom + 4,
-        selStart: start,
-        selEnd: end,
-        selText: verifiedText,
+        selStart: normalizedSelection.start,
+        selEnd: normalizedSelection.end,
+        selText: normalizedSelection.text,
         editIndex: null,
       });
       sel.removeAllRanges();
-    }, [text]);
+    }, [text, trimBoundaries]);
 
     const handleSpanClick = useCallback(
       (index: number, e: React.MouseEvent) => {
@@ -193,7 +246,17 @@ const ManualAnnotationPane = forwardRef<HTMLDivElement, Props>(
 
     return (
       <div className="pane">
-        <div className="pane-header">Manual Annotations</div>
+        <div className="pane-header pane-header-manual">
+          <span>Manual Annotations</span>
+          <label className="pane-header-toggle" title="Trim leading/trailing spaces and punctuation from new selections">
+            <input
+              type="checkbox"
+              checked={trimBoundaries}
+              onChange={(e) => setTrimBoundaries(e.target.checked)}
+            />
+            Trim Space/Punct
+          </label>
+        </div>
         <div
           className="pane-body"
           ref={mergedRefCallback}

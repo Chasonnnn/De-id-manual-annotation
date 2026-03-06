@@ -628,6 +628,16 @@ function AppContent() {
     (spans: CanonicalSpan[]) => {
       if (!doc) return;
       setDoc({ ...doc, manual_annotations: spans });
+      setDocuments((prev) =>
+        prev.map((item) =>
+          item.id === doc.id
+            ? {
+                ...item,
+                status: spans.length > 0 ? "in_progress" : "pending",
+              }
+            : item,
+        ),
+      );
 
       // Debounced auto-save
       if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -638,15 +648,17 @@ function AppContent() {
           .then(() => {
             setSaveStatus("saved");
             savedTimer.current = setTimeout(() => setSaveStatus("idle"), 2000);
+            void refreshDocuments();
             void handleDashboardRefresh();
           })
           .catch((e: unknown) => {
             setSaveStatus("idle");
+            void refreshDocuments();
             setError(String(e));
           });
       }, 1000);
     },
-    [doc, handleDashboardRefresh],
+    [doc, handleDashboardRefresh, refreshDocuments],
   );
 
   const handleRunAgent = useCallback(
@@ -960,6 +972,7 @@ function AppContent() {
                     onChange={(e) => setMatchMode(e.target.value as MatchMode)}
                   >
                     <option value="exact">Exact</option>
+                    <option value="boundary">Trim Space/Punct</option>
                     <option value="overlap">Overlap</option>
                   </select>
                 </label>
@@ -1055,7 +1068,7 @@ function AppContent() {
                             key="manual"
                             ref={registerPane(idx)}
                             text={doc.raw_text}
-                            labels={doc.label_set?.length ? doc.label_set : PII_LABELS}
+                            labels={PII_LABELS}
                             spans={doc.manual_annotations}
                             diffSpans={getDiffSpans("manual")}
                             onSpansChange={handleManualChange}

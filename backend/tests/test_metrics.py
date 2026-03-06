@@ -47,6 +47,24 @@ class TestExactMatch:
         assert m["micro"]["precision"] == 1.0
 
 
+class TestBoundaryMatch:
+    def test_trims_trailing_space_and_period(self):
+        gold = [_span(10, 15, "NAME", "David"), _span(30, 33, "NAME", "Ana")]
+        pred = [_span(10, 16, "NAME", "David "), _span(30, 34, "NAME", "Ana.")]
+        m = compute_metrics(gold, pred, mode="boundary")
+        assert m["micro"]["precision"] == 1.0
+        assert m["micro"]["recall"] == 1.0
+        assert m["micro"]["f1"] == 1.0
+
+    def test_does_not_trim_internal_punctuation(self):
+        gold = [_span(0, 8, "NAME", "St. John")]
+        pred = [_span(0, 7, "NAME", "St John")]
+        m = compute_metrics(gold, pred, mode="boundary")
+        assert m["micro"]["tp"] == 0
+        assert m["micro"]["fp"] == 1
+        assert m["micro"]["fn"] == 1
+
+
 # ---------------------------------------------------------------------------
 # Overlap (bipartite) matching
 # ---------------------------------------------------------------------------

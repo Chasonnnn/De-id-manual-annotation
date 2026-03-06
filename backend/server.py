@@ -12,7 +12,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, cast
 from urllib.parse import urlparse
 
 import httpx
@@ -1036,6 +1036,16 @@ def _normalize_label_projection(raw: object) -> Literal["native", "coarse_simple
     return value  # type: ignore[return-value]
 
 
+def _normalize_match_mode(raw: object) -> Literal["exact", "boundary", "overlap"]:
+    value = str(raw or "exact").strip().lower()
+    if value not in {"exact", "boundary", "overlap"}:
+        raise HTTPException(
+            status_code=400,
+            detail="match_mode must be one of: exact, boundary, overlap",
+        )
+    return cast(Literal["exact", "boundary", "overlap"], value)
+
+
 def _project_spans_to_coarse_simple(spans: list[CanonicalSpan]) -> list[CanonicalSpan]:
     projected: list[CanonicalSpan] = []
     for span in spans:
@@ -1931,7 +1941,7 @@ class PromptLabRuntimeInput(BaseModel):
     api_key: str | None = None
     api_base: str | None = None
     temperature: float = 0.0
-    match_mode: Literal["exact", "overlap"] = "exact"
+    match_mode: Literal["exact", "boundary", "overlap"] = "exact"
     reference_source: Literal["manual", "pre"] = "manual"
     fallback_reference_source: Literal["manual", "pre"] = "pre"
     label_profile: Literal["simple", "advanced"] = "simple"
@@ -1964,6 +1974,7 @@ def _resolve_prompt_lab_runtime(runtime: PromptLabRuntimeInput) -> dict[str, obj
         or str(cfg.get("api_base", "") or "")
         or os.environ.get("LITELLM_BASE_URL", "")
     )
+    match_mode = _normalize_match_mode(runtime.match_mode)
     chunk_mode = _normalize_chunk_mode(runtime.chunk_mode)
     chunk_size_chars = _normalize_chunk_size(runtime.chunk_size_chars)
     label_profile = _normalize_label_profile(runtime.label_profile)
@@ -1972,7 +1983,7 @@ def _resolve_prompt_lab_runtime(runtime: PromptLabRuntimeInput) -> dict[str, obj
         "api_key": api_key,
         "api_base": api_base,
         "temperature": runtime.temperature,
-        "match_mode": runtime.match_mode,
+        "match_mode": match_mode,
         "reference_source": runtime.reference_source,
         "fallback_reference_source": runtime.fallback_reference_source,
         "chunk_mode": chunk_mode,
@@ -2801,6 +2812,7 @@ async def get_metrics(
     enriched = _enrich_doc(doc, session_id)
     ref_spans = _spans_from_source(enriched, reference)
     hyp_spans = _spans_from_source(enriched, hypothesis)
+    normalized_match_mode = _normalize_match_mode(match_mode)
     normalized_projection = _normalize_label_projection(label_projection)
     eval_ref_spans, eval_hyp_spans = _apply_label_projection(
         ref_spans,
@@ -2808,13 +2820,14 @@ async def get_metrics(
         label_projection=normalized_projection,
     )
 
-    result = compute_metrics(eval_ref_spans, eval_hyp_spans, match_mode)
+    result = compute_metrics(eval_ref_spans, eval_hyp_spans, normalized_match_mode)
     llm_confidence = _resolve_metrics_llm_confidence(enriched, reference, hypothesis)
     result["llm_confidence"] = (
         llm_confidence.model_dump()
         if llm_confidence is not None
         else None
     )
+    result["match_mode"] = normalized_match_mode
     result["label_projection"] = normalized_projection
     return result
 
@@ -3258,6 +3271,7 @@ async def get_dashboard_metrics(
 ):
     session_id = "default"
     ids = _load_session_index(session_id)
+    normalized_match_mode = _normalize_match_mode(match_mode)
     normalized_projection = _normalize_label_projection(label_projection)
     documents: list[dict] = []
     total_tp = 0
@@ -3285,7 +3299,7 @@ async def get_dashboard_metrics(
             hyp_spans,
             label_projection=normalized_projection,
         )
-        result = compute_metrics(eval_ref_spans, eval_hyp_spans, match_mode)
+        result = compute_metrics(eval_ref_spans, eval_hyp_spans, normalized_match_mode)
         micro = result["micro"]
         macro = result["macro"]
 
@@ -3354,7 +3368,7 @@ async def get_dashboard_metrics(
     return {
         "reference": reference,
         "hypothesis": hypothesis,
-        "match_mode": match_mode,
+        "match_mode": normalized_match_mode,
         "label_projection": normalized_projection,
         "total_documents": len(ids),
         "documents_compared": compared,

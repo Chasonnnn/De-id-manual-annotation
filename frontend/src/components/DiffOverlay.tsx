@@ -19,6 +19,33 @@ function iou(a: CanonicalSpan, b: CanonicalSpan): number {
   return union > 0 ? inter / union : 0;
 }
 
+function isBoundaryIgnorable(char: string): boolean {
+  return /[\p{P}\s]/u.test(char);
+}
+
+function trimBoundaryOffsets(span: CanonicalSpan): { start: number; end: number } {
+  const text = span.text ?? "";
+  if (!text) {
+    return { start: span.start, end: span.end };
+  }
+
+  let left = 0;
+  let right = text.length;
+  while (left < right && isBoundaryIgnorable(text[left] ?? "")) {
+    left += 1;
+  }
+  while (right > left && isBoundaryIgnorable(text[right - 1] ?? "")) {
+    right -= 1;
+  }
+
+  const start = span.start + left;
+  const end = span.end - (text.length - right);
+  if (start >= end) {
+    return { start: span.start, end: span.end };
+  }
+  return { start, end };
+}
+
 function isMatch(
   a: CanonicalSpan,
   b: CanonicalSpan,
@@ -27,6 +54,11 @@ function isMatch(
   if (a.label !== b.label) return false;
   if (matchMode === "exact") {
     return a.start === b.start && a.end === b.end;
+  }
+  if (matchMode === "boundary") {
+    const trimmedA = trimBoundaryOffsets(a);
+    const trimmedB = trimBoundaryOffsets(b);
+    return trimmedA.start === trimmedB.start && trimmedA.end === trimmedB.end;
   }
   // overlap mode: align with backend thresholding (IoU >= 0.5)
   if (!spansOverlap(a, b)) return false;

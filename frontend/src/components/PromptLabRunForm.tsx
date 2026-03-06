@@ -3,6 +3,7 @@ import { MODEL_PRESETS, getModelPreset } from "../modelPresets";
 import type {
   AgentMethodOption,
   DocumentSummary,
+  MatchMode,
   PromptLabModelInput,
   PromptLabPromptInput,
   PromptLabRunCreateRequest,
@@ -68,7 +69,7 @@ export default function PromptLabRunForm({
   const [prompts, setPrompts] = useState<PromptLabPromptInput[]>([makePrompt(0)]);
   const [models, setModels] = useState<PromptLabModelInput[]>([makeModel(0)]);
   const [temperature, setTemperature] = useState(0);
-  const [matchMode, setMatchMode] = useState<"exact" | "overlap">("exact");
+  const [matchMode, setMatchMode] = useState<MatchMode>("exact");
   const [referenceSource, setReferenceSource] = useState<"manual" | "pre">("manual");
   const [fallbackSource, setFallbackSource] = useState<"manual" | "pre">("pre");
   const [apiKey, setApiKey] = useState(() => {
@@ -342,9 +343,10 @@ export default function PromptLabRunForm({
               <select
                 id="prompt-lab-match"
                 value={matchMode}
-                onChange={(e) => setMatchMode(e.target.value as "exact" | "overlap")}
+                onChange={(e) => setMatchMode(e.target.value as MatchMode)}
               >
                 <option value="exact">Exact</option>
+                <option value="boundary">Trim Space/Punct</option>
                 <option value="overlap">Overlap</option>
               </select>
             </div>

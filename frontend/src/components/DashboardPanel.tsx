@@ -24,6 +24,8 @@ export default function DashboardPanel({
   const fmtNum = (value: number) => value.toFixed(3);
   const fmtConfidence = (value: number | null) =>
     value == null ? "N/A" : `${(value * 100).toFixed(1)}%`;
+  const fmtMatchMode = (value: DashboardMetricsResult["match_mode"]) =>
+    value === "boundary" ? "trim space/punct" : value;
 
   return (
     <div className={`dashboard-panel ${collapsed ? "collapsed" : ""}`}>
@@ -57,7 +59,7 @@ export default function DashboardPanel({
             <>
               <div className="dashboard-subtitle">
                 Comparing <strong>{dashboard.reference}</strong> vs{" "}
-                <strong>{dashboard.hypothesis}</strong> ({dashboard.match_mode})
+                <strong>{dashboard.hypothesis}</strong> ({fmtMatchMode(dashboard.match_mode)})
               </div>
 
               <div className="metric-cards">
