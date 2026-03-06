@@ -275,6 +275,7 @@ function AppContent() {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle"); // 4.1
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(null);
   const savedTimer = useRef<ReturnType<typeof setTimeout>>(null);
+  const dashboardRefreshTimer = useRef<ReturnType<typeof setTimeout>>(null);
 
   const { registerPane, handleScroll } = useSyncScroll();
 
@@ -339,23 +340,31 @@ function AppContent() {
   useEffect(() => {
     if (!doc || (!agentRunning && !methodRunning)) return;
     let cancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
     const poll = async () => {
       try {
         const progress = await getAgentProgress(doc.id);
-        if (!cancelled) {
-          setAgentRunProgress(progress);
+        if (cancelled) return;
+        setAgentRunProgress(progress);
+        if (progress.status === "running") {
+          pollTimer = window.setTimeout(() => {
+            void poll();
+          }, 1000);
         }
       } catch {
-        // best-effort polling; no-op on transient failures
+        if (cancelled) return;
+        // Best-effort polling; retry on transient failures with a slower cadence.
+        pollTimer = window.setTimeout(() => {
+          void poll();
+        }, 1500);
       }
     };
     void poll();
-    const timer = window.setInterval(() => {
-      void poll();
-    }, 400);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (pollTimer) {
+        window.clearTimeout(pollTimer);
+      }
     };
   }, [doc, agentRunning, methodRunning]);
 
@@ -666,6 +675,25 @@ function AppContent() {
     void handleDashboardRefresh();
   }, [handleDashboardRefresh]);
 
+  const scheduleDashboardRefresh = useCallback(
+    (delayMs = 1500) => {
+      if (dashboardRefreshTimer.current) {
+        clearTimeout(dashboardRefreshTimer.current);
+      }
+      dashboardRefreshTimer.current = setTimeout(() => {
+        dashboardRefreshTimer.current = null;
+        void handleDashboardRefresh();
+      }, delayMs);
+    },
+    [handleDashboardRefresh],
+  );
+
+  useEffect(() => () => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+    if (dashboardRefreshTimer.current) clearTimeout(dashboardRefreshTimer.current);
+  }, []);
+
   // 4.1: Save status in debounced auto-save
   const handleManualChange = useCallback(
     (spans: CanonicalSpan[]) => {
@@ -685,23 +713,24 @@ function AppContent() {
       // Debounced auto-save
       if (saveTimer.current) clearTimeout(saveTimer.current);
       if (savedTimer.current) clearTimeout(savedTimer.current);
+      if (dashboardRefreshTimer.current) clearTimeout(dashboardRefreshTimer.current);
       setSaveStatus("saving");
+      const docId = doc.id;
       saveTimer.current = setTimeout(() => {
-        updateManualAnnotations(doc.id, spans)
-          .then(() => {
+        updateManualAnnotations(docId, spans)
+          .then((savedDoc) => {
+            setDoc((current) => (current?.id === savedDoc.id ? savedDoc : current));
             setSaveStatus("saved");
             savedTimer.current = setTimeout(() => setSaveStatus("idle"), 2000);
-            void refreshDocuments();
-            void handleDashboardRefresh();
+            scheduleDashboardRefresh();
           })
           .catch((e: unknown) => {
             setSaveStatus("idle");
-            void refreshDocuments();
             setError(String(e));
           });
       }, 1000);
     },
-    [doc, handleDashboardRefresh, refreshDocuments],
+    [doc, scheduleDashboardRefresh],
   );
 
   const handleRunAgent = useCallback(

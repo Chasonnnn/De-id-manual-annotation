@@ -11,6 +11,7 @@ from agent import (
     METHOD_DEFINITION_BY_ID,
     MODEL_PRESETS,
     SYSTEM_PROMPT,
+    _infer_provider,
     build_extraction_system_prompt,
     _strip_code_fences,
     run_llm,
@@ -111,6 +112,21 @@ class TestStripCodeFences:
         content = '  ```json\n  [{"a": 1}]\n  ```  '
         result = _strip_code_fences(content)
         assert '"a"' in result
+
+
+class TestInferProvider:
+    def test_recognizes_common_dot_and_slash_model_prefixes(self):
+        assert _infer_provider("openai.gpt-5.2-chat") == "openai"
+        assert _infer_provider("openai/gpt-4o") == "openai"
+        assert _infer_provider("anthropic.claude-4.6-opus") == "anthropic"
+        assert _infer_provider("anthropic/claude-sonnet-4-20250514") == "anthropic"
+        assert _infer_provider("google.gemini-3.1-pro-preview") == "gemini"
+        assert _infer_provider("google/gemini-2.5-pro") == "gemini"
+
+    def test_falls_back_without_litellm_provider_lookup(self):
+        assert _infer_provider("vertex_ai/gemini-2.5-pro") == "gemini"
+        assert _infer_provider("custom-provider/model-name") == "custom-provider"
+        assert _infer_provider("opaque-model-id") == "unknown"
 
 
 # ---------------------------------------------------------------------------

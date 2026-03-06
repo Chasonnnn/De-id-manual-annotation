@@ -7,7 +7,7 @@ import math
 import re
 from typing import Any, Literal
 
-from litellm import completion, get_llm_provider
+from litellm import completion
 
 from models import CanonicalSpan, LLMConfidenceMetric
 
@@ -287,6 +287,15 @@ MODEL_PRESETS: list[dict[str, Any]] = [
 
 MODEL_PRESET_BY_ID: dict[str, dict[str, Any]] = {
     p["model"]: p for p in MODEL_PRESETS
+}
+
+PROVIDER_PREFIX_MAP: dict[str, str] = {
+    "openai": "openai",
+    "anthropic": "anthropic",
+    "google": "gemini",
+    "gemini": "gemini",
+    "vertex_ai": "gemini",
+    "vertex": "gemini",
 }
 
 TOOL_LABEL_MAP: dict[str, str] = {
@@ -717,13 +726,24 @@ def _extract_response_content(resp: Any) -> str:
 
 
 def _infer_provider(model: str) -> str:
-    try:
-        _, provider, _, _ = get_llm_provider(model=model)
-        return str(provider)
-    except Exception:
-        if "/" in model:
-            return model.split("/", 1)[0]
+    preset = MODEL_PRESET_BY_ID.get(model)
+    if preset is not None:
+        return str(preset["provider"])
+
+    normalized = model.strip().lower()
+    if not normalized:
         return "unknown"
+
+    for separator in ("/", "."):
+        if separator not in normalized:
+            continue
+        prefix = normalized.split(separator, 1)[0]
+        if prefix in PROVIDER_PREFIX_MAP:
+            return PROVIDER_PREFIX_MAP[prefix]
+        if separator == "/":
+            return prefix or "unknown"
+
+    return "unknown"
 
 
 def _supports_reasoning_effort(model: str, provider: str) -> bool:
