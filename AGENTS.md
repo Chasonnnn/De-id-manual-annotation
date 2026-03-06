@@ -13,12 +13,12 @@
 ## 2) No Backward Compatibility Requirement (Pre-Release)
 - This project is under active development and does not require backward compatibility.
 - Breaking API/schema changes are allowed when they simplify architecture or speed delivery.
-- Prefer removing transitional compatibility layers instead of maintaining legacy behavior.
+- Hard rule: do not add compatibility shims, dual paths, legacy-preserving branches, or transitional behavior unless the user explicitly asks for them.
 
 ## 3) TDD Is Required
 - Follow test-driven development for backend work:
-  1. Write/adjust failing tests first.
-  2. Implement minimal code to pass tests.
+  1. Write or adjust failing tests first.
+  2. Implement the minimal code to pass tests.
   3. Refactor while keeping tests green.
 - No feature is complete without automated tests that cover expected behavior and key failure modes.
 
@@ -27,11 +27,12 @@
 - After reproduction, identify the root cause, then implement and verify the fix.
 
 ## 7) No Fallback Routes
-- No fallback routes. Expose issues so we can fix them.
+- No fallback routes. Expose issues so they can be fixed.
 - Do not hide integration or runtime errors behind silent/default route behavior.
+- Hard rule: do not silently downgrade behavior, switch models or modes, retry with a different strategy, or substitute an alternative implementation.
 - Return explicit failure responses with actionable error details.
 
 ## 8) Official Documentation First (Planning)
 - When making plans, implementation decisions, or technical recommendations, check official documentation first.
-- Prefer primary sources (official docs/specs/repos) over memory or third-party summaries.
+- Prefer primary sources such as official docs, specs, and repositories over memory or third-party summaries.
 - If documentation is missing or ambiguous, call it out explicitly and list assumptions.
