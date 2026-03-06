@@ -3,6 +3,7 @@ import { getAgentCredentialStatus } from "../api/client";
 import { MODEL_PRESETS, getModelPreset } from "../modelPresets";
 import type {
   AgentConfig,
+  AgentChunkDiagnostic,
   AgentCredentialStatus,
   AgentRunProgress,
   AgentView,
@@ -10,12 +11,14 @@ import type {
   LabelProfile,
 } from "../types";
 import AnnotatedText from "./AnnotatedText";
+import ChunkDiagnosticsPanel from "./ChunkDiagnosticsPanel";
 
 interface Props {
   text: string;
   spans: CanonicalSpan[];
   runProgress?: AgentRunProgress | null;
   processedWithChunking?: boolean;
+  chunkDiagnostics?: AgentChunkDiagnostic[];
   activeOutput: AgentView;
   onActiveOutputChange: (view: AgentView) => void;
   llmRunOptions: Array<{ key: string; label: string; subtitle?: string }>;
@@ -37,6 +40,7 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
       spans,
       runProgress = null,
       processedWithChunking = false,
+      chunkDiagnostics = [],
       activeOutput,
       onActiveOutputChange,
       llmRunOptions,
@@ -52,7 +56,7 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
     const [configOpen, setConfigOpen] = useState(false);
     const [mode, setMode] = useState<"rule" | "llm">("rule");
     const [systemPrompt, setSystemPrompt] = useState(
-      "You are a PII annotation assistant. Return ONLY a JSON array of objects with start (0-based), end (exclusive), label, and text for each PII span.",
+      "You are a PII annotation assistant. Identify all explicit personally identifiable information (PII) spans in the transcript.",
     );
     const [model, setModel] = useState("openai.gpt-5.3-codex");
     const [customModel, setCustomModel] = useState("");
@@ -469,6 +473,7 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
             </div>
           )}
         </div>
+        <ChunkDiagnosticsPanel diagnostics={chunkDiagnostics} />
         <div
           className="pane-body"
           ref={ref}

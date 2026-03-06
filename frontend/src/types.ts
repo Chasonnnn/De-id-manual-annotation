@@ -67,9 +67,24 @@ export interface LLMConfidenceMetric {
   medium_threshold: number;
 }
 
+export interface AgentChunkDiagnostic {
+  chunk_index: number;
+  start: number;
+  end: number;
+  char_count: number;
+  span_count: number;
+  attempt_count: number;
+  retry_used: boolean;
+  suspicious_empty: boolean;
+  status: "completed" | "failed";
+  finish_reason: string | null;
+  warnings: string[];
+}
+
 export interface AgentRunMetrics {
   llm_confidence: LLMConfidenceMetric | null;
   label_profile?: LabelProfile | null;
+  chunk_diagnostics?: AgentChunkDiagnostic[];
 }
 
 export interface SavedRunMetadata {
@@ -79,6 +94,8 @@ export interface SavedRunMetadata {
   method_id?: string | null;
   label_profile?: LabelProfile | null;
   prompt_snapshot?: Record<string, unknown> | null;
+  llm_confidence?: LLMConfidenceMetric | null;
+  chunk_diagnostics?: AgentChunkDiagnostic[];
 }
 
 export interface UtteranceRow {
@@ -212,6 +229,7 @@ export interface SessionExportBundle {
     agent_metrics?: {
       llm_confidence?: LLMConfidenceMetric | null;
       label_profile?: LabelProfile | null;
+      chunk_diagnostics?: AgentChunkDiagnostic[];
     };
   }>;
   config?: Record<string, unknown>;

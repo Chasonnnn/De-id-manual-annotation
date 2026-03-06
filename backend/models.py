@@ -28,6 +28,20 @@ class AgentOutputs(BaseModel):
     method_run_metadata: dict[str, "SavedRunMetadata"] = Field(default_factory=dict)
 
 
+class AgentChunkDiagnostic(BaseModel):
+    chunk_index: int
+    start: int
+    end: int
+    char_count: int
+    span_count: int
+    attempt_count: int = 1
+    retry_used: bool = False
+    suspicious_empty: bool = False
+    status: Literal["completed", "failed"]
+    finish_reason: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
 class SavedRunMetadata(BaseModel):
     mode: Literal["manual", "rule", "llm", "method"]
     updated_at: str
@@ -36,6 +50,7 @@ class SavedRunMetadata(BaseModel):
     label_profile: Literal["simple", "advanced"] | None = None
     prompt_snapshot: dict[str, Any] | None = None
     llm_confidence: "LLMConfidenceMetric | None" = None
+    chunk_diagnostics: list[AgentChunkDiagnostic] = Field(default_factory=list)
 
 
 class LLMConfidenceMetric(BaseModel):
@@ -57,6 +72,7 @@ class LLMConfidenceMetric(BaseModel):
 class AgentRunMetrics(BaseModel):
     llm_confidence: LLMConfidenceMetric | None = None
     label_profile: Literal["simple", "advanced"] | None = None
+    chunk_diagnostics: list[AgentChunkDiagnostic] = Field(default_factory=list)
 
 
 class CanonicalDocument(BaseModel):

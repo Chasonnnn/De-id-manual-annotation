@@ -1,8 +1,9 @@
 import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PII_LABELS } from "./types";
-  import type {
+import type {
   AnnotationSource,
   AgentConfig,
+  AgentChunkDiagnostic,
   AgentMethodOption,
   AgentRunProgress,
   AgentView,
@@ -10,13 +11,13 @@ import { PII_LABELS } from "./types";
   CanonicalSpan,
   DashboardMetricsResult,
   DocumentSummary,
-    MatchMode,
-    MethodView,
-    MetricsResult,
-    LabelProjection,
-    PaneType,
-    SessionProfile,
-  } from "./types";
+  LabelProjection,
+  MatchMode,
+  MethodView,
+  MetricsResult,
+  PaneType,
+  SessionProfile,
+} from "./types";
 import {
   deleteDocument,
   exportGroundTruth,
@@ -151,6 +152,34 @@ function formatRunTimestamp(value: string | null | undefined): string {
 function nonChunkWarningMessage(messages: string[]): string | null {
   const filtered = messages.filter((message) => !isChunkWarning(message));
   return filtered.length > 0 ? filtered.join(" ") : null;
+}
+
+function getChunkDiagnosticsCount(
+  diagnostics: AgentChunkDiagnostic[] | null | undefined,
+): number {
+  return diagnostics?.length ?? 0;
+}
+
+function resolveMethodChunkDiagnostics(
+  doc: CanonicalDocument | null,
+  methodId: string,
+): AgentChunkDiagnostic[] {
+  if (!doc || !methodId) return [];
+  const runMeta = doc.agent_outputs?.method_run_metadata ?? {};
+  const exact = runMeta[methodId]?.chunk_diagnostics;
+  if (exact && exact.length > 0) return exact;
+  if (methodId.includes("::")) return exact ?? [];
+
+  let latestDiagnostics: AgentChunkDiagnostic[] = [];
+  let latestTimestamp = Number.NEGATIVE_INFINITY;
+  for (const metadata of Object.values(runMeta)) {
+    if (metadata.method_id !== methodId) continue;
+    const timestamp = metadata.updated_at ? new Date(metadata.updated_at).getTime() : 0;
+    if (!Number.isFinite(timestamp) || timestamp < latestTimestamp) continue;
+    latestTimestamp = timestamp;
+    latestDiagnostics = metadata.chunk_diagnostics ?? [];
+  }
+  return latestDiagnostics;
 }
 
 function toPromptTemplatesFromSnapshot(
@@ -574,6 +603,20 @@ function AppContent() {
       };
     });
   }, [doc]);
+
+  const agentChunkDiagnostics = useMemo<AgentChunkDiagnostic[]>(() => {
+    if (!doc) return [];
+    if (agentView === "rule") return [];
+    if (agentView === "llm" && agentLlmRun !== "__latest__") {
+      return doc.agent_outputs?.llm_run_metadata?.[agentLlmRun]?.chunk_diagnostics ?? [];
+    }
+    return doc.agent_run_metrics?.chunk_diagnostics ?? [];
+  }, [agentLlmRun, agentView, doc]);
+
+  const methodChunkDiagnostics = useMemo<AgentChunkDiagnostic[]>(
+    () => resolveMethodChunkDiagnostics(doc, methodView),
+    [doc, methodView],
+  );
 
   useEffect(() => {
     if (agentLlmRun === "__latest__") return;
@@ -1083,7 +1126,10 @@ function AppContent() {
                             text={doc.raw_text}
                             spans={getAgentSpans()}
                             runProgress={agentRunning ? agentRunProgress : null}
-                            processedWithChunking={agentChunked}
+                            processedWithChunking={
+                              agentChunked || getChunkDiagnosticsCount(agentChunkDiagnostics) > 0
+                            }
+                            chunkDiagnostics={agentChunkDiagnostics}
                             activeOutput={agentView}
                             onActiveOutputChange={setAgentView}
                             llmRunOptions={llmRunOptions}
@@ -1104,7 +1150,10 @@ function AppContent() {
                             spans={getMethodSpans()}
                             runProgress={methodRunning ? agentRunProgress : null}
                             methods={methodCatalog}
-                            processedWithChunking={methodChunked}
+                            processedWithChunking={
+                              methodChunked || getChunkDiagnosticsCount(methodChunkDiagnostics) > 0
+                            }
+                            chunkDiagnostics={methodChunkDiagnostics}
                             activeMethod={methodView}
                             onActiveMethodChange={setMethodView}
                             diffSpans={getDiffSpans("methods")}

@@ -11,6 +11,7 @@ from agent import (
     METHOD_DEFINITION_BY_ID,
     MODEL_PRESETS,
     SYSTEM_PROMPT,
+    build_extraction_system_prompt,
     _strip_code_fences,
     run_llm,
     run_llm_with_metadata,
@@ -150,10 +151,14 @@ def _mock_completion_response(
     return resp
 
 
+def _spans_payload(items: list[dict[str, object]]) -> str:
+    return json.dumps({"spans": items})
+
+
 class TestRunLLM:
     @patch("agent.completion")
     def test_parses_valid_json(self, mock_completion):
-        payload = json.dumps(
+        payload = _spans_payload(
             [
                 {"start": 0, "end": 4, "label": "NAME", "text": "John"},
             ]
@@ -167,7 +172,7 @@ class TestRunLLM:
 
     @patch("agent.completion")
     def test_repairs_offset_mismatches_using_span_text(self, mock_completion):
-        payload = json.dumps(
+        payload = _spans_payload(
             [
                 {"start": 0, "end": 1, "label": "NAME", "text": "Anna"},
                 {"start": 2, "end": 4, "label": "NAME", "text": "Sue"},
@@ -189,7 +194,7 @@ class TestRunLLM:
 
     @patch("agent.completion")
     def test_drops_low_confidence_name_after_failed_realign(self, mock_completion):
-        payload = json.dumps(
+        payload = _spans_payload(
             [
                 {"start": 0, "end": 3, "label": "NAME", "text": "Anna"},
             ]
@@ -207,7 +212,7 @@ class TestRunLLM:
 
     @patch("agent.completion")
     def test_matching_offsets_skip_repair_warning(self, mock_completion):
-        payload = json.dumps(
+        payload = _spans_payload(
             [
                 {"start": 6, "end": 10, "label": "NAME", "text": "Anna"},
             ]
@@ -226,7 +231,7 @@ class TestRunLLM:
 
     @patch("agent.completion")
     def test_warns_when_finish_reason_is_length(self, mock_completion):
-        payload = json.dumps(
+        payload = _spans_payload(
             [
                 {"start": 6, "end": 10, "label": "NAME", "text": "Anna"},
             ]
@@ -246,12 +251,10 @@ class TestRunLLM:
 
     @patch("agent.completion")
     def test_parses_object_with_spans_key(self, mock_completion):
-        payload = json.dumps(
-            {
-                "spans": [
-                    {"start": 0, "end": 4, "label": "NAME", "text": "John"},
-                ]
-            }
+        payload = _spans_payload(
+            [
+                {"start": 0, "end": 4, "label": "NAME", "text": "John"},
+            ]
         )
         mock_completion.return_value = _mock_completion_response(payload)
         spans = run_llm("Hi John!", api_key="test-key")
@@ -262,7 +265,7 @@ class TestRunLLM:
     def test_parses_json_embedded_in_text(self, mock_completion):
         payload = (
             "I found entities.\n"
-            '[{"start": 0, "end": 4, "label": "NAME", "text": "John"}]'
+            '{"spans":[{"start": 0, "end": 4, "label": "NAME", "text": "John"}]}'
         )
         mock_completion.return_value = _mock_completion_response(payload)
         spans = run_llm("Hi John!", api_key="test-key")
@@ -274,7 +277,7 @@ class TestRunLLM:
             {"type": "thinking", "text": "internal reasoning"},
             {
                 "type": "text",
-                "text": '[{"start": 3, "end": 7, "label": "NAME", "text": "John"}]',
+                "text": '{"spans":[{"start": 3, "end": 7, "label": "NAME", "text": "John"}]}',
             },
         ]
         mock_completion.return_value = _mock_completion_response(payload)
@@ -291,7 +294,7 @@ class TestRunLLM:
     @patch("agent.completion")
     def test_strips_markdown_fences(self, mock_completion):
         payload = (
-            '```json\n[{"start": 0, "end": 4, "label": "NAME", "text": "John"}]\n```'
+            '```json\n{"spans":[{"start": 0, "end": 4, "label": "NAME", "text": "John"}]}\n```'
         )
         mock_completion.return_value = _mock_completion_response(payload)
 
@@ -309,12 +312,12 @@ class TestRunLLM:
     def test_raises_on_non_array_json(self, mock_completion):
         mock_completion.return_value = _mock_completion_response('{"not": "an array"}')
 
-        with pytest.raises(ValueError, match="top-level array or object with 'spans'"):
+        with pytest.raises(ValueError, match="top-level object with key 'spans'"):
             run_llm("text", api_key="test-key")
 
     @patch("agent.completion")
     def test_empty_response(self, mock_completion):
-        mock_completion.return_value = _mock_completion_response("[]")
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
 
         spans = run_llm("clean text", api_key="test-key")
         assert spans == []
@@ -352,7 +355,7 @@ class TestRunLLM:
 
     @patch("agent.completion")
     def test_custom_system_prompt_and_temperature(self, mock_completion):
-        mock_completion.return_value = _mock_completion_response("[]")
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
 
         custom_prompt = "You are a custom PII detector."
         run_llm(
@@ -367,22 +370,22 @@ class TestRunLLM:
         assert call_kwargs.kwargs["model"] == "openai/gpt-4o"
         assert call_kwargs.kwargs["temperature"] == 0.5
         messages = call_kwargs.kwargs["messages"]
-        assert messages[0]["content"] == custom_prompt
+        assert messages[0]["content"] == build_extraction_system_prompt(custom_prompt)
 
     @patch("agent.completion")
     def test_default_system_prompt(self, mock_completion):
-        mock_completion.return_value = _mock_completion_response("[]")
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
 
         run_llm("text", api_key="k")
 
         call_kwargs = mock_completion.call_args
         messages = call_kwargs.kwargs["messages"]
-        assert messages[0]["content"] == SYSTEM_PROMPT
+        assert messages[0]["content"] == build_extraction_system_prompt(SYSTEM_PROMPT)
 
     @patch("agent.completion")
     def test_api_key_passed_to_litellm(self, mock_completion):
         """Verify api_key is forwarded to litellm.completion."""
-        mock_completion.return_value = _mock_completion_response("[]")
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
 
         run_llm("text", api_key="sk-test-123", model="openai/gpt-4o")
 
@@ -392,7 +395,7 @@ class TestRunLLM:
     @patch("agent.completion")
     def test_api_base_passed_to_litellm(self, mock_completion):
         """Verify api_base is forwarded to litellm.completion when set."""
-        mock_completion.return_value = _mock_completion_response("[]")
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
 
         run_llm(
             "text",
@@ -407,7 +410,7 @@ class TestRunLLM:
     @patch("agent.completion")
     def test_default_model_uses_litellm_prefix(self, mock_completion):
         """Default model should use the provider/model format."""
-        mock_completion.return_value = _mock_completion_response("[]")
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
 
         run_llm("text", api_key="k")
 
@@ -417,7 +420,7 @@ class TestRunLLM:
     @patch("agent.completion")
     def test_anthropic_model(self, mock_completion):
         """LiteLLM should support non-OpenAI models like Anthropic."""
-        mock_completion.return_value = _mock_completion_response("[]")
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
 
         run_llm("text", api_key="k", model="anthropic/claude-sonnet-4-20250514")
 
@@ -426,7 +429,7 @@ class TestRunLLM:
 
     @patch("agent.completion")
     def test_openai_reasoning_effort_is_passed(self, mock_completion):
-        mock_completion.return_value = _mock_completion_response("[]")
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
         run_llm_with_metadata(
             text="text",
             api_key="k",
@@ -438,7 +441,7 @@ class TestRunLLM:
 
     @patch("agent.completion")
     def test_drops_implausible_name_spans_even_with_valid_offsets(self, mock_completion):
-        payload = json.dumps(
+        payload = _spans_payload(
             [
                 {"start": 0, "end": 4, "label": "NAME", "text": "Good"},
                 {"start": 6, "end": 10, "label": "NAME", "text": "Anna"},
@@ -467,7 +470,7 @@ class TestRunLLM:
         wait_idx = text.index("Wait")
         and_they_idx = text.index("and they")
         anna_idx = text.index("Anna")
-        payload = json.dumps(
+        payload = _spans_payload(
             [
                 {"start": three_idx + 2, "end": three_idx + 5, "label": "NAME", "text": "ree"},
                 {"start": wait_idx + 1, "end": wait_idx + 5, "label": "NAME", "text": "ait,"},
@@ -489,13 +492,14 @@ class TestRunLLM:
 
     @patch("agent.completion")
     def test_anthropic_thinking_is_passed(self, mock_completion):
-        mock_completion.return_value = _mock_completion_response("[]")
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
         run_llm_with_metadata(
             text="text",
             api_key="k",
             model="anthropic.claude-4.6-opus",
             anthropic_thinking=True,
             anthropic_thinking_budget_tokens=2048,
+            temperature=1.0,
         )
         call_kwargs = mock_completion.call_args
         assert call_kwargs.kwargs["thinking"]["type"] == "enabled"
@@ -519,7 +523,7 @@ class TestRunLLM:
     def test_api_base_retries_with_v1_suffix(self, mock_completion):
         mock_completion.side_effect = [
             Exception("404 Not Found"),
-            _mock_completion_response("[]"),
+            _mock_completion_response('{"spans":[]}'),
         ]
         result = run_llm_with_metadata(
             text="text",
@@ -536,7 +540,7 @@ class TestRunLLM:
 
     @patch("agent.completion")
     def test_chat_model_omits_custom_temperature(self, mock_completion):
-        mock_completion.return_value = _mock_completion_response("[]")
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
         result = run_llm_with_metadata(
             text="text",
             api_key="k",
@@ -550,7 +554,7 @@ class TestRunLLM:
 
     @patch("agent.completion")
     def test_gateway_dot_model_uses_openai_provider_format(self, mock_completion):
-        mock_completion.return_value = _mock_completion_response("[]")
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
         run_llm_with_metadata(
             text="text",
             api_key="k",
@@ -562,7 +566,7 @@ class TestRunLLM:
 
     @patch("agent.completion")
     def test_gateway_reasoning_passed_via_extra_body(self, mock_completion):
-        mock_completion.return_value = _mock_completion_response("[]")
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
         run_llm_with_metadata(
             text="text",
             api_key="k",
@@ -576,7 +580,7 @@ class TestRunLLM:
 
     @patch("agent.completion")
     def test_gateway_thinking_passed_via_extra_body(self, mock_completion):
-        mock_completion.return_value = _mock_completion_response("[]")
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
         result = run_llm_with_metadata(
             text="text",
             api_key="k",
@@ -584,7 +588,7 @@ class TestRunLLM:
             model="anthropic.claude-4.6-opus",
             anthropic_thinking=True,
             anthropic_thinking_budget_tokens=2048,
-            temperature=0.0,
+            temperature=1.0,
         )
         call_kwargs = mock_completion.call_args
         assert "thinking" not in call_kwargs.kwargs
@@ -594,7 +598,19 @@ class TestRunLLM:
             call_kwargs.kwargs["extra_body"]["max_tokens"]
             > call_kwargs.kwargs["extra_body"]["thinking"]["budget_tokens"]
         )
-        assert any("requires temperature=1" in warning for warning in result.warnings)
+        assert result.spans == []
+
+    def test_gateway_thinking_requires_temperature_one(self):
+        with pytest.raises(ValueError, match="requires temperature=1"):
+            run_llm_with_metadata(
+                text="text",
+                api_key="k",
+                api_base="https://proxy.example.com",
+                model="anthropic.claude-4.6-opus",
+                anthropic_thinking=True,
+                anthropic_thinking_budget_tokens=2048,
+                temperature=0.0,
+            )
 
     @patch("agent.completion")
     def test_anthropic_empty_thinking_output_raises_error(self, mock_completion):
@@ -607,7 +623,7 @@ class TestRunLLM:
                 model="anthropic.claude-4.6-opus",
                 anthropic_thinking=True,
                 anthropic_thinking_budget_tokens=2048,
-                temperature=0.0,
+                temperature=1.0,
             )
 
         call_kwargs = mock_completion.call_args
@@ -616,7 +632,7 @@ class TestRunLLM:
     @patch("agent.completion")
     def test_openai_model_enables_logprobs_and_computes_confidence(self, mock_completion):
         mock_completion.return_value = _mock_completion_response(
-            "[]", token_logprobs=[-0.1, -0.2, -0.3]
+            '{"spans":[]}', token_logprobs=[-0.1, -0.2, -0.3]
         )
         result = run_llm_with_metadata(
             text="text",
@@ -634,7 +650,7 @@ class TestRunLLM:
 
     @patch("agent.completion")
     def test_non_openai_model_omits_logprobs(self, mock_completion):
-        mock_completion.return_value = _mock_completion_response("[]")
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
         result = run_llm_with_metadata(
             text="text",
             api_key="k",
@@ -648,7 +664,7 @@ class TestRunLLM:
 
     @patch("agent.completion")
     def test_openai_missing_logprobs_sets_unavailable_metric(self, mock_completion):
-        mock_completion.return_value = _mock_completion_response("[]")
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
         result = run_llm_with_metadata(
             text="text",
             api_key="k",
@@ -661,7 +677,9 @@ class TestRunLLM:
 
     @patch("agent.completion")
     def test_openai_missing_logprobs_uses_usage_completion_tokens(self, mock_completion):
-        mock_completion.return_value = _mock_completion_response("[]", completion_tokens=42)
+        mock_completion.return_value = _mock_completion_response(
+            '{"spans":[]}', completion_tokens=42
+        )
         result = run_llm_with_metadata(
             text="text",
             api_key="k",
@@ -675,7 +693,7 @@ class TestRunLLM:
     def test_openai_logprobs_fallback_retries_without_param(self, mock_completion):
         mock_completion.side_effect = [
             Exception("UnsupportedParamsError: openai does not support parameters: ['logprobs']"),
-            _mock_completion_response("[]"),
+            _mock_completion_response('{"spans":[]}'),
         ]
         result = run_llm_with_metadata(
             text="text",
@@ -691,7 +709,9 @@ class TestRunLLM:
 
     @patch("agent.completion")
     def test_openai_gpt5_family_attempts_logprobs(self, mock_completion):
-        mock_completion.return_value = _mock_completion_response("[]", token_logprobs=[-0.2, -0.1])
+        mock_completion.return_value = _mock_completion_response(
+            '{"spans":[]}', token_logprobs=[-0.2, -0.1]
+        )
         result = run_llm_with_metadata(
             text="text",
             api_key="k",
@@ -704,7 +724,7 @@ class TestRunLLM:
 
     @patch("agent.completion")
     def test_openai_gpt5_chat_skips_logprobs_probe(self, mock_completion):
-        mock_completion.return_value = _mock_completion_response("[]")
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
         result = run_llm_with_metadata(
             text="text",
             api_key="k",
@@ -717,7 +737,7 @@ class TestRunLLM:
 
     @patch("agent.completion")
     def test_openai_gpt5_chat_with_none_still_skips_logprobs_probe(self, mock_completion):
-        mock_completion.return_value = _mock_completion_response("[]")
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
         result = run_llm_with_metadata(
             text="text",
             api_key="k",
@@ -740,7 +760,7 @@ class TestRunLLM:
                 raise Exception(
                     "UnsupportedParamsError: openai does not support parameters: ['response_format']"
                 )
-            return _mock_completion_response("[]")
+            return _mock_completion_response('{"spans":[]}')
 
         mock_completion.side_effect = _side_effect
         result = run_llm_with_metadata(
@@ -755,7 +775,7 @@ class TestRunLLM:
 
     @patch("agent.completion")
     def test_advanced_profile_response_schema_enforces_label_enum(self, mock_completion):
-        mock_completion.return_value = _mock_completion_response("[]")
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
         run_llm_with_metadata(
             text="text",
             api_key="k",
@@ -774,7 +794,7 @@ class TestRunLLM:
 
     @patch("agent.completion")
     def test_simple_profile_response_schema_enforces_label_enum(self, mock_completion):
-        mock_completion.return_value = _mock_completion_response("[]")
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
         run_llm_with_metadata(
             text="text",
             api_key="k",
@@ -791,9 +811,22 @@ class TestRunLLM:
         assert "EMAIL" in enum_values
         assert "MISC_ID" in enum_values
 
+    def test_build_extraction_system_prompt_is_label_profile_specific(self):
+        simple_prompt = build_extraction_system_prompt(SYSTEM_PROMPT, label_profile="simple")
+        advanced_prompt = build_extraction_system_prompt(
+            SYSTEM_PROMPT,
+            label_profile="advanced",
+        )
+
+        assert '{"spans": []}' in simple_prompt
+        assert "Allowed labels for this run: AGE, DATE, EMAIL, LOCATION, MISC_ID, NAME, PHONE, SCHOOL, URL." in simple_prompt
+        assert "TIME" not in simple_prompt
+        assert "PERSON" in advanced_prompt
+        assert "US_SSN" in advanced_prompt
+
     @patch("agent.completion")
     def test_simple_profile_maps_person_name_and_time_labels(self, mock_completion):
-        payload = json.dumps(
+        payload = _spans_payload(
             [
                 {"start": 0, "end": 4, "label": "PERSON_NAME", "text": "John"},
                 {"start": 13, "end": 29, "label": "EMAIL", "text": "john@example.com"},
@@ -817,9 +850,7 @@ class TestRunLLM:
     def test_parse_failure_uses_one_repair_retry(self, mock_completion):
         mock_completion.side_effect = [
             _mock_completion_response("not valid json"),
-            _mock_completion_response(
-                '{"spans":[{"start":3,"end":7,"label":"NAME","text":"John"}]}'
-            ),
+            _mock_completion_response('{"spans":[{"start":3,"end":7,"label":"NAME","text":"John"}]}'),
         ]
         result = run_llm_with_metadata(
             text="Hi John!",
@@ -856,7 +887,7 @@ class TestRunLLM:
         valid_date_start = text.index("January 5, 2026")
         valid_date_end = valid_date_start + len("January 5, 2026")
 
-        payload = json.dumps(
+        payload = _spans_payload(
             [
                 {
                     "start": monday_start,

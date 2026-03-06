@@ -3,6 +3,7 @@ import { getAgentCredentialStatus } from "../api/client";
 import { MODEL_PRESETS, getModelPreset } from "../modelPresets";
 import type {
   AgentConfig,
+  AgentChunkDiagnostic,
   AgentCredentialStatus,
   AgentMethodOption,
   AgentRunProgress,
@@ -11,6 +12,7 @@ import type {
   MethodView,
 } from "../types";
 import AnnotatedText from "./AnnotatedText";
+import ChunkDiagnosticsPanel from "./ChunkDiagnosticsPanel";
 
 interface Props {
   text: string;
@@ -18,6 +20,7 @@ interface Props {
   runProgress?: AgentRunProgress | null;
   methods: AgentMethodOption[];
   processedWithChunking?: boolean;
+  chunkDiagnostics?: AgentChunkDiagnostic[];
   activeMethod: MethodView;
   onActiveMethodChange: (methodId: MethodView) => void;
   diffSpans?: { start: number; end: number; type: "added" | "removed" }[];
@@ -37,6 +40,7 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
       runProgress = null,
       methods,
       processedWithChunking = false,
+      chunkDiagnostics = [],
       activeMethod,
       onActiveMethodChange,
       diffSpans = [],
@@ -526,6 +530,7 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
             </div>
           )}
         </div>
+        <ChunkDiagnosticsPanel diagnostics={chunkDiagnostics} />
         <div
           className="pane-body"
           ref={ref}

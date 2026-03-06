@@ -1334,6 +1334,36 @@ textarea:focus-visible {
   align-self: flex-start;
 }
 
+.chunk-diagnostics {
+  margin: 10px 12px 0;
+  border: 1px solid #d6d9e2;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.chunk-diagnostics summary {
+  cursor: pointer;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #2f3f67;
+}
+
+.chunk-diagnostics-table-wrap {
+  padding: 0 10px 10px;
+  overflow-x: auto;
+}
+
+.chunk-diagnostics-table {
+  width: 100%;
+  margin-top: 4px;
+}
+
+.chunk-diagnostics-table td:last-child,
+.chunk-diagnostics-table th:last-child {
+  min-width: 280px;
+}
+
 .agent-config .run-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;

@@ -2167,6 +2167,69 @@ def test_agent_llm_persists_outputs_per_model(client, monkeypatch):
     assert metrics_resp.status_code == 200
 
 
+def test_agent_llm_chunk_retry_persists_diagnostics(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.2-chat"],
+    )
+
+    call_counts: dict[str, int] = {}
+
+    def fake_run_llm_with_metadata(**kwargs):
+        chunk_text = str(kwargs.get("text", ""))
+        count = call_counts.get(chunk_text, 0) + 1
+        call_counts[chunk_text] = count
+        if len(call_counts) == 1:
+            spans = [CanonicalSpan(start=0, end=3, label="NAME", text=chunk_text[:3])]
+        elif count == 1:
+            spans = []
+        else:
+            spans = [CanonicalSpan(start=0, end=3, label="NAME", text=chunk_text[:3])]
+        return SimpleNamespace(
+            spans=spans,
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(model="openai.gpt-5.2-chat"),
+            finish_reason=None,
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    transcript = (("A" * 2400) + "\n") + (("B" * 2400) + "\n") + (("C" * 2400) + "\n")
+    upload_resp = _upload(client, data=_make_hips_v1_custom(transcript))
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    run_resp = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "llm",
+            "model": "openai.gpt-5.2-chat",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com/v1",
+            "chunk_mode": "force",
+            "chunk_size_chars": 2000,
+        },
+    )
+    assert run_resp.status_code == 200
+    payload = run_resp.json()
+    diagnostics = payload["agent_run_metrics"]["chunk_diagnostics"]
+    assert len(diagnostics) >= 2
+    assert any(item["suspicious_empty"] is True for item in diagnostics)
+    recovered = next(item for item in diagnostics if item["suspicious_empty"] is True)
+    assert recovered["attempt_count"] == 2
+    assert recovered["retry_used"] is True
+    assert recovered["span_count"] > 0
+    assert any("retry recovered" in warning for warning in payload["agent_run_warnings"])
+
+    doc_resp = client.get(f"/api/documents/{doc_id}")
+    assert doc_resp.status_code == 200
+    reloaded = doc_resp.json()
+    reloaded_diagnostics = reloaded["agent_run_metrics"]["chunk_diagnostics"]
+    assert reloaded_diagnostics == diagnostics
+    saved_meta = reloaded["agent_outputs"]["llm_run_metadata"]["openai.gpt-5.2-chat"]
+    assert saved_meta["chunk_diagnostics"] == diagnostics
+
+
 def test_method_persists_outputs_per_method_model(client, monkeypatch):
     monkeypatch.setattr(
         "server._fetch_gateway_model_ids",

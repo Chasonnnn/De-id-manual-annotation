@@ -10,6 +10,7 @@ import threading
 import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal, cast
@@ -21,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from models import (
+    AgentChunkDiagnostic,
     AgentOutputs,
     AgentRunMetrics,
     CanonicalDocument,
@@ -30,10 +32,10 @@ from models import (
 )
 from normalizer import parse_file
 from agent import (
-    FORMAT_GUARDRAIL,
     METHOD_DEFINITION_BY_ID,
     MODEL_PRESETS,
     SYSTEM_PROMPT,
+    build_extraction_system_prompt,
     list_agent_methods,
     normalize_method_spans,
     run_llm_with_metadata,
@@ -836,10 +838,30 @@ def _enrich_doc(
         except Exception:
             llm_confidence = None
     label_profile: Literal["simple", "advanced"] | None = None
+    latest_run_key: str | None = None
+    latest_run_mode: str | None = None
     if isinstance(last_run_raw, dict):
         raw_label_profile = str(last_run_raw.get("label_profile", "")).strip().lower()
         if raw_label_profile in {"simple", "advanced"}:
             label_profile = raw_label_profile  # type: ignore[assignment]
+        raw_run_key = str(last_run_raw.get("run_key", "")).strip()
+        latest_run_key = raw_run_key or None
+        raw_mode = str(last_run_raw.get("mode", "")).strip().lower()
+        latest_run_mode = raw_mode or None
+
+    latest_run_metadata: SavedRunMetadata | None = None
+    if latest_run_mode == "llm" and latest_run_key:
+        latest_run_metadata = agent_llm_run_metadata.get(latest_run_key)
+    elif latest_run_mode == "method" and latest_run_key:
+        latest_run_metadata = method_run_metadata.get(latest_run_key)
+
+    if latest_run_metadata is not None and latest_run_metadata.llm_confidence is not None:
+        llm_confidence = latest_run_metadata.llm_confidence
+    chunk_diagnostics = (
+        list(latest_run_metadata.chunk_diagnostics)
+        if latest_run_metadata is not None
+        else []
+    )
 
     doc.manual_annotations = manual or []
     doc.agent_outputs = AgentOutputs(
@@ -857,6 +879,7 @@ def _enrich_doc(
     doc.agent_run_metrics = AgentRunMetrics(
         llm_confidence=llm_confidence,
         label_profile=label_profile,
+        chunk_diagnostics=chunk_diagnostics,
     )
 
     if manual:
@@ -1450,12 +1473,19 @@ def _resolve_llm_runtime_config(body: "AgentRunBody") -> dict[str, object]:
     }
 
 
-def _build_llm_prompt_snapshot(requested_system_prompt: str) -> dict[str, Any]:
+def _build_llm_prompt_snapshot(
+    requested_system_prompt: str,
+    *,
+    label_profile: Literal["simple", "advanced"],
+) -> dict[str, Any]:
     requested = str(requested_system_prompt or "")
     return {
         "requested_system_prompt": requested,
         "format_guardrail_appended": True,
-        "effective_system_prompt": f"{requested}\n\n{FORMAT_GUARDRAIL}",
+        "effective_system_prompt": build_extraction_system_prompt(
+            requested,
+            label_profile=label_profile,
+        ),
     }
 
 
@@ -1464,6 +1494,7 @@ def _build_method_prompt_snapshot(
     method_id: str,
     additional_constraints: str,
     method_verify: bool | None,
+    label_profile: Literal["simple", "advanced"],
 ) -> dict[str, Any]:
     method_definition = METHOD_DEFINITION_BY_ID.get(method_id)
     if method_definition is None:
@@ -1496,7 +1527,10 @@ def _build_method_prompt_snapshot(
                 "entity_types": method_pass.get("entity_types"),
                 "base_system_prompt": base_prompt,
                 "resolved_system_prompt": resolved_prompt,
-                "effective_system_prompt": f"{resolved_prompt}\n\n{FORMAT_GUARDRAIL}",
+                "effective_system_prompt": build_extraction_system_prompt(
+                    resolved_prompt,
+                    label_profile=label_profile,
+                ),
             }
         )
 
@@ -1562,6 +1596,64 @@ def _resolve_chunk_parallel_workers(chunk_count: int) -> int:
     return min(chunk_count, bounded)
 
 
+@dataclass
+class _ChunkExecutionResult:
+    idx: int
+    start: int
+    end: int
+    shifted_spans: list[CanonicalSpan]
+    warnings: list[str]
+    llm_confidence: LLMConfidenceMetric | None
+    finish_reason: str | None = None
+
+
+def _format_chunk_warnings(
+    idx: int,
+    chunk_count: int,
+    warnings: list[str],
+) -> list[str]:
+    return [f"Chunk {idx + 1}/{chunk_count}: {item}" for item in warnings]
+
+
+def _build_chunk_diagnostic(
+    *,
+    result: _ChunkExecutionResult,
+    attempt_count: int = 1,
+    retry_used: bool = False,
+    suspicious_empty: bool = False,
+    status: Literal["completed", "failed"] = "completed",
+    warnings: list[str] | None = None,
+) -> AgentChunkDiagnostic:
+    chunk_warnings = list(result.warnings if warnings is None else warnings)
+    return AgentChunkDiagnostic(
+        chunk_index=result.idx,
+        start=result.start,
+        end=result.end,
+        char_count=max(0, result.end - result.start),
+        span_count=len(result.shifted_spans),
+        attempt_count=attempt_count,
+        retry_used=retry_used,
+        suspicious_empty=suspicious_empty,
+        status=status,
+        finish_reason=result.finish_reason,
+        warnings=chunk_warnings,
+    )
+
+
+def _summarize_suspicious_empty_retry(
+    *,
+    idx: int,
+    chunk_count: int,
+    recovered_span_count: int,
+) -> str:
+    if recovered_span_count > 0:
+        return (
+            f"suspicious empty first pass returned 0 spans; retry recovered "
+            f"{recovered_span_count} span(s)."
+        )
+    return "suspicious empty first pass returned 0 spans; retry also returned 0 spans."
+
+
 def _run_llm_for_document(
     *,
     doc: CanonicalDocument,
@@ -1577,7 +1669,7 @@ def _run_llm_for_document(
     chunk_mode: str,
     chunk_size_chars: int,
     progress_callback: Callable[[int, int], None] | None = None,
-) -> tuple[list[CanonicalSpan], list[str], LLMConfidenceMetric]:
+) -> tuple[list[CanonicalSpan], list[str], LLMConfidenceMetric, list[AgentChunkDiagnostic]]:
     if not _should_use_chunking(len(doc.raw_text), chunk_mode, chunk_size_chars):
         llm_result = run_llm_with_metadata(
             text=doc.raw_text,
@@ -1597,7 +1689,7 @@ def _run_llm_for_document(
         )
         if progress_callback is not None:
             progress_callback(1, 1)
-        return spans, llm_result.warnings, llm_result.llm_confidence
+        return spans, llm_result.warnings, llm_result.llm_confidence, []
 
     chunks = _build_text_chunks(doc, chunk_size_chars)
     warnings: list[str] = []
@@ -1606,7 +1698,7 @@ def _run_llm_for_document(
     chunk_count = len(chunks)
     chunk_workers = _resolve_chunk_parallel_workers(chunk_count)
 
-    def _run_chunk(idx: int, start: int, end: int) -> tuple[int, list[CanonicalSpan], list[str], LLMConfidenceMetric]:
+    def _run_chunk(idx: int, start: int, end: int) -> _ChunkExecutionResult:
         chunk_text = doc.raw_text[start:end]
         llm_result = run_llm_with_metadata(
             text=chunk_text,
@@ -1624,14 +1716,20 @@ def _run_llm_for_document(
             normalize_method_spans(llm_result.spans, label_profile=label_profile),
             start,
         )
-        chunk_warnings = [f"Chunk {idx + 1}/{chunk_count}: {item}" for item in llm_result.warnings]
-        return idx, shifted, chunk_warnings, llm_result.llm_confidence
+        return _ChunkExecutionResult(
+            idx=idx,
+            start=start,
+            end=end,
+            shifted_spans=shifted,
+            warnings=list(llm_result.warnings),
+            llm_confidence=llm_result.llm_confidence,
+            finish_reason=getattr(llm_result, "finish_reason", None),
+        )
 
-    chunk_results: dict[int, tuple[list[CanonicalSpan], list[str], LLMConfidenceMetric]] = {}
+    chunk_results: dict[int, _ChunkExecutionResult] = {}
     if chunk_workers == 1:
         for idx, (start, end) in enumerate(chunks):
-            _, shifted, chunk_warnings, chunk_conf = _run_chunk(idx, start, end)
-            chunk_results[idx] = (shifted, chunk_warnings, chunk_conf)
+            chunk_results[idx] = _run_chunk(idx, start, end)
             if progress_callback is not None:
                 progress_callback(idx + 1, chunk_count)
     else:
@@ -1644,21 +1742,68 @@ def _run_llm_for_document(
             for future in as_completed(future_map):
                 idx = future_map[future]
                 try:
-                    _, shifted, chunk_warnings, chunk_conf = future.result()
+                    chunk_result = future.result()
                 except Exception as exc:
                     raise RuntimeError(
                         f"Chunk {idx + 1}/{chunk_count} failed during parallel LLM execution: {exc}"
                     ) from exc
-                chunk_results[idx] = (shifted, chunk_warnings, chunk_conf)
+                chunk_results[idx] = chunk_result
                 completed_count += 1
                 if progress_callback is not None:
                     progress_callback(completed_count, chunk_count)
 
+    chunk_outcomes = dict(chunk_results)
+    has_non_empty_chunk = any(len(result.shifted_spans) > 0 for result in chunk_outcomes.values())
+    suspicious_empty_indices = [
+        idx
+        for idx, result in chunk_outcomes.items()
+        if has_non_empty_chunk and len(result.shifted_spans) == 0
+    ]
+
+    for idx in suspicious_empty_indices:
+        start, end = chunks[idx]
+        try:
+            retry_result = _run_chunk(idx, start, end)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Chunk {idx + 1}/{chunk_count} failed during suspicious-empty retry: {exc}"
+            ) from exc
+        recovered_span_count = len(retry_result.shifted_spans)
+        selected_result = retry_result if recovered_span_count > 0 else chunk_outcomes[idx]
+        chunk_outcomes[idx] = _ChunkExecutionResult(
+            idx=selected_result.idx,
+            start=selected_result.start,
+            end=selected_result.end,
+            shifted_spans=selected_result.shifted_spans,
+            warnings=[
+                _summarize_suspicious_empty_retry(
+                    idx=idx,
+                    chunk_count=chunk_count,
+                    recovered_span_count=recovered_span_count,
+                ),
+                *selected_result.warnings,
+            ],
+            llm_confidence=selected_result.llm_confidence,
+            finish_reason=selected_result.finish_reason,
+        )
+
+    chunk_diagnostics: list[AgentChunkDiagnostic] = []
     for idx in range(chunk_count):
-        shifted, chunk_warnings, chunk_conf = chunk_results[idx]
-        all_spans.extend(shifted)
-        warnings.extend(chunk_warnings)
-        chunk_metrics.append(chunk_conf)
+        result = chunk_outcomes[idx]
+        suspicious_empty = idx in suspicious_empty_indices
+        retry_used = suspicious_empty and len(result.shifted_spans) > 0
+        all_spans.extend(result.shifted_spans)
+        warnings.extend(_format_chunk_warnings(idx, chunk_count, result.warnings))
+        if result.llm_confidence is not None:
+            chunk_metrics.append(result.llm_confidence)
+        chunk_diagnostics.append(
+            _build_chunk_diagnostic(
+                result=result,
+                attempt_count=2 if suspicious_empty else 1,
+                retry_used=retry_used,
+                suspicious_empty=suspicious_empty,
+            )
+        )
 
     normalized = _normalize_and_validate_spans(_dedup_spans(all_spans), doc.raw_text)
     warnings.insert(
@@ -1668,7 +1813,7 @@ def _run_llm_for_document(
             f"(mode={chunk_mode}, workers={chunk_workers})."
         ),
     )
-    return normalized, warnings, _aggregate_llm_confidence(chunk_metrics)
+    return normalized, warnings, _aggregate_llm_confidence(chunk_metrics), chunk_diagnostics
 
 
 def _run_method_for_document(
@@ -1688,7 +1833,12 @@ def _run_method_for_document(
     chunk_mode: str,
     chunk_size_chars: int,
     progress_callback: Callable[[int, int], None] | None = None,
-) -> tuple[list[CanonicalSpan], list[str], LLMConfidenceMetric | None]:
+) -> tuple[
+    list[CanonicalSpan],
+    list[str],
+    LLMConfidenceMetric | None,
+    list[AgentChunkDiagnostic],
+]:
     if not _should_use_chunking(len(doc.raw_text), chunk_mode, chunk_size_chars):
         method_result = run_method_with_metadata(
             text=doc.raw_text,
@@ -1710,7 +1860,7 @@ def _run_method_for_document(
         )
         if progress_callback is not None:
             progress_callback(1, 1)
-        return spans, method_result.warnings, getattr(method_result, "llm_confidence", None)
+        return spans, method_result.warnings, getattr(method_result, "llm_confidence", None), []
 
     chunks = _build_text_chunks(doc, chunk_size_chars)
     warnings: list[str] = []
@@ -1722,7 +1872,7 @@ def _run_method_for_document(
         idx: int,
         start: int,
         end: int,
-    ) -> tuple[int, list[CanonicalSpan], list[str], LLMConfidenceMetric | None]:
+    ) -> _ChunkExecutionResult:
         chunk_text = doc.raw_text[start:end]
         method_result = run_method_with_metadata(
             text=chunk_text,
@@ -1742,14 +1892,20 @@ def _run_method_for_document(
             normalize_method_spans(method_result.spans, label_profile=label_profile),
             start,
         )
-        chunk_warnings = [f"Chunk {idx + 1}/{chunk_count}: {item}" for item in method_result.warnings]
-        return idx, shifted, chunk_warnings, getattr(method_result, "llm_confidence", None)
+        return _ChunkExecutionResult(
+            idx=idx,
+            start=start,
+            end=end,
+            shifted_spans=shifted,
+            warnings=list(method_result.warnings),
+            llm_confidence=getattr(method_result, "llm_confidence", None),
+            finish_reason=None,
+        )
 
-    chunk_results: dict[int, tuple[list[CanonicalSpan], list[str], LLMConfidenceMetric | None]] = {}
+    chunk_results: dict[int, _ChunkExecutionResult] = {}
     if chunk_workers == 1:
         for idx, (start, end) in enumerate(chunks):
-            _, shifted, chunk_warnings, chunk_confidence = _run_chunk(idx, start, end)
-            chunk_results[idx] = (shifted, chunk_warnings, chunk_confidence)
+            chunk_results[idx] = _run_chunk(idx, start, end)
             if progress_callback is not None:
                 progress_callback(idx + 1, chunk_count)
     else:
@@ -1762,23 +1918,25 @@ def _run_method_for_document(
             for future in as_completed(future_map):
                 idx = future_map[future]
                 try:
-                    _, shifted, chunk_warnings, chunk_confidence = future.result()
+                    chunk_result = future.result()
                 except Exception as exc:
                     raise RuntimeError(
                         f"Chunk {idx + 1}/{chunk_count} failed during parallel method execution: {exc}"
                     ) from exc
-                chunk_results[idx] = (shifted, chunk_warnings, chunk_confidence)
+                chunk_results[idx] = chunk_result
                 completed_count += 1
                 if progress_callback is not None:
                     progress_callback(completed_count, chunk_count)
 
     chunk_confidence_metrics: list[LLMConfidenceMetric] = []
+    chunk_diagnostics: list[AgentChunkDiagnostic] = []
     for idx in range(chunk_count):
-        shifted, chunk_warnings, chunk_confidence = chunk_results[idx]
-        all_spans.extend(shifted)
-        warnings.extend(chunk_warnings)
-        if chunk_confidence is not None:
-            chunk_confidence_metrics.append(chunk_confidence)
+        result = chunk_results[idx]
+        all_spans.extend(result.shifted_spans)
+        warnings.extend(_format_chunk_warnings(idx, chunk_count, result.warnings))
+        if result.llm_confidence is not None:
+            chunk_confidence_metrics.append(result.llm_confidence)
+        chunk_diagnostics.append(_build_chunk_diagnostic(result=result))
 
     normalized = _normalize_and_validate_spans(_dedup_spans(all_spans), doc.raw_text)
     warnings.insert(
@@ -1793,7 +1951,7 @@ def _run_method_for_document(
         if chunk_confidence_metrics
         else None
     )
-    return normalized, warnings, aggregated_confidence
+    return normalized, warnings, aggregated_confidence, chunk_diagnostics
 
 
 # --- Routes ---
@@ -2234,7 +2392,12 @@ def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                 if not isinstance(method_verify_override, bool):
                     method_verify_override = None
 
-                hypothesis_spans, warnings, llm_confidence = _run_method_for_document(
+                (
+                    hypothesis_spans,
+                    warnings,
+                    llm_confidence,
+                    _chunk_diagnostics,
+                ) = _run_method_for_document(
                     doc=enriched,
                     method_id=preset_method_id,
                     api_key=api_key or None,
@@ -2254,13 +2417,17 @@ def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                 requested_system_prompt = str(prompt.get("system_prompt") or "").strip()
                 if not requested_system_prompt:
                     raise ValueError("system_prompt is required for prompt variants.")
-                system_prompt = f"{requested_system_prompt}\n\n{FORMAT_GUARDRAIL}"
-                hypothesis_spans, warnings, llm_confidence = _run_llm_for_document(
+                (
+                    hypothesis_spans,
+                    warnings,
+                    llm_confidence,
+                    _chunk_diagnostics,
+                ) = _run_llm_for_document(
                     doc=enriched,
                     api_key=api_key,
                     api_base=api_base or None,
                     model=str(model["model"]),
-                    system_prompt=system_prompt,
+                    system_prompt=requested_system_prompt,
                     temperature=temperature,
                     reasoning_effort=str(model["reasoning_effort"]),
                     anthropic_thinking=bool(model["anthropic_thinking"]),
@@ -2423,7 +2590,6 @@ def run_agent(doc_id: str, body: AgentRunBody):
             )
         _validate_gateway_model_access(model=model, api_base=api_base, api_key=api_key)
 
-        system_prompt = f"{requested_system_prompt}\n\n{FORMAT_GUARDRAIL}"
         _start_agent_progress(
             doc_id,
             mode="llm",
@@ -2432,12 +2598,12 @@ def run_agent(doc_id: str, body: AgentRunBody):
         )
 
         try:
-            spans, warnings, llm_confidence = _run_llm_for_document(
+            spans, warnings, llm_confidence, chunk_diagnostics = _run_llm_for_document(
                 doc=doc,
                 api_key=api_key,
                 api_base=api_base or None,
                 model=model,
-                system_prompt=system_prompt,
+                system_prompt=requested_system_prompt,
                 temperature=temperature,
                 reasoning_effort=reasoning_effort,
                 anthropic_thinking=anthropic_thinking,
@@ -2495,8 +2661,12 @@ def run_agent(doc_id: str, body: AgentRunBody):
                 updated_at=_now_iso(),
                 model=model,
                 label_profile=label_profile,  # type: ignore[arg-type]
-                prompt_snapshot=_build_llm_prompt_snapshot(requested_system_prompt),
+                prompt_snapshot=_build_llm_prompt_snapshot(
+                    requested_system_prompt,
+                    label_profile=label_profile,  # type: ignore[arg-type]
+                ),
                 llm_confidence=llm_confidence,
+                chunk_diagnostics=chunk_diagnostics,
             ),
             session_id,
         )
@@ -2511,6 +2681,8 @@ def run_agent(doc_id: str, body: AgentRunBody):
             "agent.last_run",
             {
                 "mode": "llm",
+                "run_key": model,
+                "model": model,
                 "label_profile": label_profile,
                 "updated_at": _now_iso(),
             },
@@ -2522,6 +2694,7 @@ def run_agent(doc_id: str, body: AgentRunBody):
         enriched.agent_run_metrics = AgentRunMetrics(
             llm_confidence=llm_confidence,
             label_profile=label_profile,  # type: ignore[arg-type]
+            chunk_diagnostics=chunk_diagnostics,
         )
         return enriched
 
@@ -2570,7 +2743,7 @@ def run_agent(doc_id: str, body: AgentRunBody):
         )
 
         try:
-            spans, warnings, llm_confidence = _run_method_for_document(
+            spans, warnings, llm_confidence, chunk_diagnostics = _run_method_for_document(
                 doc=doc,
                 method_id=method_id,
                 api_key=api_key or None,
@@ -2630,8 +2803,10 @@ def run_agent(doc_id: str, body: AgentRunBody):
                     method_id=method_id,
                     additional_constraints=requested_system_prompt,
                     method_verify=body.method_verify,
+                    label_profile=label_profile,  # type: ignore[arg-type]
                 ),
                 llm_confidence=llm_confidence,
+                chunk_diagnostics=chunk_diagnostics,
             ),
             session_id,
         )
@@ -2640,7 +2815,9 @@ def run_agent(doc_id: str, body: AgentRunBody):
             "agent.last_run",
             {
                 "mode": "method",
+                "run_key": method_run_key,
                 "method_id": method_id,
+                "model": model if method_definition["uses_llm"] else None,
                 "label_profile": label_profile,
                 "updated_at": _now_iso(),
             },
@@ -2652,6 +2829,7 @@ def run_agent(doc_id: str, body: AgentRunBody):
         enriched.agent_run_metrics = AgentRunMetrics(
             llm_confidence=llm_confidence,
             label_profile=label_profile,  # type: ignore[arg-type]
+            chunk_diagnostics=chunk_diagnostics,
         )
         return enriched
 

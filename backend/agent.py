@@ -44,30 +44,24 @@ def run_regex(text: str) -> list[CanonicalSpan]:
 
 SYSTEM_PROMPT = """\
 You are a PII annotation assistant. Given a transcript, identify all personally
-identifiable information (PII) spans. For each span return a JSON object with:
-- "start": character offset (0-based)
-- "end": character offset (exclusive)
-- "label": PII type (NAME, EMAIL, PHONE, URL, DATE, TIME, ADDRESS, SSN, etc.)
-- "text": the exact text of the span
-
-Return ONLY a JSON array of these objects, no other text."""
+identifiable information (PII) spans. Extract explicit spans only; do not infer
+missing data."""
 
 FORMAT_GUARDRAIL = """\
 STRICT OUTPUT REQUIREMENTS:
 - Return valid JSON only (no prose, no markdown, no code fences).
-- Top-level must be either:
-  1) a JSON array of spans, OR
-  2) a JSON object with key "spans" containing that array.
+- Return exactly one JSON object with key "spans" containing an array of spans.
+- If there are no spans, return {"spans": []}.
 - Each span item MUST include: start (int), end (int), label (str), text (str).
+- Offsets are 0-based and "end" is exclusive.
 - Do not include confidence fields or extra commentary.
 """
 
 JSON_REPAIR_PROMPT = """\
 You repair malformed JSON output for a PII span extractor.
 Return valid JSON only.
-- Top-level must be either:
-  1) {"spans": [...]}
-  2) [...]
+- Top-level must be {"spans": [...]}.
+- If there are no spans, return {"spans": []}.
 - Each span must include: start (int), end (int), label (str), text (str).
 - Do not add prose, markdown, or extra keys.
 """
@@ -366,6 +360,27 @@ ADVANCED_LABELS: list[str] = [
 ]
 ADVANCED_LABEL_SET = set(ADVANCED_LABELS)
 
+
+def _labels_for_profile(
+    label_profile: Literal["simple", "advanced"],
+) -> list[str]:
+    return ADVANCED_LABELS if label_profile == "advanced" else SIMPLE_LABELS
+
+
+def build_extraction_system_prompt(
+    base_prompt: str,
+    label_profile: Literal["simple", "advanced"] = "simple",
+) -> str:
+    prompt = str(base_prompt or "").strip() or SYSTEM_PROMPT.strip()
+    allowed_labels = ", ".join(_labels_for_profile(label_profile))
+    return (
+        f"{prompt}\n\n"
+        f"{FORMAT_GUARDRAIL}\n"
+        f'- Allowed labels for this run: {allowed_labels}.\n'
+        '- The "label" field must be one of the allowed labels above.\n'
+        '- The "text" field must exactly match transcript[start:end].\n'
+    )
+
 ADVANCED_TOOL_LABEL_MAP: dict[str, str] = {
     "AGE": "AGE",
     "COURSE": "COURSE",
@@ -602,6 +617,7 @@ class LLMRunResult:
     spans: list[CanonicalSpan]
     warnings: list[str]
     llm_confidence: LLMConfidenceMetric
+    finish_reason: str | None = None
 
 
 @dataclass
@@ -912,7 +928,7 @@ def _compute_llm_confidence_metric(
 
 
 def _parse_spans_from_response(resp: Any) -> list[CanonicalSpan]:
-    content = _extract_response_content(resp) or "[]"
+    content = _extract_response_content(resp) or '{"spans":[]}'
     content = _strip_code_fences(content)
 
     def _extract_json_candidate(text: str) -> str | None:
@@ -948,17 +964,15 @@ def _parse_spans_from_response(resp: Any) -> list[CanonicalSpan]:
                 f"LLM returned invalid JSON: {exc}. Raw response: {content[:500]}"
             ) from exc
 
-    if isinstance(raw, dict):
-        if "spans" not in raw:
-            raise ValueError(
-                f"Expected top-level array or object with 'spans', got keys: {list(raw.keys())[:10]}"
-            )
-        raw = raw["spans"]
+    if not isinstance(raw, dict) or "spans" not in raw:
+        raise ValueError(
+            "Expected top-level object with key 'spans', "
+            f"got {type(raw).__name__}: {content[:500]}"
+        )
+    raw = raw["spans"]
 
     if not isinstance(raw, list):
-        raise ValueError(
-            f"Expected JSON array from LLM, got {type(raw).__name__}: {content[:500]}"
-        )
+        raise ValueError(f"Expected 'spans' to be a JSON array, got {type(raw).__name__}.")
     return [
         CanonicalSpan(start=s["start"], end=s["end"], label=s["label"], text=s["text"])
         for s in raw
@@ -1803,14 +1817,13 @@ def run_method_with_metadata(
         prompt = str(method_pass.get("prompt") or SYSTEM_PROMPT)
         if system_prompt.strip():
             prompt = f"{prompt}\n\nAdditional constraints:\n{system_prompt.strip()}"
-        llm_prompt = f"{prompt}\n\n{FORMAT_GUARDRAIL}"
 
         llm_result = run_llm_with_metadata(
             text=text,
             api_key=api_key or "",
             api_base=api_base,
             model=model,
-            system_prompt=llm_prompt,
+            system_prompt=prompt,
             temperature=temperature,
             reasoning_effort=reasoning_effort,
             anthropic_thinking=anthropic_thinking,
@@ -1875,11 +1888,15 @@ def run_llm_with_metadata(
     warnings: list[str] = []
     extra_body: dict[str, Any] = {}
     effective_temperature: float | None = temperature
+    effective_system_prompt = build_extraction_system_prompt(
+        system_prompt,
+        label_profile=label_profile,
+    )
 
     if anthropic_thinking and supports_thinking:
         if temperature != 1.0:
-            warnings.append(
-                f"Model '{model}' requires temperature=1 when thinking is enabled; adjusted automatically."
+            raise ValueError(
+                f"Model '{model}' requires temperature=1 when thinking is enabled."
             )
         effective_temperature = 1.0
     elif not supports_custom_temperature:
@@ -1888,7 +1905,7 @@ def run_llm_with_metadata(
     base_request_kwargs: dict[str, Any] = {
         "model": f"openai/{model}" if use_openai_gateway_format else model,
         "messages": [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": effective_system_prompt},
             {"role": "user", "content": text},
         ],
         "api_key": api_key,
@@ -2010,6 +2027,7 @@ def run_llm_with_metadata(
                 spans=spans,
                 warnings=warnings,
                 llm_confidence=llm_confidence,
+                finish_reason=finish_reason,
             )
         except Exception as exc:
             last_exc = exc
