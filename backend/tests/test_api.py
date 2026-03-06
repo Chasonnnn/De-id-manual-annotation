@@ -723,14 +723,14 @@ def test_metrics_use_selected_method_run_llm_confidence(client, monkeypatch):
     monkeypatch.setattr(
         "server._fetch_gateway_model_ids",
         lambda api_base, api_key: [
-            "google.gemini-3-flash-preview",
+            "google.gemini-3.1-flash-lite-preview",
             "openai.gpt-5.2-chat",
         ],
     )
 
     def fake_run_llm_with_metadata(**kwargs):
         model = str(kwargs.get("model"))
-        if model == "google.gemini-3-flash-preview":
+        if model == "google.gemini-3.1-flash-lite-preview":
             return SimpleNamespace(
                 spans=[],
                 warnings=[],
@@ -782,7 +782,7 @@ def test_metrics_use_selected_method_run_llm_confidence(client, monkeypatch):
         f"/api/documents/{doc_id}/agent",
         json={
             "mode": "llm",
-            "model": "google.gemini-3-flash-preview",
+            "model": "google.gemini-3.1-flash-lite-preview",
             "api_key": "request-key",
             "api_base": "https://proxy.example.com/v1",
         },
@@ -1388,6 +1388,9 @@ def test_model_presets_endpoint(client):
     assert "presets" in data
     model_ids = {p["model"] for p in data["presets"]}
     assert "openai.gpt-5.3-codex" in model_ids
+    assert "openai.gpt-5.4" in model_ids
+    assert "openai.gpt-5.2-chat" in model_ids
+    assert "google.gemini-3.1-flash-lite-preview" in model_ids
 
 
 def test_agent_credentials_status(client, monkeypatch):

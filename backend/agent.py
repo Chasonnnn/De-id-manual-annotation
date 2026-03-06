@@ -249,6 +249,14 @@ MODEL_PRESETS: list[dict[str, Any]] = [
         "default_reasoning_effort": "xhigh",
     },
     {
+        "label": "OpenAI: GPT-5.4 (xhigh)",
+        "model": "openai.gpt-5.4",
+        "provider": "openai",
+        "supports_reasoning_effort": True,
+        "supports_anthropic_thinking": False,
+        "default_reasoning_effort": "xhigh",
+    },
+    {
         "label": "OpenAI: ChatGPT 5.2 (xhigh)",
         "model": "openai.gpt-5.2-chat",
         "provider": "openai",
@@ -273,8 +281,8 @@ MODEL_PRESETS: list[dict[str, Any]] = [
         "default_reasoning_effort": "none",
     },
     {
-        "label": "Google: Gemini 3 Flash",
-        "model": "google.gemini-3-flash-preview",
+        "label": "Google: Gemini 3.1 Flash Lite Preview",
+        "model": "google.gemini-3.1-flash-lite-preview",
         "provider": "gemini",
         "supports_reasoning_effort": False,
         "supports_anthropic_thinking": False,
@@ -1343,7 +1351,12 @@ def _parse_with_one_repair_retry(
 ) -> tuple[list[CanonicalSpan], Any]:
     raw_content = _extract_response_content(resp)
     if not raw_content.strip():
-        warnings.append("LLM returned empty output content; interpreted as no spans.")
+        finish_reason = _extract_finish_reason(resp)
+        if finish_reason:
+            raise ValueError(
+                f"LLM returned empty output content (finish_reason={finish_reason})."
+            )
+        raise ValueError("LLM returned empty output content.")
 
     try:
         return _parse_spans_from_response(resp), resp

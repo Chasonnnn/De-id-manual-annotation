@@ -320,7 +320,7 @@ class TestRunLLM:
         assert spans == []
 
     @patch("agent.completion")
-    def test_none_content_returns_empty(self, mock_completion):
+    def test_none_content_raises_error(self, mock_completion):
         message = MagicMock()
         message.content = None
         choice = MagicMock()
@@ -329,26 +329,26 @@ class TestRunLLM:
         resp.choices = [choice]
         mock_completion.return_value = resp
 
-        spans = run_llm("text", api_key="test-key")
-        assert spans == []
+        with pytest.raises(ValueError, match="empty output content"):
+            run_llm("text", api_key="test-key")
 
     @patch("agent.completion")
-    def test_none_content_adds_empty_output_warning(self, mock_completion):
+    def test_none_content_raises_error_with_finish_reason(self, mock_completion):
         message = MagicMock()
         message.content = None
         choice = MagicMock()
         choice.message = message
+        choice.finish_reason = "length"
         resp = MagicMock()
         resp.choices = [choice]
         mock_completion.return_value = resp
 
-        result = run_llm_with_metadata(
-            text="text",
-            api_key="test-key",
-            model="openai/gpt-4o",
-        )
-        assert result.spans == []
-        assert any("empty output content" in warning for warning in result.warnings)
+        with pytest.raises(ValueError, match="empty output content \\(finish_reason=length\\)"):
+            run_llm_with_metadata(
+                text="text",
+                api_key="test-key",
+                model="openai/gpt-4o",
+            )
 
     @patch("agent.completion")
     def test_custom_system_prompt_and_temperature(self, mock_completion):
@@ -595,6 +595,23 @@ class TestRunLLM:
             > call_kwargs.kwargs["extra_body"]["thinking"]["budget_tokens"]
         )
         assert any("requires temperature=1" in warning for warning in result.warnings)
+
+    @patch("agent.completion")
+    def test_anthropic_empty_thinking_output_raises_error(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response(None, finish_reason="length")
+
+        with pytest.raises(ValueError, match="empty output content \\(finish_reason=length\\)"):
+            run_llm_with_metadata(
+                text="Hello Anna.",
+                api_key="k",
+                model="anthropic.claude-4.6-opus",
+                anthropic_thinking=True,
+                anthropic_thinking_budget_tokens=2048,
+                temperature=0.0,
+            )
+
+        call_kwargs = mock_completion.call_args
+        assert call_kwargs.kwargs["thinking"]["type"] == "enabled"
 
     @patch("agent.completion")
     def test_openai_model_enables_logprobs_and_computes_confidence(self, mock_completion):
@@ -884,10 +901,11 @@ class TestRunLLM:
 def test_model_presets_include_requested_options():
     model_ids = {preset["model"] for preset in MODEL_PRESETS}
     assert "openai.gpt-5.3-codex" in model_ids
+    assert "openai.gpt-5.4" in model_ids
     assert "openai.gpt-5.2-chat" in model_ids
     assert "anthropic.claude-4.6-opus" in model_ids
     assert "google.gemini-3.1-pro-preview" in model_ids
-    assert "google.gemini-3-flash-preview" in model_ids
+    assert "google.gemini-3.1-flash-lite-preview" in model_ids
 
 
 def test_method_prompts_are_migrated_from_experiment_presets():

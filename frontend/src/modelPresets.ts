@@ -17,6 +17,14 @@ export const MODEL_PRESETS: ModelPreset[] = [
     defaultReasoningEffort: "xhigh",
   },
   {
+    id: "openai.gpt-5.4",
+    label: "GPT-5.4 (xhigh)",
+    group: "OpenAI",
+    supportsReasoningEffort: true,
+    supportsAnthropicThinking: false,
+    defaultReasoningEffort: "xhigh",
+  },
+  {
     id: "openai.gpt-5.2-chat",
     label: "ChatGPT 5.2 (xhigh)",
     group: "OpenAI",
@@ -39,8 +47,8 @@ export const MODEL_PRESETS: ModelPreset[] = [
     supportsAnthropicThinking: false,
   },
   {
-    id: "google.gemini-3-flash-preview",
-    label: "Gemini 3 Flash",
+    id: "google.gemini-3.1-flash-lite-preview",
+    label: "Gemini 3.1 Flash Lite Preview",
     group: "Google Gemini",
     supportsReasoningEffort: false,
     supportsAnthropicThinking: false,
