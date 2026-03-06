@@ -358,6 +358,80 @@ def _save_session_index(session_id: str = "default"):
     (d / "_index.json").write_text(json.dumps(_session_docs.get(session_id, [])))
 
 
+def _commit_imported_document(
+    *,
+    doc: CanonicalDocument,
+    session_id: str,
+    ids: list[str],
+    existing_ids: set[str],
+    manual_spans: list[CanonicalSpan] | None = None,
+    rule_spans: list[CanonicalSpan] | None = None,
+    llm_spans: list[CanonicalSpan] | None = None,
+    method_spans: dict[str, list[CanonicalSpan]] | None = None,
+    llm_runs: dict[str, list[CanonicalSpan]] | None = None,
+    method_runs: dict[str, list[CanonicalSpan]] | None = None,
+    llm_run_metadata: dict[str, SavedRunMetadata] | None = None,
+    method_run_metadata: dict[str, SavedRunMetadata] | None = None,
+    llm_confidence: LLMConfidenceMetric | None = None,
+    imported_label_profile: Literal["simple", "advanced"] | None = None,
+) -> str:
+    new_id = doc.id
+    while new_id in existing_ids:
+        new_id = str(uuid.uuid4())[:8]
+    if new_id != doc.id:
+        doc = doc.model_copy(update={"id": new_id})
+
+    _save_doc(doc, session_id)
+    if manual_spans:
+        _save_sidecar(new_id, "manual", manual_spans, session_id)
+    if rule_spans:
+        _save_sidecar(new_id, "agent.rule", rule_spans, session_id)
+    if llm_spans:
+        _save_sidecar(new_id, "agent.llm", llm_spans, session_id)
+    for method_id, spans in (method_spans or {}).items():
+        _save_sidecar(new_id, f"agent.method.{method_id}", spans, session_id)
+    if llm_runs:
+        _save_span_map_sidecar(new_id, LLM_RUNS_SIDECAR_KIND, llm_runs, session_id)
+    if method_runs:
+        _save_span_map_sidecar(new_id, METHOD_RUNS_SIDECAR_KIND, method_runs, session_id)
+    if llm_run_metadata:
+        _save_run_metadata_map_sidecar(
+            new_id,
+            LLM_RUNS_METADATA_SIDECAR_KIND,
+            llm_run_metadata,
+            session_id,
+        )
+    if method_run_metadata:
+        _save_run_metadata_map_sidecar(
+            new_id,
+            METHOD_RUNS_METADATA_SIDECAR_KIND,
+            method_run_metadata,
+            session_id,
+        )
+    if llm_confidence is not None:
+        _save_json_sidecar(
+            new_id,
+            "agent.llm.metrics",
+            llm_confidence.model_dump(),
+            session_id,
+        )
+    if imported_label_profile is not None:
+        _save_json_sidecar(
+            new_id,
+            "agent.last_run",
+            {
+                "mode": "imported",
+                "label_profile": imported_label_profile,
+                "updated_at": _now_iso(),
+            },
+            session_id,
+        )
+
+    ids.append(new_id)
+    existing_ids.add(new_id)
+    return new_id
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -950,6 +1024,122 @@ def _spans_from_source(
             raise HTTPException(status_code=400, detail=f"Unknown source: {source}")
         return doc.agent_outputs.methods.get(method_id, [])
     raise HTTPException(status_code=400, detail=f"Unknown source: {source}")
+
+
+def _spans_to_pii_occurrences(spans: list[CanonicalSpan]) -> list[dict[str, object]]:
+    return [
+        {
+            "start": span.start,
+            "end": span.end,
+            "text": span.text,
+            "pii_type": span.label,
+        }
+        for span in spans
+    ]
+
+
+def _import_ground_truth_archive(raw: bytes, session_id: str = "default") -> dict[str, object]:
+    archive_buffer = io.BytesIO(raw)
+    try:
+        with zipfile.ZipFile(archive_buffer, mode="r") as archive:
+            ids = _load_session_index(session_id)
+            existing_ids = set(ids)
+            imported_ids: list[str] = []
+            skipped: list[dict[str, str | int]] = []
+
+            members = [name for name in archive.namelist() if not name.endswith("/")]
+            if not members:
+                raise HTTPException(status_code=400, detail="Ground-truth archive is empty")
+
+            for idx, member_name in enumerate(members):
+                if not member_name.lower().endswith(".json"):
+                    skipped.append(
+                        {"index": idx, "reason": f"Unsupported archive member: {member_name}"}
+                    )
+                    continue
+
+                try:
+                    member_raw = archive.read(member_name)
+                except Exception as exc:
+                    skipped.append({"index": idx, "reason": f"Could not read {member_name}: {exc}"})
+                    continue
+
+                try:
+                    member_payload = json.loads(member_raw.decode("utf-8"))
+                except Exception as exc:
+                    skipped.append(
+                        {"index": idx, "reason": f"{member_name} must be valid UTF-8 JSON: {exc}"}
+                    )
+                    continue
+
+                if not isinstance(member_payload, dict):
+                    skipped.append({"index": idx, "reason": f"{member_name} is not a JSON object"})
+                    continue
+
+                doc_id_raw = member_payload.get("id")
+                doc_id = (
+                    doc_id_raw.strip()
+                    if isinstance(doc_id_raw, str) and doc_id_raw.strip()
+                    else str(uuid.uuid4())[:8]
+                )
+                filename_raw = member_payload.get("filename")
+                filename = (
+                    filename_raw.strip()
+                    if isinstance(filename_raw, str) and filename_raw.strip()
+                    else Path(member_name).name
+                )
+
+                try:
+                    docs = parse_file(member_raw, filename, doc_id)
+                except Exception as exc:
+                    skipped.append({"index": idx, "reason": f"{member_name}: {exc}"})
+                    continue
+
+                if len(docs) != 1:
+                    skipped.append(
+                        {"index": idx, "reason": f"{member_name}: expected exactly one document"}
+                    )
+                    continue
+
+                parsed_doc = docs[0]
+                spans_raw = member_payload.get("spans")
+                try:
+                    manual_spans = (
+                        _normalize_optional_spans(spans_raw, parsed_doc.raw_text)
+                        if spans_raw is not None
+                        else parsed_doc.pre_annotations
+                    )
+                except ValueError as exc:
+                    skipped.append({"index": idx, "reason": f"{member_name}: {exc}"})
+                    continue
+
+                imported_doc = parsed_doc.model_copy(update={"pre_annotations": []})
+                new_id = _commit_imported_document(
+                    doc=imported_doc,
+                    session_id=session_id,
+                    ids=ids,
+                    existing_ids=existing_ids,
+                    manual_spans=manual_spans,
+                )
+                imported_ids.append(new_id)
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Import file must be a valid ground-truth ZIP archive",
+        ) from exc
+
+    _save_session_index(session_id)
+
+    return {
+        "bundle_version": None,
+        "imported_count": len(imported_ids),
+        "imported_ids": imported_ids,
+        "skipped_count": len(skipped),
+        "skipped": skipped,
+        "warnings": [],
+        "imported_prompt_lab_runs": 0,
+        "total_in_bundle": len(members),
+    }
 
 
 def _parse_iso_datetime(value: str | None) -> datetime:
@@ -1642,8 +1832,6 @@ def _build_chunk_diagnostic(
 
 def _summarize_suspicious_empty_retry(
     *,
-    idx: int,
-    chunk_count: int,
     recovered_span_count: int,
 ) -> str:
     if recovered_span_count > 0:
@@ -1668,6 +1856,7 @@ def _run_llm_for_document(
     label_profile: Literal["simple", "advanced"],
     chunk_mode: str,
     chunk_size_chars: int,
+    enable_suspicious_empty_retry: bool = True,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> tuple[list[CanonicalSpan], list[str], LLMConfidenceMetric, list[AgentChunkDiagnostic]]:
     if not _should_use_chunking(len(doc.raw_text), chunk_mode, chunk_size_chars):
@@ -1761,6 +1950,21 @@ def _run_llm_for_document(
     ]
 
     for idx in suspicious_empty_indices:
+        if not enable_suspicious_empty_retry:
+            chunk_outcomes[idx] = _ChunkExecutionResult(
+                idx=chunk_outcomes[idx].idx,
+                start=chunk_outcomes[idx].start,
+                end=chunk_outcomes[idx].end,
+                shifted_spans=chunk_outcomes[idx].shifted_spans,
+                warnings=[
+                    "suspicious empty first pass returned 0 spans; retry disabled.",
+                    *chunk_outcomes[idx].warnings,
+                ],
+                llm_confidence=chunk_outcomes[idx].llm_confidence,
+                finish_reason=chunk_outcomes[idx].finish_reason,
+            )
+            continue
+
         start, end = chunks[idx]
         try:
             retry_result = _run_chunk(idx, start, end)
@@ -1777,8 +1981,6 @@ def _run_llm_for_document(
             shifted_spans=selected_result.shifted_spans,
             warnings=[
                 _summarize_suspicious_empty_retry(
-                    idx=idx,
-                    chunk_count=chunk_count,
                     recovered_span_count=recovered_span_count,
                 ),
                 *selected_result.warnings,
@@ -1791,7 +1993,9 @@ def _run_llm_for_document(
     for idx in range(chunk_count):
         result = chunk_outcomes[idx]
         suspicious_empty = idx in suspicious_empty_indices
-        retry_used = suspicious_empty and len(result.shifted_spans) > 0
+        retry_used = (
+            enable_suspicious_empty_retry and suspicious_empty and len(result.shifted_spans) > 0
+        )
         all_spans.extend(result.shifted_spans)
         warnings.extend(_format_chunk_warnings(idx, chunk_count, result.warnings))
         if result.llm_confidence is not None:
@@ -1799,7 +2003,7 @@ def _run_llm_for_document(
         chunk_diagnostics.append(
             _build_chunk_diagnostic(
                 result=result,
-                attempt_count=2 if suspicious_empty else 1,
+                attempt_count=2 if suspicious_empty and enable_suspicious_empty_retry else 1,
                 retry_used=retry_used,
                 suspicious_empty=suspicious_empty,
             )
@@ -3138,8 +3342,10 @@ async def export_ground_truth_only(
             payload = {
                 "id": enriched.id,
                 "filename": enriched.filename,
+                "transcript": enriched.raw_text,
                 "ground_truth_source": source_value,
                 "spans": [span.model_dump() for span in spans],
+                "pii_occurrences": _spans_to_pii_occurrences(spans),
             }
             stem = Path(enriched.filename).stem or enriched.id
             safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-") or enriched.id
@@ -3162,11 +3368,14 @@ async def export_ground_truth_only(
 async def import_session_bundle(file: UploadFile = File(...)):
     session_id = "default"
     raw = await file.read()
+    if zipfile.is_zipfile(io.BytesIO(raw)):
+        return _import_ground_truth_archive(raw, session_id)
     try:
         payload = json.loads(raw.decode("utf-8"))
     except Exception as exc:
         raise HTTPException(
-            status_code=400, detail="Import file must be valid UTF-8 JSON"
+            status_code=400,
+            detail="Import file must be valid UTF-8 JSON or a ground-truth ZIP archive",
         ) from exc
 
     if not isinstance(payload, dict):
@@ -3341,60 +3550,22 @@ async def import_session_bundle(file: UploadFile = File(...)):
             skipped.append({"index": idx, "reason": str(exc)})
             continue
 
-        new_id = doc.id
-        while new_id in existing_ids:
-            new_id = str(uuid.uuid4())[:8]
-        if new_id != doc.id:
-            doc = doc.model_copy(update={"id": new_id})
-
-        _save_doc(doc, session_id)
-        if manual_spans:
-            _save_sidecar(new_id, "manual", manual_spans, session_id)
-        if rule_spans:
-            _save_sidecar(new_id, "agent.rule", rule_spans, session_id)
-        if llm_spans:
-            _save_sidecar(new_id, "agent.llm", llm_spans, session_id)
-        for method_id, spans in method_spans.items():
-            _save_sidecar(new_id, f"agent.method.{method_id}", spans, session_id)
-        if llm_runs:
-            _save_span_map_sidecar(new_id, LLM_RUNS_SIDECAR_KIND, llm_runs, session_id)
-        if method_runs:
-            _save_span_map_sidecar(new_id, METHOD_RUNS_SIDECAR_KIND, method_runs, session_id)
-        if llm_run_metadata:
-            _save_run_metadata_map_sidecar(
-                new_id,
-                LLM_RUNS_METADATA_SIDECAR_KIND,
-                llm_run_metadata,
-                session_id,
-            )
-        if method_run_metadata:
-            _save_run_metadata_map_sidecar(
-                new_id,
-                METHOD_RUNS_METADATA_SIDECAR_KIND,
-                method_run_metadata,
-                session_id,
-            )
-        if llm_confidence is not None:
-            _save_json_sidecar(
-                new_id,
-                "agent.llm.metrics",
-                llm_confidence.model_dump(),
-                session_id,
-            )
-        if imported_label_profile is not None:
-            _save_json_sidecar(
-                new_id,
-                "agent.last_run",
-                {
-                    "mode": "imported",
-                    "label_profile": imported_label_profile,
-                    "updated_at": _now_iso(),
-                },
-                session_id,
-            )
-
-        ids.append(new_id)
-        existing_ids.add(new_id)
+        new_id = _commit_imported_document(
+            doc=doc,
+            session_id=session_id,
+            ids=ids,
+            existing_ids=existing_ids,
+            manual_spans=manual_spans,
+            rule_spans=rule_spans,
+            llm_spans=llm_spans,
+            method_spans=method_spans,
+            llm_runs=llm_runs,
+            method_runs=method_runs,
+            llm_run_metadata=llm_run_metadata,
+            method_run_metadata=method_run_metadata,
+            llm_confidence=llm_confidence,
+            imported_label_profile=imported_label_profile,
+        )
         imported_ids.append(new_id)
         doc_id_remap[original_doc_id] = new_id
 

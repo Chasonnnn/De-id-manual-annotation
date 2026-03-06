@@ -240,7 +240,7 @@ export default function Sidebar({
             id="sidebar-import-file"
             name="import_file"
             type="file"
-            accept=".json"
+            accept=".json,.zip"
             style={{ display: "none" }}
             onChange={(e) => {
               const file = e.target.files?.[0];

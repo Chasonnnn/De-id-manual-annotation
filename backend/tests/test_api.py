@@ -7,7 +7,15 @@ from typing import Literal
 import pytest
 from fastapi.testclient import TestClient
 
-from server import app, _prompt_lab_runs, _session_dir, _session_docs
+from server import (
+    app,
+    _enrich_doc,
+    _load_doc,
+    _prompt_lab_runs,
+    _run_llm_for_document,
+    _session_dir,
+    _session_docs,
+)
 from models import CanonicalSpan, LLMConfidenceMetric
 
 
@@ -2230,6 +2238,58 @@ def test_agent_llm_chunk_retry_persists_diagnostics(client, monkeypatch):
     assert saved_meta["chunk_diagnostics"] == diagnostics
 
 
+def test_run_llm_for_document_can_disable_suspicious_empty_retry(client, monkeypatch):
+    call_counts: dict[str, int] = {}
+
+    def fake_run_llm_with_metadata(**kwargs):
+        chunk_text = str(kwargs.get("text", ""))
+        call_counts[chunk_text] = call_counts.get(chunk_text, 0) + 1
+        if chunk_text.startswith("A"):
+            spans = [CanonicalSpan(start=0, end=3, label="NAME", text=chunk_text[:3])]
+        else:
+            spans = []
+        return SimpleNamespace(
+            spans=spans,
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(model="openai.gpt-5.2-chat"),
+            finish_reason=None,
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    transcript = (("A" * 2400) + "\n") + (("B" * 2400) + "\n") + (("C" * 2400) + "\n")
+    upload_resp = _upload(client, data=_make_hips_v1_custom(transcript))
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+    doc = _load_doc(doc_id, "default")
+    assert doc is not None
+    enriched = _enrich_doc(doc, "default")
+
+    spans, warnings, _llm_confidence, diagnostics = _run_llm_for_document(
+        doc=enriched,
+        api_key="request-key",
+        api_base="https://proxy.example.com/v1",
+        model="openai.gpt-5.2-chat",
+        system_prompt="Detect PII spans.",
+        temperature=0.0,
+        reasoning_effort="xhigh",
+        anthropic_thinking=False,
+        anthropic_thinking_budget_tokens=None,
+        label_profile="simple",
+        chunk_mode="force",
+        chunk_size_chars=2000,
+        enable_suspicious_empty_retry=False,
+    )
+
+    assert len(spans) > 0
+    suspicious = [item for item in diagnostics if item.suspicious_empty]
+    assert len(suspicious) >= 1
+    assert all(item.attempt_count == 1 for item in suspicious)
+    assert all(item.retry_used is False for item in suspicious)
+    assert any("retry disabled" in warning for warning in warnings)
+    assert max(call_counts.values()) == 1
+
+
 def test_method_persists_outputs_per_method_model(client, monkeypatch):
     monkeypatch.setattr(
         "server._fetch_gateway_model_ids",
@@ -2321,8 +2381,50 @@ def test_export_ground_truth_zip_for_selected_source(client):
         assert len(names) == 1
         payload = json.loads(archive.read(names[0]).decode("utf-8"))
         assert payload["id"] == doc_id
+        assert payload["transcript"] == "Hello Anna, call Sue please."
         assert payload["ground_truth_source"] == "manual"
         assert payload["spans"][0]["text"] == "Anna"
+        assert payload["pii_occurrences"][0]["pii_type"] == "NAME"
+
+
+def test_session_import_accepts_ground_truth_zip_without_existing_source(client):
+    transcript = "Hello Anna, call Sue please."
+    upload_resp = _upload(client, _make_hips_v1_custom(transcript))
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    manual_resp = client.put(
+        f"/api/documents/{doc_id}/manual-annotations",
+        json=[{"start": 6, "end": 10, "label": "NAME", "text": "Anna"}],
+    )
+    assert manual_resp.status_code == 200
+
+    export_resp = client.get(
+        "/api/session/export-ground-truth",
+        params={"source": "manual"},
+    )
+    assert export_resp.status_code == 200
+
+    delete_resp = client.delete(f"/api/documents/{doc_id}")
+    assert delete_resp.status_code == 200
+
+    import_resp = client.post(
+        "/api/session/import",
+        files={"file": ("ground-truth-manual.zip", export_resp.content, "application/zip")},
+    )
+    assert import_resp.status_code == 200
+    imported = import_resp.json()
+    assert imported["imported_count"] == 1
+    assert imported["skipped_count"] == 0
+
+    imported_id = imported["imported_ids"][0]
+    doc_resp = client.get(f"/api/documents/{imported_id}")
+    assert doc_resp.status_code == 200
+    imported_doc = doc_resp.json()
+    assert imported_doc["raw_text"] == transcript
+    assert imported_doc["manual_annotations"] == [
+        {"start": 6, "end": 10, "label": "NAME", "text": "Anna"}
+    ]
 
 
 def test_session_export_includes_saved_run_metadata(client, monkeypatch):
