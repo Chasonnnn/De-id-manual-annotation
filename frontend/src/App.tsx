@@ -47,6 +47,7 @@ import MetricsPanel from "./components/MetricsPanel";
 import DashboardPanel from "./components/DashboardPanel";
 import { computeDiff } from "./components/DiffOverlay";
 import PromptLabTab from "./components/PromptLabTab";
+import MethodsLabTab from "./components/MethodsLabTab";
 
 // ---------------------------------------------------------------------------
 // 4.3: Error boundary to prevent white-screen crashes
@@ -229,7 +230,9 @@ function toPromptTemplatesFromSnapshot(
 // Main App
 // ---------------------------------------------------------------------------
 function AppContent() {
-  const [mainTab, setMainTab] = useState<"workspace" | "prompt_lab" | "dashboard">(
+  const [mainTab, setMainTab] = useState<
+    "workspace" | "prompt_lab" | "methods_lab" | "dashboard"
+  >(
     "workspace",
   );
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
@@ -998,6 +1001,13 @@ function AppContent() {
           </button>
           <button
             type="button"
+            className={mainTab === "methods_lab" ? "active" : ""}
+            onClick={() => setMainTab("methods_lab")}
+          >
+            Methods Lab
+          </button>
+          <button
+            type="button"
             className={mainTab === "dashboard" ? "active" : ""}
             onClick={() => setMainTab("dashboard")}
           >
@@ -1006,6 +1016,12 @@ function AppContent() {
         </div>
         {mainTab === "prompt_lab" ? (
           <PromptLabTab
+            documents={documents}
+            selectedDocumentId={selectedId}
+            onSelectDocument={setSelectedId}
+          />
+        ) : mainTab === "methods_lab" ? (
+          <MethodsLabTab
             documents={documents}
             selectedDocumentId={selectedId}
             onSelectDocument={setSelectedId}

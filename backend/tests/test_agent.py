@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,6 +15,9 @@ from agent import (
     MODEL_PRESETS,
     SYSTEM_PROMPT,
     _infer_provider,
+    _presidio_runtime_error,
+    _reset_presidio_runtime_state,
+    _run_presidio_pass,
     build_extraction_system_prompt,
     _strip_code_fences,
     run_llm,
@@ -118,12 +124,14 @@ class TestInferProvider:
     def test_recognizes_common_dot_and_slash_model_prefixes(self):
         assert _infer_provider("openai.gpt-5.2-chat") == "openai"
         assert _infer_provider("openai/gpt-4o") == "openai"
+        assert _infer_provider("chatgpt/gpt-5.4") == "openai"
         assert _infer_provider("anthropic.claude-4.6-opus") == "anthropic"
         assert _infer_provider("anthropic/claude-sonnet-4-20250514") == "anthropic"
         assert _infer_provider("google.gemini-3.1-pro-preview") == "gemini"
         assert _infer_provider("google/gemini-2.5-pro") == "gemini"
 
     def test_falls_back_without_litellm_provider_lookup(self):
+        assert _infer_provider("gpt-5.4") == "openai"
         assert _infer_provider("vertex_ai/gemini-2.5-pro") == "gemini"
         assert _infer_provider("custom-provider/model-name") == "custom-provider"
         assert _infer_provider("opaque-model-id") == "unknown"
@@ -569,6 +577,20 @@ class TestRunLLM:
         assert any("default temperature" in warning for warning in result.warnings)
 
     @patch("agent.completion")
+    def test_bare_gpt5_model_omits_custom_temperature(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
+        result = run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            model="gpt-5.4",
+            temperature=0.5,
+        )
+        assert result.spans == []
+        call_kwargs = mock_completion.call_args
+        assert "temperature" not in call_kwargs.kwargs
+        assert any("default temperature" in warning for warning in result.warnings)
+
+    @patch("agent.completion")
     def test_gateway_dot_model_uses_openai_provider_format(self, mock_completion):
         mock_completion.return_value = _mock_completion_response('{"spans":[]}')
         run_llm_with_metadata(
@@ -948,7 +970,7 @@ class TestRunLLM:
 def test_model_presets_include_requested_options():
     model_ids = {preset["model"] for preset in MODEL_PRESETS}
     assert "openai.gpt-5.3-codex" in model_ids
-    assert "openai.gpt-5.4" in model_ids
+    assert "gpt-5.4" in model_ids
     assert "openai.gpt-5.2-chat" in model_ids
     assert "anthropic.claude-4.6-opus" in model_ids
     assert "google.gemini-3.1-pro-preview" in model_ids
@@ -966,3 +988,119 @@ def test_method_prompts_are_migrated_from_experiment_presets():
 
     split_prompt = METHOD_DEFINITION_BY_ID["presidio+llm-split"]["passes"][1]["prompt"]
     assert "reasonably identify an individual" in split_prompt
+
+
+def test_presidio_runtime_error_caches_success(monkeypatch):
+    _reset_presidio_runtime_state()
+
+    fake_spacy = types.SimpleNamespace(load=MagicMock())
+    monkeypatch.setattr(
+        "agent.importlib.util.find_spec",
+        lambda name: object() if name in {"presidio_analyzer", "spacy"} else None,
+    )
+    monkeypatch.setitem(sys.modules, "spacy", fake_spacy)
+
+    assert _presidio_runtime_error() is None
+    assert _presidio_runtime_error() is None
+
+    assert fake_spacy.load.call_count == 1
+
+
+def test_run_presidio_pass_reuses_analyzer_across_threads(monkeypatch):
+    _reset_presidio_runtime_state()
+
+    analyzer_init_count = 0
+    provider_init_count = 0
+
+    class FakeResult:
+        def __init__(self, start: int, end: int, entity_type: str):
+            self.start = start
+            self.end = end
+            self.entity_type = entity_type
+
+    class FakeAnalyzerEngine:
+        def __init__(self, *, nlp_engine):
+            nonlocal analyzer_init_count
+            analyzer_init_count += 1
+            self._nlp_engine = nlp_engine
+
+        def analyze(self, *, text, language, entities, score_threshold):
+            assert language == "en"
+            assert score_threshold == 0.0
+            return [FakeResult(0, min(len(text), 4), entities[0] if entities else "PERSON")]
+
+    class FakeNlpEngineProvider:
+        def __init__(self, *, nlp_configuration):
+            nonlocal provider_init_count
+            provider_init_count += 1
+            self._nlp_configuration = nlp_configuration
+
+        def create_engine(self):
+            return {"config": self._nlp_configuration}
+
+    fake_presidio_module = types.ModuleType("presidio_analyzer")
+    fake_presidio_module.AnalyzerEngine = FakeAnalyzerEngine
+    fake_nlp_module = types.ModuleType("presidio_analyzer.nlp_engine")
+    fake_nlp_module.NlpEngineProvider = FakeNlpEngineProvider
+
+    monkeypatch.setattr("agent._presidio_runtime_error", lambda: None)
+    monkeypatch.setitem(sys.modules, "presidio_analyzer", fake_presidio_module)
+    monkeypatch.setitem(sys.modules, "presidio_analyzer.nlp_engine", fake_nlp_module)
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        texts = ["Alice Example", "Bob Example", "Carol Example"]
+        results = list(pool.map(lambda text: _run_presidio_pass(text, ["PERSON"]), texts))
+
+    assert [[span.text for span in spans] for spans in results] == [["Alic"], ["Bob "], ["Caro"]]
+    assert provider_init_count == 1
+    assert analyzer_init_count == 1
+
+
+def test_run_presidio_pass_reuses_analyzer_within_thread(monkeypatch):
+    _reset_presidio_runtime_state()
+
+    analyzer_init_count = 0
+    provider_init_count = 0
+
+    class FakeResult:
+        def __init__(self, start: int, end: int, entity_type: str):
+            self.start = start
+            self.end = end
+            self.entity_type = entity_type
+
+    class FakeAnalyzerEngine:
+        def __init__(self, *, nlp_engine):
+            nonlocal analyzer_init_count
+            analyzer_init_count += 1
+            self._nlp_engine = nlp_engine
+
+        def analyze(self, *, text, language, entities, score_threshold):
+            assert language == "en"
+            assert score_threshold == 0.0
+            return [FakeResult(0, min(len(text), 4), entities[0] if entities else "PERSON")]
+
+    class FakeNlpEngineProvider:
+        def __init__(self, *, nlp_configuration):
+            nonlocal provider_init_count
+            provider_init_count += 1
+            self._nlp_configuration = nlp_configuration
+
+        def create_engine(self):
+            return {"config": self._nlp_configuration}
+
+    fake_presidio_module = types.ModuleType("presidio_analyzer")
+    fake_presidio_module.AnalyzerEngine = FakeAnalyzerEngine
+    fake_nlp_module = types.ModuleType("presidio_analyzer.nlp_engine")
+    fake_nlp_module.NlpEngineProvider = FakeNlpEngineProvider
+
+    monkeypatch.setattr("agent._presidio_runtime_error", lambda: None)
+    monkeypatch.setitem(sys.modules, "presidio_analyzer", fake_presidio_module)
+    monkeypatch.setitem(sys.modules, "presidio_analyzer.nlp_engine", fake_nlp_module)
+
+    spans_first = _run_presidio_pass("Alice Example", ["PERSON"])
+    spans_second = _run_presidio_pass("Bob Example", ["PERSON"])
+
+    assert [span.text for span in spans_first] == ["Alic"]
+    assert [span.text for span in spans_second] == ["Bob "]
+    assert provider_init_count == 1
+    assert analyzer_init_count == 1

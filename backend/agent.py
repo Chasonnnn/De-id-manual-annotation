@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 import importlib.util
 import json
 import math
 import re
+import threading
 from typing import Any, Literal
 
 from litellm import completion
@@ -244,7 +246,7 @@ MODEL_PRESETS: list[dict[str, Any]] = [
     },
     {
         "label": "OpenAI: GPT-5.4 (xhigh)",
-        "model": "openai.gpt-5.4",
+        "model": "gpt-5.4",
         "provider": "openai",
         "supports_reasoning_effort": True,
         "supports_anthropic_thinking": False,
@@ -291,12 +293,23 @@ MODEL_PRESET_BY_ID: dict[str, dict[str, Any]] = {
 
 PROVIDER_PREFIX_MAP: dict[str, str] = {
     "openai": "openai",
+    "chatgpt": "openai",
     "anthropic": "anthropic",
     "google": "gemini",
     "gemini": "gemini",
     "vertex_ai": "gemini",
     "vertex": "gemini",
 }
+
+OPENAI_MODEL_PREFIXES: tuple[str, ...] = (
+    "gpt-",
+    "gpt5",
+    "o1",
+    "o3",
+    "o4",
+    "codex",
+    "chatgpt/",
+)
 
 TOOL_LABEL_MAP: dict[str, str] = {
     "PERSON": "NAME",
@@ -620,6 +633,10 @@ METHOD_DEFINITION_BY_ID: dict[str, dict[str, Any]] = {
     method["id"]: method for method in METHOD_DEFINITIONS
 }
 
+_presidio_analyzer_lock = threading.Lock()
+_presidio_analyze_lock = threading.Lock()
+_presidio_analyzer: Any | None = None
+
 
 @dataclass
 class LLMRunResult:
@@ -743,6 +760,9 @@ def _infer_provider(model: str) -> str:
         if separator == "/":
             return prefix or "unknown"
 
+    if normalized.startswith(OPENAI_MODEL_PREFIXES):
+        return "openai"
+
     return "unknown"
 
 
@@ -764,7 +784,8 @@ def _supports_anthropic_thinking(model: str, provider: str) -> bool:
 
 def _supports_custom_temperature(model: str) -> bool:
     # GPT-5 family generally supports default temperature only.
-    if model.startswith("openai.gpt-5") or model.startswith("openai/gpt-5"):
+    normalized = model.lower()
+    if normalized.startswith(("openai.gpt-5", "openai/gpt-5", "gpt-5", "chatgpt/gpt-5")):
         return False
     return True
 
@@ -779,7 +800,7 @@ def _supports_logprobs(
         return False
     normalized = model.lower()
     # Empirically incompatible on current OpenAI-compatible gateway route.
-    if normalized in {"openai.gpt-5.2-chat", "openai/gpt-5.2-chat"}:
+    if normalized in {"openai.gpt-5.2-chat", "openai/gpt-5.2-chat", "gpt-5.2-chat"}:
         return False
     # GPT-5 variants can reject logprobs when non-default reasoning is enabled.
     if ("gpt-5" in normalized or "gpt5" in normalized) and reasoning_effort != "none":
@@ -1571,6 +1592,7 @@ def merge_method_spans(spans: list[CanonicalSpan]) -> list[CanonicalSpan]:
     return deduped
 
 
+@lru_cache(maxsize=1)
 def _presidio_runtime_error() -> str | None:
     if importlib.util.find_spec("presidio_analyzer") is None:
         return PRESIDIO_SETUP_MESSAGE
@@ -1587,6 +1609,39 @@ def _presidio_runtime_error() -> str | None:
             "uv run python -m spacy download en_core_web_lg"
         )
     return None
+
+
+def _get_presidio_analyzer():
+    global _presidio_analyzer
+
+    analyzer = _presidio_analyzer
+    if analyzer is not None:
+        return analyzer
+
+    with _presidio_analyzer_lock:
+        analyzer = _presidio_analyzer
+        if analyzer is not None:
+            return analyzer
+
+        from presidio_analyzer import AnalyzerEngine
+        from presidio_analyzer.nlp_engine import NlpEngineProvider
+
+        config = {
+            "nlp_engine_name": "spacy",
+            "models": [{"lang_code": "en", "model_name": PRESIDIO_DEFAULT_MODEL}],
+        }
+        nlp_engine = NlpEngineProvider(nlp_configuration=config).create_engine()
+        analyzer = AnalyzerEngine(nlp_engine=nlp_engine)
+        _presidio_analyzer = analyzer
+        return analyzer
+
+
+def _reset_presidio_runtime_state():
+    global _presidio_analyzer
+
+    _presidio_runtime_error.cache_clear()
+    with _presidio_analyzer_lock:
+        _presidio_analyzer = None
 
 
 def list_agent_methods() -> list[dict[str, Any]]:
@@ -1734,22 +1789,14 @@ def _run_presidio_pass(
     runtime_error = _presidio_runtime_error()
     if runtime_error is not None:
         raise RuntimeError(runtime_error)
-
-    from presidio_analyzer import AnalyzerEngine
-    from presidio_analyzer.nlp_engine import NlpEngineProvider
-
-    config = {
-        "nlp_engine_name": "spacy",
-        "models": [{"lang_code": "en", "model_name": PRESIDIO_DEFAULT_MODEL}],
-    }
-    nlp_engine = NlpEngineProvider(nlp_configuration=config).create_engine()
-    analyzer = AnalyzerEngine(nlp_engine=nlp_engine)
-    results = analyzer.analyze(
-        text=text,
-        language="en",
-        entities=entity_types,
-        score_threshold=0.0,
-    )
+    analyzer = _get_presidio_analyzer()
+    with _presidio_analyze_lock:
+        results = analyzer.analyze(
+            text=text,
+            language="en",
+            entities=entity_types,
+            score_threshold=0.0,
+        )
     spans: list[CanonicalSpan] = []
     for result in results:
         if result.start >= result.end:
@@ -1937,7 +1984,7 @@ def run_llm_with_metadata(
     )
     if supports_logprobs:
         base_request_kwargs["logprobs"] = True
-    elif model.lower() in {"openai.gpt-5.2-chat", "openai/gpt-5.2-chat"}:
+    elif model.lower() in {"openai.gpt-5.2-chat", "openai/gpt-5.2-chat", "gpt-5.2-chat"}:
         warnings.append(
             "Token logprobs are currently unavailable for model 'openai.gpt-5.2-chat' on this API route."
         )

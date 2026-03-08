@@ -12,6 +12,10 @@ import type {
   MatchMode,
   DocumentSummary,
   MetricsResult,
+  MethodsLabDocResult,
+  MethodsLabRunCreateRequest,
+  MethodsLabRunDetail,
+  MethodsLabRunSummary,
   SessionExportBundle,
   SessionImportResult,
   SessionProfile,
@@ -204,6 +208,67 @@ export async function getPromptLabDocResult(
   };
 }
 
+export async function createMethodsLabRun(
+  payload: MethodsLabRunCreateRequest,
+): Promise<MethodsLabRunDetail> {
+  const raw = await request<Record<string, unknown>>("/methods-lab/runs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return normalizeMethodsLabRunDetail(raw);
+}
+
+export async function listMethodsLabRuns(): Promise<MethodsLabRunSummary[]> {
+  const data = await request<{ runs: Record<string, unknown>[] }>("/methods-lab/runs");
+  return (data.runs ?? []).map(normalizeMethodsLabRunSummary);
+}
+
+export async function getMethodsLabRun(runId: string): Promise<MethodsLabRunDetail> {
+  const raw = await request<Record<string, unknown>>(`/methods-lab/runs/${runId}`);
+  return normalizeMethodsLabRunDetail(raw);
+}
+
+export async function getMethodsLabDocResult(
+  runId: string,
+  cellId: string,
+  docId: string,
+): Promise<MethodsLabDocResult> {
+  const raw = await request<Record<string, unknown>>(
+    `/methods-lab/runs/${runId}/cells/${cellId}/documents/${docId}`,
+  );
+  const metricsRaw = isRecord(raw.metrics) ? normalizeMetrics(raw.metrics) : null;
+  return {
+    run_id: String(raw.run_id ?? runId),
+    cell_id: String(raw.cell_id ?? cellId),
+    doc_id: String(raw.doc_id ?? docId),
+    status: (raw.status as MethodsLabDocResult["status"] | undefined) ?? "pending",
+    error: typeof raw.error === "string" ? raw.error : null,
+    warnings: Array.isArray(raw.warnings)
+      ? raw.warnings.filter((x): x is string => typeof x === "string")
+      : [],
+    reference_source_used: raw.reference_source_used === "manual" ? "manual" : undefined,
+    reference_spans: Array.isArray(raw.reference_spans)
+      ? (raw.reference_spans as CanonicalSpan[])
+      : [],
+    hypothesis_spans: Array.isArray(raw.hypothesis_spans)
+      ? (raw.hypothesis_spans as CanonicalSpan[])
+      : [],
+    metrics: metricsRaw,
+    llm_confidence: normalizeLLMConfidence(raw.llm_confidence),
+    transcript_text: typeof raw.transcript_text === "string" ? raw.transcript_text : null,
+    document: isRecord(raw.document)
+      ? {
+          id: String(raw.document.id ?? docId),
+          filename:
+            typeof raw.document.filename === "string" ? raw.document.filename : null,
+        }
+      : { id: docId, filename: null },
+    model: isRecord(raw.model) ? normalizePromptLabModel(raw.model, 0) : undefined,
+    method: isRecord(raw.method) ? normalizeMethodsLabMethod(raw.method, 0) : undefined,
+  };
+}
+
 export async function getMetrics(
   docId: string,
   reference: AnnotationSource,
@@ -310,6 +375,23 @@ function normalizePromptLabRunSummary(raw: Record<string, unknown>): PromptLabRu
   };
 }
 
+function normalizeMethodsLabRunSummary(raw: Record<string, unknown>): MethodsLabRunSummary {
+  return {
+    id: String(raw.id ?? ""),
+    name: String(raw.name ?? ""),
+    status: (raw.status as MethodsLabRunSummary["status"] | undefined) ?? "queued",
+    created_at: String(raw.created_at ?? ""),
+    started_at: typeof raw.started_at === "string" ? raw.started_at : null,
+    finished_at: typeof raw.finished_at === "string" ? raw.finished_at : null,
+    doc_count: toNumber(raw.doc_count, 0),
+    method_count: toNumber(raw.method_count, 0),
+    model_count: toNumber(raw.model_count, 0),
+    total_tasks: toNumber(raw.total_tasks, 0),
+    completed_tasks: toNumber(raw.completed_tasks, 0),
+    failed_tasks: toNumber(raw.failed_tasks, 0),
+  };
+}
+
 function normalizePromptLabRunDetail(raw: Record<string, unknown>): PromptLabRunDetail {
   const summary = normalizePromptLabRunSummary(raw);
   const docIds = Array.isArray(raw.doc_ids)
@@ -404,6 +486,87 @@ function normalizePromptLabRunDetail(raw: Record<string, unknown>): PromptLabRun
   };
 }
 
+function normalizeMethodsLabRunDetail(raw: Record<string, unknown>): MethodsLabRunDetail {
+  const summary = normalizeMethodsLabRunSummary(raw);
+  const docIds = Array.isArray(raw.doc_ids)
+    ? raw.doc_ids.map((value) => String(value))
+    : [];
+  const methodsRaw = Array.isArray(raw.methods) ? raw.methods : [];
+  const modelsRaw = Array.isArray(raw.models) ? raw.models : [];
+  const runtimeRaw = isRecord(raw.runtime) ? raw.runtime : {};
+  const matrixRaw = isRecord(raw.matrix) ? raw.matrix : {};
+  const matrixModels = Array.isArray(matrixRaw.models)
+    ? matrixRaw.models
+        .filter(isRecord)
+        .map((item) => ({ id: String(item.id ?? ""), label: String(item.label ?? "") }))
+    : [];
+  const matrixMethods = Array.isArray(matrixRaw.methods)
+    ? matrixRaw.methods
+        .filter(isRecord)
+        .map((item) => ({ id: String(item.id ?? ""), label: String(item.label ?? "") }))
+    : [];
+  const matrixCellsRaw = Array.isArray(matrixRaw.cells) ? matrixRaw.cells : [];
+  const matrixCells = matrixCellsRaw
+    .filter(isRecord)
+    .map((cell, index) => normalizeMethodsLabCellSummary(cell, index, summary.doc_count));
+  const availableLabels = Array.isArray(matrixRaw.available_labels)
+    ? matrixRaw.available_labels.filter((x): x is string => typeof x === "string")
+    : [];
+
+  return {
+    ...summary,
+    doc_ids: docIds,
+    methods: methodsRaw
+      .filter(isRecord)
+      .map((method, index) => normalizeMethodsLabMethod(method, index)),
+    models: modelsRaw
+      .filter(isRecord)
+      .map((model, index) => normalizePromptLabModel(model, index)),
+    runtime: {
+      api_base: typeof runtimeRaw.api_base === "string" ? runtimeRaw.api_base : undefined,
+      temperature: toNumber(runtimeRaw.temperature, 0),
+      match_mode:
+        runtimeRaw.match_mode === "overlap"
+          ? "overlap"
+          : runtimeRaw.match_mode === "boundary"
+            ? "boundary"
+            : "exact",
+      label_profile: runtimeRaw.label_profile === "advanced" ? "advanced" : "simple",
+      label_projection:
+        runtimeRaw.label_projection === "coarse_simple" ? "coarse_simple" : "native",
+      chunk_mode:
+        runtimeRaw.chunk_mode === "off" || runtimeRaw.chunk_mode === "force"
+          ? runtimeRaw.chunk_mode
+          : "auto",
+      chunk_size_chars: toNumber(runtimeRaw.chunk_size_chars, 10000),
+    },
+    concurrency: toNumber(raw.concurrency, 4),
+    warnings: Array.isArray(raw.warnings)
+      ? raw.warnings.filter((x): x is string => typeof x === "string")
+      : [],
+    errors: Array.isArray(raw.errors)
+      ? raw.errors.filter((x): x is string => typeof x === "string")
+      : [],
+    matrix: {
+      models: matrixModels,
+      methods: matrixMethods,
+      cells: matrixCells,
+      available_labels: availableLabels,
+    },
+    progress: isRecord(raw.progress)
+      ? {
+          total_tasks: toNumber(raw.progress.total_tasks, summary.total_tasks),
+          completed_tasks: toNumber(raw.progress.completed_tasks, summary.completed_tasks),
+          failed_tasks: toNumber(raw.progress.failed_tasks, summary.failed_tasks),
+        }
+      : {
+          total_tasks: summary.total_tasks,
+          completed_tasks: summary.completed_tasks,
+          failed_tasks: summary.failed_tasks,
+        },
+  };
+}
+
 function normalizePromptLabPrompt(
   raw: Record<string, unknown>,
   index: number,
@@ -425,6 +588,21 @@ function normalizePromptLabPrompt(
         : variantType === "prompt"
           ? ""
           : undefined,
+  };
+}
+
+function normalizeMethodsLabMethod(
+  raw: Record<string, unknown>,
+  index: number,
+): MethodsLabRunDetail["methods"][number] {
+  return {
+    id: typeof raw.id === "string" ? raw.id : `method_${index + 1}`,
+    label: String(raw.label ?? `Method ${index + 1}`),
+    method_id: String(raw.method_id ?? ""),
+    method_verify_override:
+      typeof raw.method_verify_override === "boolean"
+        ? raw.method_verify_override
+        : null,
   };
 }
 
@@ -480,6 +658,54 @@ function normalizePromptLabCellSummary(
     prompt_id: String(raw.prompt_id ?? ""),
     prompt_label: String(raw.prompt_label ?? ""),
     status: (raw.status as PromptLabRunDetail["matrix"]["cells"][number]["status"] | undefined) ?? "pending",
+    total_docs: toNumber(raw.total_docs, defaultDocCount),
+    completed_docs: toNumber(raw.completed_docs, 0),
+    failed_docs: toNumber(raw.failed_docs, 0),
+    error_count: toNumber(raw.error_count, 0),
+    micro: {
+      precision: toNumber(microRaw.precision, 0),
+      recall: toNumber(microRaw.recall, 0),
+      f1: toNumber(microRaw.f1, 0),
+      tp: toNumber(microRaw.tp, 0),
+      fp: toNumber(microRaw.fp, 0),
+      fn: toNumber(microRaw.fn, 0),
+    },
+    per_label: perLabel,
+    mean_confidence: typeof raw.mean_confidence === "number" ? raw.mean_confidence : null,
+  };
+}
+
+function normalizeMethodsLabCellSummary(
+  raw: Record<string, unknown>,
+  index: number,
+  defaultDocCount: number,
+): MethodsLabRunDetail["matrix"]["cells"][number] {
+  const microRaw = isRecord(raw.micro) ? raw.micro : {};
+  const perLabelRaw = isRecord(raw.per_label)
+    ? (raw.per_label as Record<string, unknown>)
+    : {};
+  const perLabel: MethodsLabRunDetail["matrix"]["cells"][number]["per_label"] = {};
+  for (const [label, value] of Object.entries(perLabelRaw)) {
+    if (!isRecord(value)) continue;
+    perLabel[label] = {
+      precision: toNumber(value.precision, 0),
+      recall: toNumber(value.recall, 0),
+      f1: toNumber(value.f1, 0),
+      tp: toNumber(value.tp, 0),
+      fp: toNumber(value.fp, 0),
+      fn: toNumber(value.fn, 0),
+      support: toNumber(value.support, 0),
+    };
+  }
+  return {
+    id: String(raw.id ?? `cell_${index + 1}`),
+    model_id: String(raw.model_id ?? ""),
+    model_label: String(raw.model_label ?? ""),
+    method_id: String(raw.method_id ?? ""),
+    method_label: String(raw.method_label ?? ""),
+    status:
+      (raw.status as MethodsLabRunDetail["matrix"]["cells"][number]["status"] | undefined) ??
+      "pending",
     total_docs: toNumber(raw.total_docs, defaultDocCount),
     completed_docs: toNumber(raw.completed_docs, 0),
     failed_docs: toNumber(raw.failed_docs, 0),

@@ -147,7 +147,7 @@ wheels = [
 [[package]]
 name = "annotation-tool-backend"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "en-core-web-lg" },
     { name = "fastapi" },
@@ -157,6 +157,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pytest" },
     { name = "python-multipart" },
+    { name = "pyyaml" },
     { name = "scikit-learn" },
     { name = "scipy" },
     { name = "spacy" },
@@ -173,6 +174,7 @@ requires-dist = [
     { name = "pydantic" },
     { name = "pytest" },
     { name = "python-multipart" },
+    { name = "pyyaml" },
     { name = "scikit-learn" },
     { name = "scipy" },
     { name = "spacy", specifier = ">=3.8.11" },

@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=80.0.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "annotation-tool-backend"
 version = "0.1.0"
@@ -13,9 +17,24 @@ dependencies = [
     "pydantic",
     "pytest",
     "httpx",
+    "pyyaml",
     "presidio-analyzer>=2.2.361",
     "spacy>=3.8.11",
     "en-core-web-lg",
+]
+
+[project.scripts]
+annotation-experiments = "experiments_cli:main"
+
+[tool.setuptools]
+py-modules = [
+    "agent",
+    "experiment_service",
+    "experiments_cli",
+    "metrics",
+    "models",
+    "normalizer",
+    "server",
 ]
 
 [tool.pytest.ini_options]

@@ -17,7 +17,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
     defaultReasoningEffort: "xhigh",
   },
   {
-    id: "openai.gpt-5.4",
+    id: "gpt-5.4",
     label: "GPT-5.4 (xhigh)",
     group: "OpenAI",
     supportsReasoningEffort: true,

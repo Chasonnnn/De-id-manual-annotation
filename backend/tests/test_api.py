@@ -11,6 +11,7 @@ from server import (
     app,
     _enrich_doc,
     _load_doc,
+    _methods_lab_runs,
     _prompt_lab_runs,
     _run_llm_for_document,
     _session_dir,
@@ -30,6 +31,7 @@ def clean_sessions(tmp_path, monkeypatch):
     monkeypatch.setattr("server.PROFILE_PATH", tmp_path / "session_profile.json")
     _session_docs.clear()
     _prompt_lab_runs.clear()
+    _methods_lab_runs.clear()
     yield
 
 
@@ -77,6 +79,17 @@ def _wait_for_prompt_lab_terminal(client: TestClient, run_id: str, attempts: int
         if payload["status"] in ("completed", "completed_with_errors", "failed"):
             return payload
     raise AssertionError("Prompt Lab run did not reach a terminal status in time")
+
+
+def _wait_for_methods_lab_terminal(client: TestClient, run_id: str, attempts: int = 30):
+    payload = None
+    for _ in range(attempts):
+        resp = client.get(f"/api/methods-lab/runs/{run_id}")
+        assert resp.status_code == 200
+        payload = resp.json()
+        if payload["status"] in ("completed", "completed_with_errors", "failed"):
+            return payload
+    raise AssertionError("Methods Lab run did not reach a terminal status in time")
 
 
 def _mock_confidence_metric(
@@ -186,7 +199,7 @@ def test_session_export_import_roundtrip(client):
     assert export_resp.status_code == 200
     bundle = export_resp.json()
     assert bundle["format"] == "annotation_tool_session"
-    assert bundle["version"] == 3
+    assert bundle["version"] == 4
     assert "project" in bundle
     assert "compatibility" in bundle
     assert len(bundle["documents"]) == 1
@@ -202,7 +215,7 @@ def test_session_export_import_roundtrip(client):
     )
     assert import_resp.status_code == 200
     imported = import_resp.json()
-    assert imported["bundle_version"] == 3
+    assert imported["bundle_version"] == 4
     assert imported["imported_count"] == 1
     assert imported["skipped_count"] == 0
 
@@ -1396,7 +1409,7 @@ def test_model_presets_endpoint(client):
     assert "presets" in data
     model_ids = {p["model"] for p in data["presets"]}
     assert "openai.gpt-5.3-codex" in model_ids
-    assert "openai.gpt-5.4" in model_ids
+    assert "gpt-5.4" in model_ids
     assert "openai.gpt-5.2-chat" in model_ids
     assert "google.gemini-3.1-flash-lite-preview" in model_ids
 
@@ -2093,6 +2106,416 @@ def test_prompt_lab_export_import_remaps_doc_ids(client, monkeypatch):
     assert imported_run is not None
 
     detail_resp = client.get(f"/api/prompt-lab/runs/{imported_run['id']}")
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert new_doc_id in detail["doc_ids"]
+
+
+def test_methods_lab_accepts_eight_method_variants_and_repeated_method_ids(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_method_with_metadata(**kwargs):
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(),
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+    manual_resp = client.put(
+        f"/api/documents/{doc_id}/manual-annotations",
+        json=[{"start": 6, "end": 10, "label": "NAME", "text": "Anna"}],
+    )
+    assert manual_resp.status_code == 200
+
+    methods = [
+        {"id": "m_default", "label": "Default", "method_id": "default"},
+        {"id": "m_extended", "label": "Extended", "method_id": "extended"},
+        {"id": "m_verified_on", "label": "Verified On", "method_id": "verified"},
+        {"id": "m_verified_off", "label": "Verified Off", "method_id": "verified", "method_verify_override": False},
+        {"id": "m_dual", "label": "Dual", "method_id": "dual"},
+        {"id": "m_dual_split", "label": "Dual Split", "method_id": "dual-split"},
+        {"id": "m_pd", "label": "Presidio Default", "method_id": "presidio+default"},
+        {"id": "m_pls", "label": "Presidio Split", "method_id": "presidio+llm-split"},
+    ]
+
+    create_resp = client.post(
+        "/api/methods-lab/runs",
+        json={
+            "name": "eight-methods",
+            "doc_ids": [doc_id],
+            "methods": methods,
+            "models": [
+                {
+                    "id": "model_1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "label_profile": "simple",
+                "label_projection": "native",
+                "chunk_mode": "auto",
+                "chunk_size_chars": 10000,
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+
+    final = _wait_for_methods_lab_terminal(client, run_id)
+    assert final["status"] == "completed"
+    assert len(final["methods"]) == 8
+    assert final["methods"][2]["method_id"] == "verified"
+    assert final["methods"][3]["method_id"] == "verified"
+    assert final["methods"][3]["method_verify_override"] is False
+
+
+def test_methods_lab_rejects_duplicate_method_variant_ids_and_unknown_method(client):
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    duplicate_resp = client.post(
+        "/api/methods-lab/runs",
+        json={
+            "doc_ids": [doc_id],
+            "methods": [
+                {"id": "dup", "label": "First", "method_id": "default"},
+                {"id": "dup", "label": "Second", "method_id": "extended"},
+            ],
+            "models": [
+                {
+                    "id": "model_1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert duplicate_resp.status_code == 400
+    assert "Duplicate method id" in duplicate_resp.json()["detail"]
+
+    unknown_resp = client.post(
+        "/api/methods-lab/runs",
+        json={
+            "doc_ids": [doc_id],
+            "methods": [{"id": "m1", "label": "Unknown", "method_id": "does-not-exist"}],
+            "models": [
+                {
+                    "id": "model_1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert unknown_resp.status_code == 400
+    assert "Unknown method" in unknown_resp.json()["detail"]
+
+
+def test_methods_lab_requires_api_key_only_for_llm_methods(client, monkeypatch):
+    monkeypatch.setattr("server.run_method_with_metadata", lambda **kwargs: SimpleNamespace(spans=[], warnings=[]))
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    presidio_only_resp = client.post(
+        "/api/methods-lab/runs",
+        json={
+            "doc_ids": [doc_id],
+            "methods": [{"id": "m1", "label": "Presidio", "method_id": "presidio"}],
+            "models": [
+                {
+                    "id": "model_1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {"temperature": 0.0, "match_mode": "exact"},
+            "concurrency": 1,
+        },
+    )
+    assert presidio_only_resp.status_code == 200
+
+    llm_resp = client.post(
+        "/api/methods-lab/runs",
+        json={
+            "doc_ids": [doc_id],
+            "methods": [{"id": "m1", "label": "Default", "method_id": "default"}],
+            "models": [
+                {
+                    "id": "model_1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {"temperature": 0.0, "match_mode": "exact"},
+            "concurrency": 1,
+        },
+    )
+    assert llm_resp.status_code == 400
+    assert "API key required for Methods Lab runs" in llm_resp.json()["detail"]
+
+
+def test_methods_lab_marks_docs_without_manual_annotations_unavailable(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_method_with_metadata(**kwargs):
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(),
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    with_manual = _upload(client)
+    without_manual = _upload(client, filename="test-2.json")
+    assert with_manual.status_code == 200
+    assert without_manual.status_code == 200
+    manual_doc_id = with_manual.json()["id"]
+    missing_doc_id = without_manual.json()["id"]
+
+    manual_resp = client.put(
+        f"/api/documents/{manual_doc_id}/manual-annotations",
+        json=[{"start": 6, "end": 10, "label": "NAME", "text": "Anna"}],
+    )
+    assert manual_resp.status_code == 200
+
+    create_resp = client.post(
+        "/api/methods-lab/runs",
+        json={
+            "doc_ids": [manual_doc_id, missing_doc_id],
+            "methods": [{"id": "m1", "label": "Default", "method_id": "default"}],
+            "models": [
+                {
+                    "id": "model_1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+
+    final = _wait_for_methods_lab_terminal(client, run_id)
+    assert final["status"] == "completed_with_errors"
+    cell = final["matrix"]["cells"][0]
+    assert cell["completed_docs"] == 1
+    assert cell["failed_docs"] == 1
+
+    missing_detail_resp = client.get(
+        f"/api/methods-lab/runs/{run_id}/cells/model_1__m1/documents/{missing_doc_id}"
+    )
+    assert missing_detail_resp.status_code == 200
+    missing_detail = missing_detail_resp.json()
+    assert missing_detail["status"] == "unavailable"
+    assert "manual annotations" in missing_detail["error"].lower()
+
+
+def test_methods_lab_presidio_style_methods_execute_once_per_doc_and_reuse_across_models(
+    client, monkeypatch
+):
+    calls = {"count": 0}
+
+    def fake_run_method_with_metadata(**kwargs):
+        calls["count"] += 1
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=None,
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+    manual_resp = client.put(
+        f"/api/documents/{doc_id}/manual-annotations",
+        json=[{"start": 6, "end": 10, "label": "NAME", "text": "Anna"}],
+    )
+    assert manual_resp.status_code == 200
+
+    create_resp = client.post(
+        "/api/methods-lab/runs",
+        json={
+            "doc_ids": [doc_id],
+            "methods": [{"id": "m1", "label": "Presidio", "method_id": "presidio"}],
+            "models": [
+                {
+                    "id": "model_1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                },
+                {
+                    "id": "model_2",
+                    "label": "Chat",
+                    "model": "openai.gpt-5.2-chat",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                },
+            ],
+            "runtime": {"temperature": 0.0, "match_mode": "exact"},
+            "concurrency": 2,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+
+    final = _wait_for_methods_lab_terminal(client, run_id)
+    assert final["status"] == "completed"
+    assert calls["count"] == 1
+
+    detail_one = client.get(f"/api/methods-lab/runs/{run_id}/cells/model_1__m1/documents/{doc_id}")
+    detail_two = client.get(f"/api/methods-lab/runs/{run_id}/cells/model_2__m1/documents/{doc_id}")
+    assert detail_one.status_code == 200
+    assert detail_two.status_code == 200
+    assert detail_one.json()["hypothesis_spans"] == detail_two.json()["hypothesis_spans"]
+
+
+def test_methods_lab_export_import_remaps_doc_ids(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_method_with_metadata(**kwargs):
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(confidence=0.93, band="high"),
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    original_doc_id = upload_resp.json()["id"]
+    manual_resp = client.put(
+        f"/api/documents/{original_doc_id}/manual-annotations",
+        json=[{"start": 6, "end": 10, "label": "NAME", "text": "Anna"}],
+    )
+    assert manual_resp.status_code == 200
+
+    create_resp = client.post(
+        "/api/methods-lab/runs",
+        json={
+            "name": "portable-methods-run",
+            "doc_ids": [original_doc_id],
+            "methods": [{"id": "m1", "label": "Default", "method_id": "default"}],
+            "models": [
+                {
+                    "id": "model_1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    original_run_id = create_resp.json()["id"]
+    _wait_for_methods_lab_terminal(client, original_run_id)
+
+    export_resp = client.get("/api/session/export")
+    assert export_resp.status_code == 200
+    bundle = export_resp.json()
+    assert len(bundle["methods_lab_runs"]) >= 1
+
+    import_resp = client.post(
+        "/api/session/import",
+        files={
+            "file": (
+                "session_bundle.json",
+                json.dumps(bundle).encode(),
+                "application/json",
+            )
+        },
+    )
+    assert import_resp.status_code == 200
+    imported = import_resp.json()
+    assert imported["imported_methods_lab_runs"] >= 1
+    new_doc_id = imported["imported_ids"][0]
+    assert new_doc_id != original_doc_id
+
+    runs_resp = client.get("/api/methods-lab/runs")
+    assert runs_resp.status_code == 200
+    runs = runs_resp.json()["runs"]
+    imported_run = next((row for row in runs if row["id"] != original_run_id), None)
+    assert imported_run is not None
+
+    detail_resp = client.get(f"/api/methods-lab/runs/{imported_run['id']}")
     assert detail_resp.status_code == 200
     detail = detail_resp.json()
     assert new_doc_id in detail["doc_ids"]

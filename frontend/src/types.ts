@@ -212,6 +212,7 @@ export interface SessionExportBundle {
   };
   exported_at: string;
   prompt_lab_runs?: PromptLabRunExport[];
+  methods_lab_runs?: MethodsLabRunExport[];
   documents: Array<{
     source: CanonicalDocument;
     manual_annotations: CanonicalSpan[];
@@ -240,6 +241,7 @@ export interface SessionImportResult {
   imported_count: number;
   imported_ids: string[];
   imported_prompt_lab_runs?: number;
+  imported_methods_lab_runs?: number;
   skipped_count: number;
   skipped: Array<{ index: number; reason: string }>;
   warnings?: string[];
@@ -354,6 +356,33 @@ export interface PromptLabRunCreateRequest {
   concurrency: number;
 }
 
+export interface MethodsLabMethodInput {
+  id?: string;
+  label: string;
+  method_id: string;
+  method_verify_override?: boolean | null;
+}
+
+export interface MethodsLabRuntimeInput {
+  api_key?: string;
+  api_base?: string;
+  temperature: number;
+  match_mode: MatchMode;
+  label_profile?: LabelProfile;
+  label_projection?: LabelProjection;
+  chunk_mode?: "auto" | "off" | "force";
+  chunk_size_chars?: number;
+}
+
+export interface MethodsLabRunCreateRequest {
+  name?: string;
+  doc_ids: string[];
+  methods: MethodsLabMethodInput[];
+  models: PromptLabModelInput[];
+  runtime: MethodsLabRuntimeInput;
+  concurrency: number;
+}
+
 export interface PromptLabCellMicro {
   precision: number;
   recall: number;
@@ -445,6 +474,92 @@ export interface PromptLabDocResult {
 }
 
 export interface PromptLabRunExport {
+  id: string;
+  [key: string]: unknown;
+}
+
+export interface MethodsLabMatrixCellSummary {
+  id: string;
+  model_id: string;
+  model_label: string;
+  method_id: string;
+  method_label: string;
+  status: PromptLabRunStatus | "pending";
+  total_docs: number;
+  completed_docs: number;
+  failed_docs: number;
+  error_count: number;
+  micro: PromptLabCellMicro;
+  per_label: Record<
+    string,
+    {
+      precision: number;
+      recall: number;
+      f1: number;
+      tp: number;
+      fp: number;
+      fn: number;
+      support: number;
+    }
+  >;
+  mean_confidence: number | null;
+}
+
+export interface MethodsLabRunSummary {
+  id: string;
+  name: string;
+  status: PromptLabRunStatus;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  doc_count: number;
+  method_count: number;
+  model_count: number;
+  total_tasks: number;
+  completed_tasks: number;
+  failed_tasks: number;
+}
+
+export interface MethodsLabRunDetail extends MethodsLabRunSummary {
+  doc_ids: string[];
+  methods: MethodsLabMethodInput[];
+  models: PromptLabModelInput[];
+  runtime: Omit<MethodsLabRuntimeInput, "api_key"> & { api_base?: string };
+  concurrency: number;
+  warnings: string[];
+  errors: string[];
+  matrix: {
+    models: Array<{ id: string; label: string }>;
+    methods: Array<{ id: string; label: string }>;
+    cells: MethodsLabMatrixCellSummary[];
+    available_labels: string[];
+  };
+  progress: {
+    total_tasks: number;
+    completed_tasks: number;
+    failed_tasks: number;
+  };
+}
+
+export interface MethodsLabDocResult {
+  run_id: string;
+  cell_id: string;
+  doc_id: string;
+  status: "pending" | "completed" | "failed" | "unavailable";
+  error?: string | null;
+  warnings: string[];
+  reference_source_used?: "manual";
+  reference_spans: CanonicalSpan[];
+  hypothesis_spans: CanonicalSpan[];
+  metrics: MetricsResult | null;
+  llm_confidence: LLMConfidenceMetric | null;
+  transcript_text: string | null;
+  document: { id: string; filename: string | null };
+  model?: PromptLabModelInput;
+  method?: MethodsLabMethodInput;
+}
+
+export interface MethodsLabRunExport {
   id: string;
   [key: string]: unknown;
 }

@@ -1,0 +1,1489 @@
+from __future__ import annotations
+
+import copy
+import threading
+from pathlib import Path
+from typing import Any
+
+from fastapi import HTTPException
+
+
+def _server():
+    import server
+
+    return server
+
+
+def _resolve_text_file_path(path_value: str, *, context_dir: Path | None) -> Path:
+    raw_path = Path(str(path_value).strip())
+    if not raw_path.is_absolute():
+        base = context_dir or Path.cwd()
+        raw_path = (base / raw_path).resolve()
+    return raw_path
+
+
+def _load_prompt_text_from_file(path: Path) -> str:
+    if path.name == "Skills.md":
+        raise ValueError(
+            "Prompt file 'Skills.md' is not supported. Use the actual skill manifest name 'SKILL.md'."
+        )
+    if not path.exists():
+        raise ValueError(f"Prompt file not found: {path}")
+    if not path.is_file():
+        raise ValueError(f"Prompt file must be a file: {path}")
+
+    text = path.read_text()
+    if path.name == "SKILL.md":
+        lines = text.splitlines()
+        if lines and lines[0].strip() == "---":
+            closing_index = None
+            for index in range(1, len(lines)):
+                if lines[index].strip() == "---":
+                    closing_index = index
+                    break
+            if closing_index is not None:
+                text = "\n".join(lines[closing_index + 1 :])
+        text = text.strip()
+        if not text:
+            raise ValueError(f"Prompt file '{path}' resolved to empty prompt text.")
+        return text
+
+    if not text.strip():
+        raise ValueError(f"Prompt file '{path}' resolved to empty prompt text.")
+    return text
+
+
+def _resolve_prompt_variant_text(
+    *,
+    system_prompt: str | None,
+    prompt_file: str | None,
+    context_dir: Path | None,
+) -> str:
+    has_system_prompt = bool((system_prompt or "").strip())
+    has_prompt_file = bool((prompt_file or "").strip())
+    if has_system_prompt == has_prompt_file:
+        raise ValueError(
+            "Prompt variants require exactly one of system_prompt or prompt_file."
+        )
+    if has_system_prompt:
+        return str(system_prompt or "").strip()
+    prompt_path = _resolve_text_file_path(str(prompt_file or ""), context_dir=context_dir)
+    return _load_prompt_text_from_file(prompt_path)
+
+
+def prepare_prompt_lab_body(
+    body: Any,
+    *,
+    session_id: str = "default",
+    context_dir: Path | None = None,
+):
+    srv = _server()
+
+    prompt_items = []
+    for prompt in body.prompts:
+        variant_type = str(prompt.variant_type or "prompt")
+        prompt_file = getattr(prompt, "prompt_file", None)
+        if variant_type == "prompt":
+            prompt_text = _resolve_prompt_variant_text(
+                system_prompt=prompt.system_prompt,
+                prompt_file=prompt_file,
+                context_dir=context_dir,
+            )
+            prompt_items.append(
+                prompt.model_copy(
+                    update={
+                        "system_prompt": prompt_text,
+                        "prompt_file": None,
+                    }
+                )
+            )
+            continue
+        if prompt_file:
+            raise ValueError(
+                "prompt_file is only supported for variant_type='prompt'."
+            )
+        prompt_items.append(prompt)
+
+    requested_doc_ids = [
+        str(item).strip() for item in (body.doc_ids or []) if str(item).strip()
+    ]
+    if requested_doc_ids:
+        doc_ids = list(dict.fromkeys(requested_doc_ids))
+    else:
+        doc_ids = list(dict.fromkeys(srv._load_session_index(session_id)))
+
+    if not doc_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No documents found in session '{session_id}'.",
+        )
+
+    return body.model_copy(update={"doc_ids": doc_ids, "prompts": prompt_items})
+
+
+def prepare_methods_lab_body(
+    body: Any,
+    *,
+    session_id: str = "default",
+):
+    srv = _server()
+
+    requested_doc_ids = [
+        str(item).strip() for item in (body.doc_ids or []) if str(item).strip()
+    ]
+    if requested_doc_ids:
+        doc_ids = list(dict.fromkeys(requested_doc_ids))
+    else:
+        doc_ids: list[str] = []
+        for doc_id in srv._load_session_index(session_id):
+            doc = srv._load_doc(doc_id, session_id)
+            if doc is None:
+                continue
+            enriched = srv._enrich_doc(doc, session_id)
+            if enriched.manual_annotations:
+                doc_ids.append(doc_id)
+
+    if not doc_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No manual-annotated documents found in session '{session_id}'.",
+        )
+
+    return body.model_copy(update={"doc_ids": doc_ids})
+
+
+def resolve_prompt_lab_runtime(runtime: Any) -> dict[str, object]:
+    srv = _server()
+    cfg = srv._load_config()
+    api_key = (
+        runtime.api_key
+        or srv.os.environ.get("LITELLM_API_KEY", "")
+        or srv.os.environ.get("OPENAI_API_KEY", "")
+        or srv.os.environ.get("ANTHROPIC_API_KEY", "")
+        or srv.os.environ.get("GEMINI_API_KEY", "")
+        or srv.os.environ.get("GOOGLE_API_KEY", "")
+    )
+    api_base = (
+        runtime.api_base
+        or str(cfg.get("api_base", "") or "")
+        or srv.os.environ.get("LITELLM_BASE_URL", "")
+    )
+    match_mode = srv._normalize_match_mode(runtime.match_mode)
+    chunk_mode = srv._normalize_chunk_mode(runtime.chunk_mode)
+    chunk_size_chars = srv._normalize_chunk_size(runtime.chunk_size_chars)
+    label_profile = srv._normalize_label_profile(runtime.label_profile)
+    label_projection = srv._normalize_label_projection(runtime.label_projection)
+    return {
+        "api_key": api_key,
+        "api_base": api_base,
+        "temperature": runtime.temperature,
+        "match_mode": match_mode,
+        "reference_source": runtime.reference_source,
+        "fallback_reference_source": runtime.fallback_reference_source,
+        "chunk_mode": chunk_mode,
+        "chunk_size_chars": chunk_size_chars,
+        "label_profile": label_profile,
+        "label_projection": label_projection,
+    }
+
+
+def validate_prompt_lab_request(body: Any, session_id: str = "default"):
+    srv = _server()
+    if not body.doc_ids:
+        raise HTTPException(status_code=400, detail="doc_ids is required")
+    if len(body.prompts) < 1 or len(body.prompts) > srv.PROMPT_LAB_MAX_VARIANTS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Prompt variants must be between 1 and {srv.PROMPT_LAB_MAX_VARIANTS}"
+            ),
+        )
+    if len(body.models) < 1 or len(body.models) > srv.PROMPT_LAB_MAX_VARIANTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model variants must be between 1 and {srv.PROMPT_LAB_MAX_VARIANTS}",
+        )
+    if body.concurrency < 1 or body.concurrency > srv.PROMPT_LAB_MAX_VARIANTS:
+        raise HTTPException(status_code=400, detail="concurrency must be between 1 and 6")
+    if len(body.prompts) * len(body.models) > srv.PROMPT_LAB_MAX_VARIANTS * srv.PROMPT_LAB_MAX_VARIANTS:
+        raise HTTPException(status_code=400, detail="Matrix limit exceeded (max 6x6)")
+
+    known_ids = set(srv._load_session_index(session_id))
+    for doc_id in body.doc_ids:
+        if doc_id not in known_ids:
+            raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
+
+    prompt_ids_seen: set[str] = set()
+    for index, prompt in enumerate(body.prompts):
+        if not prompt.label.strip():
+            raise HTTPException(status_code=400, detail=f"Prompt label required at index {index}")
+        if prompt.variant_type == "prompt":
+            if prompt.method_verify_override is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "method_verify_override is only supported for preset variants "
+                        f"(prompt index {index})"
+                    ),
+                )
+            if prompt.preset_method_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "preset_method_id is only supported for preset variants "
+                        f"(prompt index {index})"
+                    ),
+                )
+            prompt_text = (prompt.system_prompt or "").strip()
+            if not prompt_text:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"system_prompt required at prompt index {index}",
+                )
+            if "{" in prompt_text or "}" in prompt_text:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Prompt variants must be plain system prompt text "
+                        "(templating is not supported)"
+                    ),
+                )
+        elif prompt.variant_type == "preset":
+            method_id = (prompt.preset_method_id or "").strip()
+            if not method_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "preset_method_id required for preset variant "
+                        f"at prompt index {index}"
+                    ),
+                )
+            if method_id not in srv.PROMPT_LAB_ALLOWED_PRESET_METHODS:
+                allowed = ", ".join(sorted(srv.PROMPT_LAB_ALLOWED_PRESET_METHODS))
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"preset_method_id '{method_id}' is not allowed in Prompt Lab. "
+                        f"Allowed presets: {allowed}"
+                    ),
+                )
+            if method_id not in srv.METHOD_DEFINITION_BY_ID:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown preset method: {method_id}",
+                )
+        prompt_id = (prompt.id or "").strip() or f"prompt_{index + 1}"
+        if prompt_id in prompt_ids_seen:
+            raise HTTPException(status_code=400, detail=f"Duplicate prompt id: {prompt_id}")
+        prompt_ids_seen.add(prompt_id)
+
+    model_ids_seen: set[str] = set()
+    for index, model in enumerate(body.models):
+        if not model.label.strip():
+            raise HTTPException(status_code=400, detail=f"Model label required at index {index}")
+        if not model.model.strip():
+            raise HTTPException(status_code=400, detail=f"model required at index {index}")
+        model_id = (model.id or "").strip() or f"model_{index + 1}"
+        if model_id in model_ids_seen:
+            raise HTTPException(status_code=400, detail=f"Duplicate model id: {model_id}")
+        model_ids_seen.add(model_id)
+
+
+def _resolve_prompt_lab_reference(
+    doc: Any,
+    reference_source: str,
+    fallback_reference_source: str,
+) -> tuple[str, list[Any]]:
+    primary = doc.manual_annotations if reference_source == "manual" else doc.pre_annotations
+    if primary:
+        return reference_source, primary
+    fallback = doc.manual_annotations if fallback_reference_source == "manual" else doc.pre_annotations
+    return fallback_reference_source, fallback
+
+
+def initialize_prompt_lab_run(
+    body: Any,
+    session_id: str,
+    runtime: dict[str, object],
+) -> dict:
+    srv = _server()
+    run_id = str(srv.uuid.uuid4())[:8]
+    now = srv._now_iso()
+    prompts: list[dict] = []
+    models: list[dict] = []
+    for index, item in enumerate(body.prompts):
+        prompt_id = (item.id or "").strip() or f"prompt_{index + 1}"
+        variant_type = str(item.variant_type or "prompt")
+        preset_method_id = (
+            (item.preset_method_id or "").strip() if item.preset_method_id else None
+        )
+        prompts.append(
+            {
+                "id": prompt_id,
+                "label": item.label.strip(),
+                "variant_type": variant_type,
+                "system_prompt": item.system_prompt if variant_type == "prompt" else None,
+                "preset_method_id": preset_method_id if variant_type == "preset" else None,
+                "method_verify_override": (
+                    bool(item.method_verify_override)
+                    if item.method_verify_override is not None
+                    else None
+                ),
+            }
+        )
+    for index, item in enumerate(body.models):
+        model_id = (item.id or "").strip() or f"model_{index + 1}"
+        models.append(
+            {
+                "id": model_id,
+                "label": item.label.strip(),
+                "model": item.model.strip(),
+                "reasoning_effort": item.reasoning_effort,
+                "anthropic_thinking": bool(item.anthropic_thinking),
+                "anthropic_thinking_budget_tokens": item.anthropic_thinking_budget_tokens,
+            }
+        )
+
+    cells: dict[str, dict] = {}
+    for model in models:
+        for prompt in prompts:
+            cell_id = f"{model['id']}__{prompt['id']}"
+            cells[cell_id] = {
+                "id": cell_id,
+                "model_id": model["id"],
+                "model_label": model["label"],
+                "prompt_id": prompt["id"],
+                "prompt_label": prompt["label"],
+                "documents": {
+                    doc_id: {"status": "pending", "updated_at": now} for doc_id in body.doc_ids
+                },
+            }
+
+    return {
+        "id": run_id,
+        "name": (body.name or "").strip() or f"Prompt Lab {now}",
+        "status": "queued",
+        "created_at": now,
+        "started_at": None,
+        "finished_at": None,
+        "doc_ids": list(dict.fromkeys(body.doc_ids)),
+        "prompts": prompts,
+        "models": models,
+        "runtime": {
+            "temperature": runtime["temperature"],
+            "match_mode": runtime["match_mode"],
+            "reference_source": runtime["reference_source"],
+            "fallback_reference_source": runtime["fallback_reference_source"],
+            "label_profile": runtime["label_profile"],
+            "label_projection": runtime["label_projection"],
+            "api_base": runtime["api_base"],
+            "chunk_mode": runtime["chunk_mode"],
+            "chunk_size_chars": runtime["chunk_size_chars"],
+        },
+        "concurrency": body.concurrency,
+        "warnings": [],
+        "errors": [],
+        "cells": cells,
+        "session_id": session_id,
+    }
+
+
+def _build_prompt_lab_cell_summary(cell: dict, total_docs: int) -> dict:
+    srv = _server()
+    docs_raw = cell.get("documents", {})
+    documents = docs_raw if isinstance(docs_raw, dict) else {}
+    completed_docs = 0
+    failed_docs = 0
+    tp = 0
+    fp = 0
+    fn = 0
+    confidence_values: list[float] = []
+    per_label_counts: dict[str, dict[str, int]] = {}
+
+    for result in documents.values():
+        if not isinstance(result, dict):
+            continue
+        status = str(result.get("status", "pending"))
+        if status == "completed":
+            completed_docs += 1
+            metrics = result.get("metrics", {})
+            if isinstance(metrics, dict):
+                micro = metrics.get("micro", {})
+                if isinstance(micro, dict):
+                    tp += int(micro.get("tp", 0))
+                    fp += int(micro.get("fp", 0))
+                    fn += int(micro.get("fn", 0))
+                per_label = metrics.get("per_label", {})
+                if isinstance(per_label, dict):
+                    for label, label_metrics in per_label.items():
+                        if not isinstance(label_metrics, dict):
+                            continue
+                        aggregate = per_label_counts.setdefault(
+                            str(label),
+                            {"tp": 0, "fp": 0, "fn": 0, "support": 0},
+                        )
+                        label_tp = int(label_metrics.get("tp", 0))
+                        label_fp = int(label_metrics.get("fp", 0))
+                        label_fn = int(label_metrics.get("fn", 0))
+                        aggregate["tp"] += label_tp
+                        aggregate["fp"] += label_fp
+                        aggregate["fn"] += label_fn
+                        aggregate["support"] += int(
+                            label_metrics.get("support", label_tp + label_fn)
+                        )
+            llm_confidence = result.get("llm_confidence")
+            if isinstance(llm_confidence, dict):
+                conf = srv._safe_float(llm_confidence.get("confidence"))
+                if conf is not None:
+                    confidence_values.append(conf)
+            continue
+        if status in {"failed", "unavailable"}:
+            failed_docs += 1
+
+    processed = completed_docs + failed_docs
+    micro = srv._prf_from_counts(tp, fp, fn) if completed_docs > 0 else srv._prf_from_counts(0, 0, 0)
+    if processed == 0:
+        status = "pending"
+    elif processed < total_docs:
+        status = "running"
+    elif failed_docs > 0:
+        status = "completed_with_errors"
+    else:
+        status = "completed"
+
+    per_label_summary: dict[str, dict[str, float | int]] = {}
+    for label, counts in sorted(per_label_counts.items()):
+        label_prf = srv._prf_from_counts(counts["tp"], counts["fp"], counts["fn"])
+        per_label_summary[label] = {
+            **label_prf,
+            "support": counts["support"],
+        }
+
+    return {
+        "id": cell.get("id"),
+        "model_id": cell.get("model_id"),
+        "model_label": cell.get("model_label"),
+        "prompt_id": cell.get("prompt_id"),
+        "prompt_label": cell.get("prompt_label"),
+        "status": status,
+        "total_docs": total_docs,
+        "completed_docs": completed_docs,
+        "failed_docs": failed_docs,
+        "error_count": failed_docs,
+        "micro": micro,
+        "per_label": per_label_summary,
+        "mean_confidence": (
+            sum(confidence_values) / len(confidence_values) if confidence_values else None
+        ),
+    }
+
+
+def build_prompt_lab_matrix(run: dict) -> dict:
+    total_docs = len(run.get("doc_ids", []))
+    prompts = run.get("prompts", [])
+    models = run.get("models", [])
+    cells_raw = run.get("cells", {})
+    cells_dict = cells_raw if isinstance(cells_raw, dict) else {}
+    summaries: list[dict] = []
+    available_labels: set[str] = set()
+    for model in models:
+        model_id = str(model.get("id", ""))
+        for prompt in prompts:
+            prompt_id = str(prompt.get("id", ""))
+            cell_id = f"{model_id}__{prompt_id}"
+            cell = cells_dict.get(cell_id)
+            if not isinstance(cell, dict):
+                cell = {
+                    "id": cell_id,
+                    "model_id": model_id,
+                    "model_label": model.get("label", model_id),
+                    "prompt_id": prompt_id,
+                    "prompt_label": prompt.get("label", prompt_id),
+                    "documents": {},
+                }
+            summary = _build_prompt_lab_cell_summary(cell, total_docs)
+            per_label = summary.get("per_label", {})
+            if isinstance(per_label, dict):
+                available_labels.update(str(label) for label in per_label.keys())
+            summaries.append(summary)
+    return {
+        "models": [
+            {"id": str(item.get("id", "")), "label": str(item.get("label", ""))}
+            for item in models
+        ],
+        "prompts": [
+            {"id": str(item.get("id", "")), "label": str(item.get("label", ""))}
+            for item in prompts
+        ],
+        "cells": summaries,
+        "available_labels": sorted(available_labels),
+    }
+
+
+def build_prompt_lab_run_summary(run: dict) -> dict:
+    matrix = build_prompt_lab_matrix(run)
+    cells = matrix["cells"]
+    completed = 0
+    failed = 0
+    total = len(run.get("doc_ids", [])) * len(run.get("models", [])) * len(run.get("prompts", []))
+    for cell in cells:
+        completed += int(cell.get("completed_docs", 0)) + int(cell.get("failed_docs", 0))
+        failed += int(cell.get("failed_docs", 0))
+    return {
+        "id": run.get("id"),
+        "name": run.get("name"),
+        "status": run.get("status"),
+        "created_at": run.get("created_at"),
+        "started_at": run.get("started_at"),
+        "finished_at": run.get("finished_at"),
+        "doc_count": len(run.get("doc_ids", [])),
+        "prompt_count": len(run.get("prompts", [])),
+        "model_count": len(run.get("models", [])),
+        "total_tasks": total,
+        "completed_tasks": completed,
+        "failed_tasks": failed,
+    }
+
+
+def build_prompt_lab_run_detail(run: dict) -> dict:
+    srv = _server()
+    summary = build_prompt_lab_run_summary(run)
+    matrix = build_prompt_lab_matrix(run)
+    runtime_raw = run.get("runtime", {})
+    runtime = runtime_raw if isinstance(runtime_raw, dict) else {}
+    return {
+        **summary,
+        "doc_ids": run.get("doc_ids", []),
+        "prompts": run.get("prompts", []),
+        "models": run.get("models", []),
+        "runtime": {
+            "temperature": runtime.get("temperature", 0.0),
+            "match_mode": runtime.get("match_mode", "exact"),
+            "reference_source": runtime.get("reference_source", "manual"),
+            "fallback_reference_source": runtime.get("fallback_reference_source", "pre"),
+            "label_profile": runtime.get("label_profile", "simple"),
+            "label_projection": runtime.get("label_projection", "native"),
+            "api_base": runtime.get("api_base", ""),
+            "chunk_mode": runtime.get("chunk_mode", "auto"),
+            "chunk_size_chars": runtime.get("chunk_size_chars", srv.DEFAULT_CHUNK_SIZE_CHARS),
+        },
+        "concurrency": run.get("concurrency", srv.PROMPT_LAB_DEFAULT_CONCURRENCY),
+        "warnings": run.get("warnings", []),
+        "errors": run.get("errors", []),
+        "matrix": matrix,
+        "progress": {
+            "total_tasks": summary["total_tasks"],
+            "completed_tasks": summary["completed_tasks"],
+            "failed_tasks": summary["failed_tasks"],
+        },
+    }
+
+
+def run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]):
+    srv = _server()
+    api_key = str(runtime["api_key"])
+    api_base = str(runtime["api_base"])
+    temperature = float(runtime["temperature"])
+    match_mode = str(runtime["match_mode"])
+    reference_source = str(runtime["reference_source"])
+    fallback_reference_source = str(runtime["fallback_reference_source"])
+    label_profile = str(runtime["label_profile"])
+    label_projection = srv._normalize_label_projection(runtime.get("label_projection", "native"))
+    chunk_mode = str(runtime["chunk_mode"])
+    chunk_size_chars = int(runtime["chunk_size_chars"])
+
+    with srv._prompt_lab_lock:
+        run = srv._load_prompt_lab_run(run_id, session_id)
+        if run is None:
+            return
+        run["status"] = "running"
+        run["started_at"] = srv._now_iso()
+        srv._save_prompt_lab_run(run, session_id)
+
+    tasks: list[tuple[str, str, str]] = []
+    for model in run.get("models", []):
+        for prompt in run.get("prompts", []):
+            cell_id = f"{model['id']}__{prompt['id']}"
+            for doc_id in run.get("doc_ids", []):
+                tasks.append((cell_id, str(doc_id), str(model["id"])))
+
+    model_by_id = {str(model["id"]): model for model in run.get("models", [])}
+    prompt_by_id = {str(prompt["id"]): prompt for prompt in run.get("prompts", [])}
+
+    def _execute_task(cell_id: str, doc_id: str, model_id: str) -> tuple[str, str, dict]:
+        cell = run.get("cells", {}).get(cell_id, {})
+        if not isinstance(cell, dict):
+            return cell_id, doc_id, {"status": "failed", "error": f"Unknown cell '{cell_id}'"}
+        prompt_id = str(cell.get("prompt_id", ""))
+        prompt = prompt_by_id.get(prompt_id)
+        model = model_by_id.get(model_id)
+        if prompt is None or model is None:
+            return cell_id, doc_id, {"status": "failed", "error": "Invalid model/prompt mapping"}
+
+        doc = srv._load_doc(doc_id, session_id)
+        if doc is None:
+            return cell_id, doc_id, {"status": "unavailable", "error": "Document no longer exists"}
+        enriched = srv._enrich_doc(doc, session_id)
+        try:
+            variant_type = str(prompt.get("variant_type") or "prompt")
+            if variant_type == "preset":
+                preset_method_id = str(prompt.get("preset_method_id") or "").strip()
+                if not preset_method_id:
+                    raise ValueError("preset_method_id is required for preset variants.")
+                method_verify_override = prompt.get("method_verify_override")
+                if not isinstance(method_verify_override, bool):
+                    method_verify_override = None
+
+                (
+                    hypothesis_spans,
+                    warnings,
+                    llm_confidence,
+                    _chunk_diagnostics,
+                ) = srv._run_method_for_document(
+                    doc=enriched,
+                    method_id=preset_method_id,
+                    api_key=api_key or None,
+                    api_base=api_base or None,
+                    model=str(model["model"]),
+                    system_prompt="",
+                    temperature=temperature,
+                    reasoning_effort=str(model["reasoning_effort"]),
+                    anthropic_thinking=bool(model["anthropic_thinking"]),
+                    anthropic_thinking_budget_tokens=model["anthropic_thinking_budget_tokens"],
+                    method_verify=method_verify_override,
+                    label_profile=label_profile,  # type: ignore[arg-type]
+                    chunk_mode=chunk_mode,
+                    chunk_size_chars=chunk_size_chars,
+                )
+            else:
+                requested_system_prompt = str(prompt.get("system_prompt") or "").strip()
+                if not requested_system_prompt:
+                    raise ValueError("system_prompt is required for prompt variants.")
+                (
+                    hypothesis_spans,
+                    warnings,
+                    llm_confidence,
+                    _chunk_diagnostics,
+                ) = srv._run_llm_for_document(
+                    doc=enriched,
+                    api_key=api_key,
+                    api_base=api_base or None,
+                    model=str(model["model"]),
+                    system_prompt=requested_system_prompt,
+                    temperature=temperature,
+                    reasoning_effort=str(model["reasoning_effort"]),
+                    anthropic_thinking=bool(model["anthropic_thinking"]),
+                    anthropic_thinking_budget_tokens=model["anthropic_thinking_budget_tokens"],
+                    label_profile=label_profile,  # type: ignore[arg-type]
+                    chunk_mode=chunk_mode,
+                    chunk_size_chars=chunk_size_chars,
+                )
+
+            resolved_reference_source, reference_spans = _resolve_prompt_lab_reference(
+                enriched,
+                reference_source,
+                fallback_reference_source,
+            )
+            projected_reference, projected_hypothesis = srv._apply_label_projection(
+                reference_spans,
+                hypothesis_spans,
+                label_projection=label_projection,  # type: ignore[arg-type]
+            )
+            metrics = srv._serialize_metrics_payload(
+                srv.compute_metrics(projected_reference, projected_hypothesis, match_mode)
+            )
+            return cell_id, doc_id, {
+                "status": "completed",
+                "reference_source_used": resolved_reference_source,
+                "reference_spans": [span.model_dump() for span in reference_spans],
+                "hypothesis_spans": [span.model_dump() for span in hypothesis_spans],
+                "metrics": metrics,
+                "warnings": warnings,
+                "llm_confidence": llm_confidence.model_dump() if llm_confidence else None,
+                "updated_at": srv._now_iso(),
+                "filename": enriched.filename,
+            }
+        except Exception as exc:
+            message = str(exc).strip() or exc.__class__.__name__
+            if len(message) > 800:
+                message = f"{message[:800]}..."
+            return cell_id, doc_id, {
+                "status": "failed",
+                "error": message,
+                "updated_at": srv._now_iso(),
+                "filename": enriched.filename,
+            }
+
+    try:
+        with srv.ThreadPoolExecutor(max_workers=int(run.get("concurrency", 1))) as executor:
+            future_map = {
+                executor.submit(_execute_task, cell_id, doc_id, model_id): (cell_id, doc_id)
+                for cell_id, doc_id, model_id in tasks
+            }
+            for future in srv.as_completed(future_map):
+                cell_id, doc_id = future_map[future]
+                try:
+                    _, _, result = future.result()
+                except Exception as exc:
+                    result = {
+                        "status": "failed",
+                        "error": str(exc),
+                        "updated_at": srv._now_iso(),
+                    }
+                with srv._prompt_lab_lock:
+                    latest = srv._load_prompt_lab_run(run_id, session_id)
+                    if latest is None:
+                        continue
+                    cells = latest.get("cells", {})
+                    if isinstance(cells, dict) and isinstance(cells.get(cell_id), dict):
+                        cells[cell_id]["documents"][doc_id] = result
+                    srv._save_prompt_lab_run(latest, session_id)
+    except Exception as exc:
+        with srv._prompt_lab_lock:
+            latest = srv._load_prompt_lab_run(run_id, session_id)
+            if latest is not None:
+                latest["status"] = "failed"
+                latest["finished_at"] = srv._now_iso()
+                errors = latest.get("errors", [])
+                if not isinstance(errors, list):
+                    errors = []
+                errors.append(f"Prompt Lab run failed: {exc}")
+                latest["errors"] = errors
+                srv._save_prompt_lab_run(latest, session_id)
+        return
+
+    with srv._prompt_lab_lock:
+        latest = srv._load_prompt_lab_run(run_id, session_id)
+        if latest is None:
+            return
+        summary = build_prompt_lab_run_summary(latest)
+        latest["status"] = (
+            "completed_with_errors"
+            if int(summary.get("failed_tasks", 0)) > 0
+            else "completed"
+        )
+        latest["finished_at"] = srv._now_iso()
+        srv._save_prompt_lab_run(latest, session_id)
+
+
+def create_prompt_lab_run(
+    body: Any,
+    *,
+    session_id: str = "default",
+    context_dir: Path | None = None,
+    run_async: bool = False,
+) -> dict:
+    srv = _server()
+    prepared = prepare_prompt_lab_body(body, session_id=session_id, context_dir=context_dir)
+    validate_prompt_lab_request(prepared, session_id)
+    runtime = resolve_prompt_lab_runtime(prepared.runtime)
+    api_key = str(runtime["api_key"])
+    api_base = str(runtime["api_base"])
+    requires_llm = False
+    for prompt in prepared.prompts:
+        if prompt.variant_type == "prompt":
+            requires_llm = True
+            break
+        preset_method = srv.METHOD_DEFINITION_BY_ID.get(str(prompt.preset_method_id or ""))
+        if preset_method and bool(preset_method.get("uses_llm")):
+            requires_llm = True
+            break
+
+    if requires_llm:
+        if not api_key:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "API key required for Prompt Lab runs. Set LITELLM_API_KEY "
+                    "or provide runtime.api_key in request."
+                ),
+            )
+        for model in prepared.models:
+            srv._validate_gateway_model_access(model=model.model, api_base=api_base, api_key=api_key)
+
+    with srv._prompt_lab_lock:
+        run = initialize_prompt_lab_run(prepared, session_id, runtime)
+        ids = srv._load_prompt_lab_index(session_id)
+        ids.append(str(run["id"]))
+        srv._save_prompt_lab_run(run, session_id)
+        srv._save_prompt_lab_index(session_id)
+
+    if run_async:
+        worker = threading.Thread(
+            target=run_prompt_lab_job,
+            args=(str(run["id"]), session_id, runtime),
+            daemon=True,
+        )
+        worker.start()
+        return build_prompt_lab_run_detail(run)
+
+    run_prompt_lab_job(str(run["id"]), session_id, runtime)
+    latest = srv._load_prompt_lab_run(str(run["id"]), session_id)
+    if latest is None:
+        raise RuntimeError("Prompt Lab run disappeared before completion.")
+    return build_prompt_lab_run_detail(latest)
+
+
+def resolve_methods_lab_runtime(runtime: Any) -> dict[str, object]:
+    srv = _server()
+    cfg = srv._load_config()
+    api_key = (
+        runtime.api_key
+        or srv.os.environ.get("LITELLM_API_KEY", "")
+        or srv.os.environ.get("OPENAI_API_KEY", "")
+        or srv.os.environ.get("ANTHROPIC_API_KEY", "")
+        or srv.os.environ.get("GEMINI_API_KEY", "")
+        or srv.os.environ.get("GOOGLE_API_KEY", "")
+    )
+    api_base = (
+        runtime.api_base
+        or str(cfg.get("api_base", "") or "")
+        or srv.os.environ.get("LITELLM_BASE_URL", "")
+    )
+    match_mode = srv._normalize_match_mode(runtime.match_mode)
+    chunk_mode = srv._normalize_chunk_mode(runtime.chunk_mode)
+    chunk_size_chars = srv._normalize_chunk_size(runtime.chunk_size_chars)
+    label_profile = srv._normalize_label_profile(runtime.label_profile)
+    label_projection = srv._normalize_label_projection(runtime.label_projection)
+    return {
+        "api_key": api_key,
+        "api_base": api_base,
+        "temperature": runtime.temperature,
+        "match_mode": match_mode,
+        "chunk_mode": chunk_mode,
+        "chunk_size_chars": chunk_size_chars,
+        "label_profile": label_profile,
+        "label_projection": label_projection,
+    }
+
+
+def validate_methods_lab_request(body: Any, session_id: str = "default"):
+    srv = _server()
+    if not body.doc_ids:
+        raise HTTPException(status_code=400, detail="doc_ids is required")
+    if len(body.methods) < 1 or len(body.methods) > srv.METHODS_LAB_MAX_METHOD_VARIANTS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Method variants must be between 1 and "
+                f"{srv.METHODS_LAB_MAX_METHOD_VARIANTS}"
+            ),
+        )
+    if len(body.models) < 1 or len(body.models) > srv.PROMPT_LAB_MAX_VARIANTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model variants must be between 1 and {srv.PROMPT_LAB_MAX_VARIANTS}",
+        )
+    if body.concurrency < 1 or body.concurrency > srv.PROMPT_LAB_MAX_VARIANTS:
+        raise HTTPException(status_code=400, detail="concurrency must be between 1 and 6")
+
+    known_ids = set(srv._load_session_index(session_id))
+    for doc_id in body.doc_ids:
+        if doc_id not in known_ids:
+            raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
+
+    method_ids_seen: set[str] = set()
+    for index, method in enumerate(body.methods):
+        if not method.label.strip():
+            raise HTTPException(status_code=400, detail=f"Method label required at index {index}")
+        method_variant_id = (method.id or "").strip() or f"method_{index + 1}"
+        if method_variant_id in method_ids_seen:
+            raise HTTPException(status_code=400, detail=f"Duplicate method id: {method_variant_id}")
+        method_ids_seen.add(method_variant_id)
+
+        method_id = (method.method_id or "").strip()
+        if not method_id:
+            raise HTTPException(status_code=400, detail=f"method_id required at index {index}")
+        definition = srv.METHOD_DEFINITION_BY_ID.get(method_id)
+        if definition is None:
+            raise HTTPException(status_code=400, detail=f"Unknown method: {method_id}")
+        if (
+            method.method_verify_override is not None
+            and not bool(definition.get("supports_verify_override"))
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"method_verify_override is not supported for method '{method_id}' "
+                    f"(method index {index})"
+                ),
+            )
+
+    model_ids_seen: set[str] = set()
+    for index, model in enumerate(body.models):
+        if not model.label.strip():
+            raise HTTPException(status_code=400, detail=f"Model label required at index {index}")
+        if not model.model.strip():
+            raise HTTPException(status_code=400, detail=f"model required at index {index}")
+        model_id = (model.id or "").strip() or f"model_{index + 1}"
+        if model_id in model_ids_seen:
+            raise HTTPException(status_code=400, detail=f"Duplicate model id: {model_id}")
+        model_ids_seen.add(model_id)
+
+
+def initialize_methods_lab_run(
+    body: Any,
+    session_id: str,
+    runtime: dict[str, object],
+) -> dict:
+    srv = _server()
+    run_id = str(srv.uuid.uuid4())[:8]
+    now = srv._now_iso()
+    methods: list[dict] = []
+    models: list[dict] = []
+    for index, item in enumerate(body.methods):
+        method_variant_id = (item.id or "").strip() or f"method_{index + 1}"
+        methods.append(
+            {
+                "id": method_variant_id,
+                "label": item.label.strip(),
+                "method_id": item.method_id.strip(),
+                "method_verify_override": (
+                    bool(item.method_verify_override)
+                    if item.method_verify_override is not None
+                    else None
+                ),
+            }
+        )
+    for index, item in enumerate(body.models):
+        model_id = (item.id or "").strip() or f"model_{index + 1}"
+        models.append(
+            {
+                "id": model_id,
+                "label": item.label.strip(),
+                "model": item.model.strip(),
+                "reasoning_effort": item.reasoning_effort,
+                "anthropic_thinking": bool(item.anthropic_thinking),
+                "anthropic_thinking_budget_tokens": item.anthropic_thinking_budget_tokens,
+            }
+        )
+
+    cells: dict[str, dict] = {}
+    for model in models:
+        for method in methods:
+            cell_id = f"{model['id']}__{method['id']}"
+            cells[cell_id] = {
+                "id": cell_id,
+                "model_id": model["id"],
+                "model_label": model["label"],
+                "method_id": method["id"],
+                "method_label": method["label"],
+                "documents": {
+                    doc_id: {"status": "pending", "updated_at": now} for doc_id in body.doc_ids
+                },
+            }
+
+    return {
+        "id": run_id,
+        "name": (body.name or "").strip() or f"Methods Lab {now}",
+        "status": "queued",
+        "created_at": now,
+        "started_at": None,
+        "finished_at": None,
+        "doc_ids": list(dict.fromkeys(body.doc_ids)),
+        "methods": methods,
+        "models": models,
+        "runtime": {
+            "temperature": runtime["temperature"],
+            "match_mode": runtime["match_mode"],
+            "label_profile": runtime["label_profile"],
+            "label_projection": runtime["label_projection"],
+            "api_base": runtime["api_base"],
+            "chunk_mode": runtime["chunk_mode"],
+            "chunk_size_chars": runtime["chunk_size_chars"],
+        },
+        "concurrency": body.concurrency,
+        "warnings": [],
+        "errors": [],
+        "cells": cells,
+        "session_id": session_id,
+    }
+
+
+def _build_methods_lab_cell_summary(cell: dict, total_docs: int) -> dict:
+    srv = _server()
+    docs_raw = cell.get("documents", {})
+    documents = docs_raw if isinstance(docs_raw, dict) else {}
+    completed_docs = 0
+    failed_docs = 0
+    tp = 0
+    fp = 0
+    fn = 0
+    confidence_values: list[float] = []
+    per_label_counts: dict[str, dict[str, int]] = {}
+
+    for result in documents.values():
+        if not isinstance(result, dict):
+            continue
+        status = str(result.get("status", "pending"))
+        if status == "completed":
+            completed_docs += 1
+            metrics = result.get("metrics", {})
+            if isinstance(metrics, dict):
+                micro = metrics.get("micro", {})
+                if isinstance(micro, dict):
+                    tp += int(micro.get("tp", 0))
+                    fp += int(micro.get("fp", 0))
+                    fn += int(micro.get("fn", 0))
+                per_label = metrics.get("per_label", {})
+                if isinstance(per_label, dict):
+                    for label, label_metrics in per_label.items():
+                        if not isinstance(label_metrics, dict):
+                            continue
+                        aggregate = per_label_counts.setdefault(
+                            str(label),
+                            {"tp": 0, "fp": 0, "fn": 0, "support": 0},
+                        )
+                        label_tp = int(label_metrics.get("tp", 0))
+                        label_fp = int(label_metrics.get("fp", 0))
+                        label_fn = int(label_metrics.get("fn", 0))
+                        aggregate["tp"] += label_tp
+                        aggregate["fp"] += label_fp
+                        aggregate["fn"] += label_fn
+                        aggregate["support"] += int(
+                            label_metrics.get("support", label_tp + label_fn)
+                        )
+            llm_confidence = result.get("llm_confidence")
+            if isinstance(llm_confidence, dict):
+                conf = srv._safe_float(llm_confidence.get("confidence"))
+                if conf is not None:
+                    confidence_values.append(conf)
+            continue
+        if status in {"failed", "unavailable"}:
+            failed_docs += 1
+
+    processed = completed_docs + failed_docs
+    micro = srv._prf_from_counts(tp, fp, fn) if completed_docs > 0 else srv._prf_from_counts(0, 0, 0)
+    if processed == 0:
+        status = "pending"
+    elif processed < total_docs:
+        status = "running"
+    elif failed_docs > 0:
+        status = "completed_with_errors"
+    else:
+        status = "completed"
+
+    per_label_summary: dict[str, dict[str, float | int]] = {}
+    for label, counts in sorted(per_label_counts.items()):
+        label_prf = srv._prf_from_counts(counts["tp"], counts["fp"], counts["fn"])
+        per_label_summary[label] = {
+            **label_prf,
+            "support": counts["support"],
+        }
+
+    return {
+        "id": cell.get("id"),
+        "model_id": cell.get("model_id"),
+        "model_label": cell.get("model_label"),
+        "method_id": cell.get("method_id"),
+        "method_label": cell.get("method_label"),
+        "status": status,
+        "total_docs": total_docs,
+        "completed_docs": completed_docs,
+        "failed_docs": failed_docs,
+        "error_count": failed_docs,
+        "micro": micro,
+        "per_label": per_label_summary,
+        "mean_confidence": (
+            sum(confidence_values) / len(confidence_values) if confidence_values else None
+        ),
+    }
+
+
+def build_methods_lab_matrix(run: dict) -> dict:
+    total_docs = len(run.get("doc_ids", []))
+    methods = run.get("methods", [])
+    models = run.get("models", [])
+    cells_raw = run.get("cells", {})
+    cells_dict = cells_raw if isinstance(cells_raw, dict) else {}
+    summaries: list[dict] = []
+    available_labels: set[str] = set()
+    for model in models:
+        model_id = str(model.get("id", ""))
+        for method in methods:
+            method_variant_id = str(method.get("id", ""))
+            cell_id = f"{model_id}__{method_variant_id}"
+            cell = cells_dict.get(cell_id)
+            if not isinstance(cell, dict):
+                cell = {
+                    "id": cell_id,
+                    "model_id": model_id,
+                    "model_label": model.get("label", model_id),
+                    "method_id": method_variant_id,
+                    "method_label": method.get("label", method_variant_id),
+                    "documents": {},
+                }
+            summary = _build_methods_lab_cell_summary(cell, total_docs)
+            per_label = summary.get("per_label", {})
+            if isinstance(per_label, dict):
+                available_labels.update(str(label) for label in per_label.keys())
+            summaries.append(summary)
+    return {
+        "models": [
+            {"id": str(item.get("id", "")), "label": str(item.get("label", ""))}
+            for item in models
+        ],
+        "methods": [
+            {"id": str(item.get("id", "")), "label": str(item.get("label", ""))}
+            for item in methods
+        ],
+        "cells": summaries,
+        "available_labels": sorted(available_labels),
+    }
+
+
+def build_methods_lab_run_summary(run: dict) -> dict:
+    matrix = build_methods_lab_matrix(run)
+    cells = matrix["cells"]
+    completed = 0
+    failed = 0
+    total = len(run.get("doc_ids", [])) * len(run.get("models", [])) * len(run.get("methods", []))
+    for cell in cells:
+        completed += int(cell.get("completed_docs", 0)) + int(cell.get("failed_docs", 0))
+        failed += int(cell.get("failed_docs", 0))
+    return {
+        "id": run.get("id"),
+        "name": run.get("name"),
+        "status": run.get("status"),
+        "created_at": run.get("created_at"),
+        "started_at": run.get("started_at"),
+        "finished_at": run.get("finished_at"),
+        "doc_count": len(run.get("doc_ids", [])),
+        "method_count": len(run.get("methods", [])),
+        "model_count": len(run.get("models", [])),
+        "total_tasks": total,
+        "completed_tasks": completed,
+        "failed_tasks": failed,
+    }
+
+
+def build_methods_lab_run_detail(run: dict) -> dict:
+    srv = _server()
+    summary = build_methods_lab_run_summary(run)
+    matrix = build_methods_lab_matrix(run)
+    runtime_raw = run.get("runtime", {})
+    runtime = runtime_raw if isinstance(runtime_raw, dict) else {}
+    return {
+        **summary,
+        "doc_ids": run.get("doc_ids", []),
+        "methods": run.get("methods", []),
+        "models": run.get("models", []),
+        "runtime": {
+            "temperature": runtime.get("temperature", 0.0),
+            "match_mode": runtime.get("match_mode", "exact"),
+            "label_profile": runtime.get("label_profile", "simple"),
+            "label_projection": runtime.get("label_projection", "native"),
+            "api_base": runtime.get("api_base", ""),
+            "chunk_mode": runtime.get("chunk_mode", "auto"),
+            "chunk_size_chars": runtime.get("chunk_size_chars", srv.DEFAULT_CHUNK_SIZE_CHARS),
+        },
+        "concurrency": run.get("concurrency", srv.METHODS_LAB_DEFAULT_CONCURRENCY),
+        "warnings": run.get("warnings", []),
+        "errors": run.get("errors", []),
+        "matrix": matrix,
+        "progress": {
+            "total_tasks": summary["total_tasks"],
+            "completed_tasks": summary["completed_tasks"],
+            "failed_tasks": summary["failed_tasks"],
+        },
+    }
+
+
+def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]):
+    srv = _server()
+    api_key = str(runtime["api_key"])
+    api_base = str(runtime["api_base"])
+    temperature = float(runtime["temperature"])
+    match_mode = str(runtime["match_mode"])
+    label_profile = str(runtime["label_profile"])
+    label_projection = srv._normalize_label_projection(runtime.get("label_projection", "native"))
+    chunk_mode = str(runtime["chunk_mode"])
+    chunk_size_chars = int(runtime["chunk_size_chars"])
+
+    with srv._methods_lab_lock:
+        run = srv._load_methods_lab_run(run_id, session_id)
+        if run is None:
+            return
+        run["status"] = "running"
+        run["started_at"] = srv._now_iso()
+        srv._save_methods_lab_run(run, session_id)
+
+    models = run.get("models", [])
+    methods = run.get("methods", [])
+    doc_ids = run.get("doc_ids", [])
+    model_by_id = {str(model["id"]): model for model in models if isinstance(model, dict)}
+    method_by_variant_id = {
+        str(method["id"]): method for method in methods if isinstance(method, dict)
+    }
+    all_model_ids = [str(model.get("id", "")) for model in models if isinstance(model, dict)]
+
+    tasks: list[tuple[str, str, str | None]] = []
+    for method in methods:
+        if not isinstance(method, dict):
+            continue
+        method_variant_id = str(method.get("id", ""))
+        method_definition = srv.METHOD_DEFINITION_BY_ID.get(str(method.get("method_id", "")))
+        if method_definition is None:
+            continue
+        if bool(method_definition.get("uses_llm")):
+            for model in models:
+                if not isinstance(model, dict):
+                    continue
+                for doc_id in doc_ids:
+                    tasks.append((method_variant_id, str(doc_id), str(model.get("id", ""))))
+        else:
+            for doc_id in doc_ids:
+                tasks.append((method_variant_id, str(doc_id), None))
+
+    def _execute_task(
+        method_variant_id: str,
+        doc_id: str,
+        model_id: str | None,
+    ) -> tuple[str, str, list[str], dict]:
+        method_variant = method_by_variant_id.get(method_variant_id)
+        target_model_ids = [model_id] if model_id else all_model_ids
+        if method_variant is None:
+            return (
+                method_variant_id,
+                doc_id,
+                target_model_ids,
+                {
+                    "status": "failed",
+                    "error": f"Unknown method variant '{method_variant_id}'",
+                    "updated_at": srv._now_iso(),
+                },
+            )
+
+        definition = srv.METHOD_DEFINITION_BY_ID.get(str(method_variant.get("method_id", "")))
+        if definition is None:
+            return (
+                method_variant_id,
+                doc_id,
+                target_model_ids,
+                {
+                    "status": "failed",
+                    "error": f"Unknown method: {method_variant.get('method_id')}",
+                    "updated_at": srv._now_iso(),
+                },
+            )
+
+        doc = srv._load_doc(doc_id, session_id)
+        if doc is None:
+            return (
+                method_variant_id,
+                doc_id,
+                target_model_ids,
+                {
+                    "status": "unavailable",
+                    "error": "Document no longer exists",
+                    "updated_at": srv._now_iso(),
+                },
+            )
+
+        enriched = srv._enrich_doc(doc, session_id)
+        if not enriched.manual_annotations:
+            return (
+                method_variant_id,
+                doc_id,
+                target_model_ids,
+                {
+                    "status": "unavailable",
+                    "error": "Methods Lab requires manual annotations for scoring.",
+                    "updated_at": srv._now_iso(),
+                    "filename": enriched.filename,
+                },
+            )
+
+        model = model_by_id.get(model_id) if model_id else None
+        request_model = (
+            str(model.get("model"))
+            if isinstance(model, dict) and model.get("model")
+            else "rule"
+        )
+        reasoning_effort = (
+            str(model.get("reasoning_effort", "none"))
+            if isinstance(model, dict)
+            else "none"
+        )
+        anthropic_thinking = bool(model.get("anthropic_thinking")) if isinstance(model, dict) else False
+        anthropic_budget = (
+            model.get("anthropic_thinking_budget_tokens") if isinstance(model, dict) else None
+        )
+
+        try:
+            (
+                hypothesis_spans,
+                warnings,
+                llm_confidence,
+                _chunk_diagnostics,
+            ) = srv._run_method_for_document(
+                doc=enriched,
+                method_id=str(method_variant["method_id"]),
+                api_key=api_key or None,
+                api_base=api_base or None,
+                model=request_model,
+                system_prompt="",
+                temperature=temperature,
+                reasoning_effort=reasoning_effort,
+                anthropic_thinking=anthropic_thinking,
+                anthropic_thinking_budget_tokens=anthropic_budget,
+                method_verify=method_variant.get("method_verify_override"),
+                label_profile=label_profile,  # type: ignore[arg-type]
+                chunk_mode=chunk_mode,
+                chunk_size_chars=chunk_size_chars,
+            )
+            projected_reference, projected_hypothesis = srv._apply_label_projection(
+                enriched.manual_annotations,
+                hypothesis_spans,
+                label_projection=label_projection,  # type: ignore[arg-type]
+            )
+            metrics = srv._serialize_metrics_payload(
+                srv.compute_metrics(projected_reference, projected_hypothesis, match_mode)
+            )
+            return (
+                method_variant_id,
+                doc_id,
+                target_model_ids,
+                {
+                    "status": "completed",
+                    "reference_source_used": "manual",
+                    "reference_spans": [
+                        span.model_dump() for span in enriched.manual_annotations
+                    ],
+                    "hypothesis_spans": [span.model_dump() for span in hypothesis_spans],
+                    "metrics": metrics,
+                    "warnings": warnings,
+                    "llm_confidence": (
+                        llm_confidence.model_dump() if llm_confidence is not None else None
+                    ),
+                    "updated_at": srv._now_iso(),
+                    "filename": enriched.filename,
+                },
+            )
+        except Exception as exc:
+            message = str(exc).strip() or exc.__class__.__name__
+            if len(message) > 800:
+                message = f"{message[:800]}..."
+            return (
+                method_variant_id,
+                doc_id,
+                target_model_ids,
+                {
+                    "status": "failed",
+                    "error": message,
+                    "updated_at": srv._now_iso(),
+                    "filename": enriched.filename,
+                },
+            )
+
+    try:
+        with srv.ThreadPoolExecutor(max_workers=int(run.get("concurrency", 1))) as executor:
+            future_map = {
+                executor.submit(_execute_task, method_variant_id, doc_id, model_id): (
+                    method_variant_id,
+                    doc_id,
+                    model_id,
+                )
+                for method_variant_id, doc_id, model_id in tasks
+            }
+            for future in srv.as_completed(future_map):
+                try:
+                    method_variant_id, doc_id, target_model_ids, result = future.result()
+                except Exception as exc:
+                    method_variant_id, doc_id, model_id = future_map[future]
+                    target_model_ids = [model_id] if model_id else all_model_ids
+                    result = {
+                        "status": "failed",
+                        "error": str(exc),
+                        "updated_at": srv._now_iso(),
+                    }
+                with srv._methods_lab_lock:
+                    latest = srv._load_methods_lab_run(run_id, session_id)
+                    if latest is None:
+                        continue
+                    cells = latest.get("cells", {})
+                    if not isinstance(cells, dict):
+                        continue
+                    for target_model_id in target_model_ids:
+                        cell_id = f"{target_model_id}__{method_variant_id}"
+                        if isinstance(cells.get(cell_id), dict):
+                            cells[cell_id]["documents"][doc_id] = copy.deepcopy(result)
+                    srv._save_methods_lab_run(latest, session_id)
+    except Exception as exc:
+        with srv._methods_lab_lock:
+            latest = srv._load_methods_lab_run(run_id, session_id)
+            if latest is not None:
+                latest["status"] = "failed"
+                latest["finished_at"] = srv._now_iso()
+                errors = latest.get("errors", [])
+                if not isinstance(errors, list):
+                    errors = []
+                errors.append(f"Methods Lab run failed: {exc}")
+                latest["errors"] = errors
+                srv._save_methods_lab_run(latest, session_id)
+        return
+
+    with srv._methods_lab_lock:
+        latest = srv._load_methods_lab_run(run_id, session_id)
+        if latest is None:
+            return
+        summary = build_methods_lab_run_summary(latest)
+        latest["status"] = (
+            "completed_with_errors"
+            if int(summary.get("failed_tasks", 0)) > 0
+            else "completed"
+        )
+        latest["finished_at"] = srv._now_iso()
+        srv._save_methods_lab_run(latest, session_id)
+
+
+def create_methods_lab_run(
+    body: Any,
+    *,
+    session_id: str = "default",
+    run_async: bool = False,
+) -> dict:
+    srv = _server()
+    prepared = prepare_methods_lab_body(body, session_id=session_id)
+    validate_methods_lab_request(prepared, session_id)
+    runtime = resolve_methods_lab_runtime(prepared.runtime)
+    api_key = str(runtime["api_key"])
+    api_base = str(runtime["api_base"])
+    requires_llm = any(
+        bool(srv.METHOD_DEFINITION_BY_ID.get(str(method.method_id), {}).get("uses_llm"))
+        for method in prepared.methods
+    )
+
+    if requires_llm:
+        if not api_key:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "API key required for Methods Lab runs. Set LITELLM_API_KEY "
+                    "or provide runtime.api_key in request."
+                ),
+            )
+        for model in prepared.models:
+            srv._validate_gateway_model_access(model=model.model, api_base=api_base, api_key=api_key)
+
+    with srv._methods_lab_lock:
+        run = initialize_methods_lab_run(prepared, session_id, runtime)
+        ids = srv._load_methods_lab_index(session_id)
+        ids.append(str(run["id"]))
+        srv._save_methods_lab_run(run, session_id)
+        srv._save_methods_lab_index(session_id)
+
+    if run_async:
+        worker = threading.Thread(
+            target=run_methods_lab_job,
+            args=(str(run["id"]), session_id, runtime),
+            daemon=True,
+        )
+        worker.start()
+        return build_methods_lab_run_detail(run)
+
+    run_methods_lab_job(str(run["id"]), session_id, runtime)
+    latest = srv._load_methods_lab_run(str(run["id"]), session_id)
+    if latest is None:
+        raise RuntimeError("Methods Lab run disappeared before completion.")
+    return build_methods_lab_run_detail(latest)

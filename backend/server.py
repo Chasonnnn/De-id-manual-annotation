@@ -19,7 +19,7 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import FastAPI, HTTPException, UploadFile, File, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from models import (
     AgentChunkDiagnostic,
@@ -60,12 +60,15 @@ CONFIG_PATH = BASE_DIR / "config.json"
 PROFILE_PATH = BASE_DIR / "session_profile.json"
 
 BUNDLE_FORMAT = "annotation_tool_session"
-BUNDLE_VERSION = 3
-SUPPORTED_BUNDLE_VERSIONS = {1, 2, 3}
+BUNDLE_VERSION = 4
+SUPPORTED_BUNDLE_VERSIONS = {1, 2, 3, 4}
 TOOL_VERSION = "2026.03.03"
 PROMPT_LAB_DIR_NAME = "prompt_lab"
+METHODS_LAB_DIR_NAME = "methods_lab"
 PROMPT_LAB_MAX_VARIANTS = 6
 PROMPT_LAB_DEFAULT_CONCURRENCY = 4
+METHODS_LAB_MAX_METHOD_VARIANTS = max(12, len(METHOD_DEFINITION_BY_ID))
+METHODS_LAB_DEFAULT_CONCURRENCY = 4
 DEFAULT_CHUNK_SIZE_CHARS = 10_000
 MIN_CHUNK_SIZE_CHARS = 2_000
 MAX_CHUNK_SIZE_CHARS = 30_000
@@ -336,6 +339,8 @@ def _normalize_optional_llm_confidence(raw: object) -> LLMConfidenceMetric | Non
 _session_docs: dict[str, list[str]] = {}
 _prompt_lab_runs: dict[str, list[str]] = {}
 _prompt_lab_lock = threading.Lock()
+_methods_lab_runs: dict[str, list[str]] = {}
+_methods_lab_lock = threading.Lock()
 _agent_progress: dict[str, dict[str, Any]] = {}
 _agent_progress_lock = threading.Lock()
 
@@ -597,6 +602,56 @@ def _is_terminal_prompt_lab_status(status: str) -> bool:
     return status in {"completed", "completed_with_errors", "failed"}
 
 
+def _methods_lab_dir(session_id: str = "default") -> Path:
+    return _session_dir(session_id) / METHODS_LAB_DIR_NAME
+
+
+def _methods_lab_index_path(session_id: str = "default") -> Path:
+    return _methods_lab_dir(session_id) / "_index.json"
+
+
+def _methods_lab_run_path(run_id: str, session_id: str = "default") -> Path:
+    return _methods_lab_dir(session_id) / f"{run_id}.json"
+
+
+def _load_methods_lab_index(session_id: str = "default") -> list[str]:
+    if session_id in _methods_lab_runs:
+        return _methods_lab_runs[session_id]
+    index_path = _methods_lab_index_path(session_id)
+    if index_path.exists():
+        ids = json.loads(index_path.read_text())
+        if isinstance(ids, list):
+            _methods_lab_runs[session_id] = [str(item) for item in ids]
+            return _methods_lab_runs[session_id]
+    _methods_lab_runs[session_id] = []
+    return _methods_lab_runs[session_id]
+
+
+def _save_methods_lab_index(session_id: str = "default"):
+    d = _methods_lab_dir(session_id)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "_index.json").write_text(json.dumps(_methods_lab_runs.get(session_id, []), indent=2))
+
+
+def _load_methods_lab_run(run_id: str, session_id: str = "default") -> dict | None:
+    path = _methods_lab_run_path(run_id, session_id)
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text())
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _save_methods_lab_run(run: dict, session_id: str = "default"):
+    run_id = str(run.get("id", "")).strip()
+    if not run_id:
+        raise ValueError("Methods Lab run payload missing id")
+    d = _methods_lab_dir(session_id)
+    d.mkdir(parents=True, exist_ok=True)
+    _methods_lab_run_path(run_id, session_id).write_text(json.dumps(run, indent=2))
+
+
 def _safe_float(value: object) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
@@ -621,186 +676,27 @@ def _serialize_metrics_payload(metrics: dict) -> dict:
 
 
 def _build_prompt_lab_cell_summary(cell: dict, total_docs: int) -> dict:
-    docs_raw = cell.get("documents", {})
-    documents = docs_raw if isinstance(docs_raw, dict) else {}
-    completed_docs = 0
-    failed_docs = 0
-    tp = 0
-    fp = 0
-    fn = 0
-    confidence_values: list[float] = []
-    per_label_counts: dict[str, dict[str, int]] = {}
+    from experiment_service import _build_prompt_lab_cell_summary as service_impl
 
-    for result in documents.values():
-        if not isinstance(result, dict):
-            continue
-        status = str(result.get("status", "pending"))
-        if status == "completed":
-            completed_docs += 1
-            metrics = result.get("metrics", {})
-            if isinstance(metrics, dict):
-                micro = metrics.get("micro", {})
-                if isinstance(micro, dict):
-                    tp += int(micro.get("tp", 0))
-                    fp += int(micro.get("fp", 0))
-                    fn += int(micro.get("fn", 0))
-                per_label = metrics.get("per_label", {})
-                if isinstance(per_label, dict):
-                    for label, label_metrics in per_label.items():
-                        if not isinstance(label_metrics, dict):
-                            continue
-                        aggregate = per_label_counts.setdefault(
-                            str(label),
-                            {"tp": 0, "fp": 0, "fn": 0, "support": 0},
-                        )
-                        label_tp = int(label_metrics.get("tp", 0))
-                        label_fp = int(label_metrics.get("fp", 0))
-                        label_fn = int(label_metrics.get("fn", 0))
-                        aggregate["tp"] += label_tp
-                        aggregate["fp"] += label_fp
-                        aggregate["fn"] += label_fn
-                        aggregate["support"] += int(
-                            label_metrics.get("support", label_tp + label_fn)
-                        )
-            llm_confidence = result.get("llm_confidence")
-            if isinstance(llm_confidence, dict):
-                conf = _safe_float(llm_confidence.get("confidence"))
-                if conf is not None:
-                    confidence_values.append(conf)
-            continue
-        if status in {"failed", "unavailable"}:
-            failed_docs += 1
-
-    processed = completed_docs + failed_docs
-    micro = _prf_from_counts(tp, fp, fn) if completed_docs > 0 else _prf_from_counts(0, 0, 0)
-    if processed == 0:
-        status = "pending"
-    elif processed < total_docs:
-        status = "running"
-    elif failed_docs > 0:
-        status = "completed_with_errors"
-    else:
-        status = "completed"
-
-    per_label_summary: dict[str, dict[str, float | int]] = {}
-    for label, counts in sorted(per_label_counts.items()):
-        label_prf = _prf_from_counts(counts["tp"], counts["fp"], counts["fn"])
-        per_label_summary[label] = {
-            **label_prf,
-            "support": counts["support"],
-        }
-
-    return {
-        "id": cell.get("id"),
-        "model_id": cell.get("model_id"),
-        "model_label": cell.get("model_label"),
-        "prompt_id": cell.get("prompt_id"),
-        "prompt_label": cell.get("prompt_label"),
-        "status": status,
-        "total_docs": total_docs,
-        "completed_docs": completed_docs,
-        "failed_docs": failed_docs,
-        "error_count": failed_docs,
-        "micro": micro,
-        "per_label": per_label_summary,
-        "mean_confidence": (
-            sum(confidence_values) / len(confidence_values) if confidence_values else None
-        ),
-    }
+    return service_impl(cell, total_docs)
 
 
 def _build_prompt_lab_matrix(run: dict) -> dict:
-    total_docs = len(run.get("doc_ids", []))
-    prompts = run.get("prompts", [])
-    models = run.get("models", [])
-    cells_raw = run.get("cells", {})
-    cells_dict = cells_raw if isinstance(cells_raw, dict) else {}
-    summaries: list[dict] = []
-    available_labels: set[str] = set()
-    for model in models:
-        model_id = str(model.get("id", ""))
-        for prompt in prompts:
-            prompt_id = str(prompt.get("id", ""))
-            cell_id = f"{model_id}__{prompt_id}"
-            cell = cells_dict.get(cell_id)
-            if not isinstance(cell, dict):
-                cell = {
-                    "id": cell_id,
-                    "model_id": model_id,
-                    "model_label": model.get("label", model_id),
-                    "prompt_id": prompt_id,
-                    "prompt_label": prompt.get("label", prompt_id),
-                    "documents": {},
-                }
-            summary = _build_prompt_lab_cell_summary(cell, total_docs)
-            per_label = summary.get("per_label", {})
-            if isinstance(per_label, dict):
-                available_labels.update(str(label) for label in per_label.keys())
-            summaries.append(summary)
-    return {
-        "models": [{"id": str(item.get("id", "")), "label": str(item.get("label", ""))} for item in models],
-        "prompts": [{"id": str(item.get("id", "")), "label": str(item.get("label", ""))} for item in prompts],
-        "cells": summaries,
-        "available_labels": sorted(available_labels),
-    }
+    from experiment_service import build_prompt_lab_matrix
+
+    return build_prompt_lab_matrix(run)
 
 
 def _build_prompt_lab_run_summary(run: dict) -> dict:
-    matrix = _build_prompt_lab_matrix(run)
-    cells = matrix["cells"]
-    completed = 0
-    failed = 0
-    total = len(run.get("doc_ids", [])) * len(run.get("models", [])) * len(run.get("prompts", []))
-    for cell in cells:
-        completed += int(cell.get("completed_docs", 0)) + int(cell.get("failed_docs", 0))
-        failed += int(cell.get("failed_docs", 0))
-    return {
-        "id": run.get("id"),
-        "name": run.get("name"),
-        "status": run.get("status"),
-        "created_at": run.get("created_at"),
-        "started_at": run.get("started_at"),
-        "finished_at": run.get("finished_at"),
-        "doc_count": len(run.get("doc_ids", [])),
-        "prompt_count": len(run.get("prompts", [])),
-        "model_count": len(run.get("models", [])),
-        "total_tasks": total,
-        "completed_tasks": completed,
-        "failed_tasks": failed,
-    }
+    from experiment_service import build_prompt_lab_run_summary
+
+    return build_prompt_lab_run_summary(run)
 
 
 def _build_prompt_lab_run_detail(run: dict) -> dict:
-    summary = _build_prompt_lab_run_summary(run)
-    matrix = _build_prompt_lab_matrix(run)
-    runtime_raw = run.get("runtime", {})
-    runtime = runtime_raw if isinstance(runtime_raw, dict) else {}
-    return {
-        **summary,
-        "doc_ids": run.get("doc_ids", []),
-        "prompts": run.get("prompts", []),
-        "models": run.get("models", []),
-        "runtime": {
-            "temperature": runtime.get("temperature", 0.0),
-            "match_mode": runtime.get("match_mode", "exact"),
-            "reference_source": runtime.get("reference_source", "manual"),
-            "fallback_reference_source": runtime.get("fallback_reference_source", "pre"),
-            "label_profile": runtime.get("label_profile", "simple"),
-            "label_projection": runtime.get("label_projection", "native"),
-            "api_base": runtime.get("api_base", ""),
-            "chunk_mode": runtime.get("chunk_mode", "auto"),
-            "chunk_size_chars": runtime.get("chunk_size_chars", DEFAULT_CHUNK_SIZE_CHARS),
-        },
-        "concurrency": run.get("concurrency", PROMPT_LAB_DEFAULT_CONCURRENCY),
-        "warnings": run.get("warnings", []),
-        "errors": run.get("errors", []),
-        "matrix": matrix,
-        "progress": {
-            "total_tasks": summary["total_tasks"],
-            "completed_tasks": summary["completed_tasks"],
-            "failed_tasks": summary["failed_tasks"],
-        },
-    }
+    from experiment_service import build_prompt_lab_run_detail
+
+    return build_prompt_lab_run_detail(run)
 
 
 def _export_prompt_lab_runs(session_id: str = "default") -> list[dict]:
@@ -867,6 +763,83 @@ def _remap_prompt_lab_run_doc_ids(
     remapped["warnings"] = run_warnings
     if warnings:
         remapped["status"] = "completed_with_errors"
+    return remapped, warnings
+
+
+def _build_methods_lab_cell_summary(cell: dict, total_docs: int) -> dict:
+    from experiment_service import _build_methods_lab_cell_summary as service_impl
+
+    return service_impl(cell, total_docs)
+
+
+def _build_methods_lab_matrix(run: dict) -> dict:
+    from experiment_service import build_methods_lab_matrix
+
+    return build_methods_lab_matrix(run)
+
+
+def _build_methods_lab_run_summary(run: dict) -> dict:
+    from experiment_service import build_methods_lab_run_summary
+
+    return build_methods_lab_run_summary(run)
+
+
+def _build_methods_lab_run_detail(run: dict) -> dict:
+    from experiment_service import build_methods_lab_run_detail
+
+    return build_methods_lab_run_detail(run)
+
+
+def _export_methods_lab_runs(session_id: str = "default") -> list[dict]:
+    with _methods_lab_lock:
+        runs: list[dict] = []
+        for run_id in _load_methods_lab_index(session_id):
+            payload = _load_methods_lab_run(run_id, session_id)
+            if payload is None:
+                continue
+            runs.append(copy.deepcopy(payload))
+        return runs
+
+
+def _remap_methods_lab_run_doc_ids(
+    run: dict,
+    doc_id_remap: dict[str, str],
+) -> tuple[dict, list[str]]:
+    remapped = copy.deepcopy(run)
+    warnings: list[str] = []
+
+    original_doc_ids = remapped.get("doc_ids", [])
+    if not isinstance(original_doc_ids, list):
+        original_doc_ids = []
+    mapped_doc_ids: list[str] = []
+    seen_doc_ids: set[str] = set()
+    for value in original_doc_ids:
+        old_id = str(value)
+        new_id = doc_id_remap.get(old_id, old_id)
+        if new_id not in seen_doc_ids:
+            mapped_doc_ids.append(new_id)
+            seen_doc_ids.add(new_id)
+        if old_id not in doc_id_remap:
+            warnings.append(
+                f"Referenced document '{old_id}' was not imported; marked as unavailable."
+            )
+    remapped["doc_ids"] = mapped_doc_ids
+
+    cells = remapped.get("cells", {})
+    if isinstance(cells, dict):
+        for cell in cells.values():
+            if not isinstance(cell, dict):
+                continue
+            documents = cell.get("documents", {})
+            if not isinstance(documents, dict):
+                continue
+            remapped_documents: dict[str, object] = {}
+            for doc_id, result in documents.items():
+                old_id = str(doc_id)
+                new_id = doc_id_remap.get(old_id, old_id)
+                remapped_documents[new_id] = result
+            cell["documents"] = remapped_documents
+
     return remapped, warnings
 
 
@@ -1138,6 +1111,7 @@ def _import_ground_truth_archive(raw: bytes, session_id: str = "default") -> dic
         "skipped": skipped,
         "warnings": [],
         "imported_prompt_lab_runs": 0,
+        "imported_methods_lab_runs": 0,
         "total_in_bundle": len(members),
     }
 
@@ -2285,6 +2259,7 @@ class PromptLabPromptInput(BaseModel):
     id: str | None = None
     label: str
     system_prompt: str | None = None
+    prompt_file: str | None = None
     variant_type: Literal["prompt", "preset"] = "prompt"
     preset_method_id: str | None = None
     method_verify_override: bool | None = None
@@ -2314,11 +2289,38 @@ class PromptLabRuntimeInput(BaseModel):
 
 class PromptLabRunCreateBody(BaseModel):
     name: str | None = None
-    doc_ids: list[str]
+    doc_ids: list[str] = Field(default_factory=list)
     prompts: list[PromptLabPromptInput]
     models: list[PromptLabModelInput]
     runtime: PromptLabRuntimeInput
     concurrency: int = PROMPT_LAB_DEFAULT_CONCURRENCY
+
+
+class MethodsLabMethodInput(BaseModel):
+    id: str | None = None
+    label: str
+    method_id: str
+    method_verify_override: bool | None = None
+
+
+class MethodsLabRuntimeInput(BaseModel):
+    api_key: str | None = None
+    api_base: str | None = None
+    temperature: float = 0.0
+    match_mode: Literal["exact", "boundary", "overlap"] = "exact"
+    label_profile: Literal["simple", "advanced"] = "simple"
+    label_projection: Literal["native", "coarse_simple"] = "native"
+    chunk_mode: Literal["auto", "off", "force"] = "auto"
+    chunk_size_chars: int = DEFAULT_CHUNK_SIZE_CHARS
+
+
+class MethodsLabRunCreateBody(BaseModel):
+    name: str | None = None
+    doc_ids: list[str] = Field(default_factory=list)
+    methods: list[MethodsLabMethodInput]
+    models: list[PromptLabModelInput]
+    runtime: MethodsLabRuntimeInput
+    concurrency: int = METHODS_LAB_DEFAULT_CONCURRENCY
 
 
 def _resolve_prompt_lab_runtime(runtime: PromptLabRuntimeInput) -> dict[str, object]:
@@ -2728,6 +2730,425 @@ def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
         _save_prompt_lab_run(latest, session_id)
 
 
+def _resolve_methods_lab_runtime(runtime: MethodsLabRuntimeInput) -> dict[str, object]:
+    cfg = _load_config()
+    api_key = (
+        runtime.api_key
+        or os.environ.get("LITELLM_API_KEY", "")
+        or os.environ.get("OPENAI_API_KEY", "")
+        or os.environ.get("ANTHROPIC_API_KEY", "")
+        or os.environ.get("GEMINI_API_KEY", "")
+        or os.environ.get("GOOGLE_API_KEY", "")
+    )
+    api_base = (
+        runtime.api_base
+        or str(cfg.get("api_base", "") or "")
+        or os.environ.get("LITELLM_BASE_URL", "")
+    )
+    match_mode = _normalize_match_mode(runtime.match_mode)
+    chunk_mode = _normalize_chunk_mode(runtime.chunk_mode)
+    chunk_size_chars = _normalize_chunk_size(runtime.chunk_size_chars)
+    label_profile = _normalize_label_profile(runtime.label_profile)
+    label_projection = _normalize_label_projection(runtime.label_projection)
+    return {
+        "api_key": api_key,
+        "api_base": api_base,
+        "temperature": runtime.temperature,
+        "match_mode": match_mode,
+        "chunk_mode": chunk_mode,
+        "chunk_size_chars": chunk_size_chars,
+        "label_profile": label_profile,
+        "label_projection": label_projection,
+    }
+
+
+def _validate_methods_lab_request(body: MethodsLabRunCreateBody, session_id: str = "default"):
+    if not body.doc_ids:
+        raise HTTPException(status_code=400, detail="doc_ids is required")
+    if len(body.methods) < 1 or len(body.methods) > METHODS_LAB_MAX_METHOD_VARIANTS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Method variants must be between 1 and {METHODS_LAB_MAX_METHOD_VARIANTS}"
+            ),
+        )
+    if len(body.models) < 1 or len(body.models) > PROMPT_LAB_MAX_VARIANTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model variants must be between 1 and {PROMPT_LAB_MAX_VARIANTS}",
+        )
+    if body.concurrency < 1 or body.concurrency > PROMPT_LAB_MAX_VARIANTS:
+        raise HTTPException(status_code=400, detail="concurrency must be between 1 and 6")
+
+    known_ids = set(_load_session_index(session_id))
+    for doc_id in body.doc_ids:
+        if doc_id not in known_ids:
+            raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
+
+    method_ids_seen: set[str] = set()
+    for index, method in enumerate(body.methods):
+        if not method.label.strip():
+            raise HTTPException(status_code=400, detail=f"Method label required at index {index}")
+        method_variant_id = (method.id or "").strip() or f"method_{index + 1}"
+        if method_variant_id in method_ids_seen:
+            raise HTTPException(status_code=400, detail=f"Duplicate method id: {method_variant_id}")
+        method_ids_seen.add(method_variant_id)
+
+        method_id = (method.method_id or "").strip()
+        if not method_id:
+            raise HTTPException(status_code=400, detail=f"method_id required at index {index}")
+        definition = METHOD_DEFINITION_BY_ID.get(method_id)
+        if definition is None:
+            raise HTTPException(status_code=400, detail=f"Unknown method: {method_id}")
+        if (
+            method.method_verify_override is not None
+            and not bool(definition.get("supports_verify_override"))
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"method_verify_override is not supported for method '{method_id}' "
+                    f"(method index {index})"
+                ),
+            )
+
+    model_ids_seen: set[str] = set()
+    for index, model in enumerate(body.models):
+        if not model.label.strip():
+            raise HTTPException(status_code=400, detail=f"Model label required at index {index}")
+        if not model.model.strip():
+            raise HTTPException(status_code=400, detail=f"model required at index {index}")
+        model_id = (model.id or "").strip() or f"model_{index + 1}"
+        if model_id in model_ids_seen:
+            raise HTTPException(status_code=400, detail=f"Duplicate model id: {model_id}")
+        model_ids_seen.add(model_id)
+
+
+def _initialize_methods_lab_run(
+    body: MethodsLabRunCreateBody,
+    session_id: str,
+    runtime: dict[str, object],
+) -> dict:
+    run_id = str(uuid.uuid4())[:8]
+    now = _now_iso()
+    methods: list[dict] = []
+    models: list[dict] = []
+    for index, item in enumerate(body.methods):
+        method_variant_id = (item.id or "").strip() or f"method_{index + 1}"
+        methods.append(
+            {
+                "id": method_variant_id,
+                "label": item.label.strip(),
+                "method_id": item.method_id.strip(),
+                "method_verify_override": (
+                    bool(item.method_verify_override)
+                    if item.method_verify_override is not None
+                    else None
+                ),
+            }
+        )
+    for index, item in enumerate(body.models):
+        model_id = (item.id or "").strip() or f"model_{index + 1}"
+        models.append(
+            {
+                "id": model_id,
+                "label": item.label.strip(),
+                "model": item.model.strip(),
+                "reasoning_effort": item.reasoning_effort,
+                "anthropic_thinking": bool(item.anthropic_thinking),
+                "anthropic_thinking_budget_tokens": item.anthropic_thinking_budget_tokens,
+            }
+        )
+
+    cells: dict[str, dict] = {}
+    for model in models:
+        for method in methods:
+            cell_id = f"{model['id']}__{method['id']}"
+            cells[cell_id] = {
+                "id": cell_id,
+                "model_id": model["id"],
+                "model_label": model["label"],
+                "method_id": method["id"],
+                "method_label": method["label"],
+                "documents": {
+                    doc_id: {"status": "pending", "updated_at": now} for doc_id in body.doc_ids
+                },
+            }
+
+    return {
+        "id": run_id,
+        "name": (body.name or "").strip() or f"Methods Lab {now}",
+        "status": "queued",
+        "created_at": now,
+        "started_at": None,
+        "finished_at": None,
+        "doc_ids": list(dict.fromkeys(body.doc_ids)),
+        "methods": methods,
+        "models": models,
+        "runtime": {
+            "temperature": runtime["temperature"],
+            "match_mode": runtime["match_mode"],
+            "label_profile": runtime["label_profile"],
+            "label_projection": runtime["label_projection"],
+            "api_base": runtime["api_base"],
+            "chunk_mode": runtime["chunk_mode"],
+            "chunk_size_chars": runtime["chunk_size_chars"],
+        },
+        "concurrency": body.concurrency,
+        "warnings": [],
+        "errors": [],
+        "cells": cells,
+        "session_id": session_id,
+    }
+
+
+def _run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]):
+    api_key = str(runtime["api_key"])
+    api_base = str(runtime["api_base"])
+    temperature = float(runtime["temperature"])
+    match_mode = str(runtime["match_mode"])
+    label_profile = str(runtime["label_profile"])
+    label_projection = _normalize_label_projection(runtime.get("label_projection", "native"))
+    chunk_mode = str(runtime["chunk_mode"])
+    chunk_size_chars = int(runtime["chunk_size_chars"])
+
+    with _methods_lab_lock:
+        run = _load_methods_lab_run(run_id, session_id)
+        if run is None:
+            return
+        run["status"] = "running"
+        run["started_at"] = _now_iso()
+        _save_methods_lab_run(run, session_id)
+
+    models = run.get("models", [])
+    methods = run.get("methods", [])
+    doc_ids = run.get("doc_ids", [])
+    model_by_id = {str(model["id"]): model for model in models if isinstance(model, dict)}
+    method_by_variant_id = {
+        str(method["id"]): method for method in methods if isinstance(method, dict)
+    }
+    all_model_ids = [str(model.get("id", "")) for model in models if isinstance(model, dict)]
+
+    tasks: list[tuple[str, str, str | None]] = []
+    for method in methods:
+        if not isinstance(method, dict):
+            continue
+        method_variant_id = str(method.get("id", ""))
+        method_definition = METHOD_DEFINITION_BY_ID.get(str(method.get("method_id", "")))
+        if method_definition is None:
+            continue
+        if bool(method_definition.get("uses_llm")):
+            for model in models:
+                if not isinstance(model, dict):
+                    continue
+                for doc_id in doc_ids:
+                    tasks.append((method_variant_id, str(doc_id), str(model.get("id", ""))))
+        else:
+            for doc_id in doc_ids:
+                tasks.append((method_variant_id, str(doc_id), None))
+
+    def _execute_task(
+        method_variant_id: str,
+        doc_id: str,
+        model_id: str | None,
+    ) -> tuple[str, str, list[str], dict]:
+        method_variant = method_by_variant_id.get(method_variant_id)
+        target_model_ids = [model_id] if model_id else all_model_ids
+        if method_variant is None:
+            return (
+                method_variant_id,
+                doc_id,
+                target_model_ids,
+                {
+                    "status": "failed",
+                    "error": f"Unknown method variant '{method_variant_id}'",
+                    "updated_at": _now_iso(),
+                },
+            )
+
+        definition = METHOD_DEFINITION_BY_ID.get(str(method_variant.get("method_id", "")))
+        if definition is None:
+            return (
+                method_variant_id,
+                doc_id,
+                target_model_ids,
+                {
+                    "status": "failed",
+                    "error": f"Unknown method: {method_variant.get('method_id')}",
+                    "updated_at": _now_iso(),
+                },
+            )
+
+        doc = _load_doc(doc_id, session_id)
+        if doc is None:
+            return (
+                method_variant_id,
+                doc_id,
+                target_model_ids,
+                {
+                    "status": "unavailable",
+                    "error": "Document no longer exists",
+                    "updated_at": _now_iso(),
+                },
+            )
+
+        enriched = _enrich_doc(doc, session_id)
+        if not enriched.manual_annotations:
+            return (
+                method_variant_id,
+                doc_id,
+                target_model_ids,
+                {
+                    "status": "unavailable",
+                    "error": "Methods Lab requires manual annotations for scoring.",
+                    "updated_at": _now_iso(),
+                    "filename": enriched.filename,
+                },
+            )
+
+        model = model_by_id.get(model_id) if model_id else None
+        request_model = (
+            str(model.get("model"))
+            if isinstance(model, dict) and model.get("model")
+            else "rule"
+        )
+        reasoning_effort = (
+            str(model.get("reasoning_effort", "none"))
+            if isinstance(model, dict)
+            else "none"
+        )
+        anthropic_thinking = bool(model.get("anthropic_thinking")) if isinstance(model, dict) else False
+        anthropic_budget = (
+            model.get("anthropic_thinking_budget_tokens") if isinstance(model, dict) else None
+        )
+
+        try:
+            (
+                hypothesis_spans,
+                warnings,
+                llm_confidence,
+                _chunk_diagnostics,
+            ) = _run_method_for_document(
+                doc=enriched,
+                method_id=str(method_variant["method_id"]),
+                api_key=api_key or None,
+                api_base=api_base or None,
+                model=request_model,
+                system_prompt="",
+                temperature=temperature,
+                reasoning_effort=reasoning_effort,
+                anthropic_thinking=anthropic_thinking,
+                anthropic_thinking_budget_tokens=anthropic_budget,
+                method_verify=method_variant.get("method_verify_override"),
+                label_profile=label_profile,  # type: ignore[arg-type]
+                chunk_mode=chunk_mode,
+                chunk_size_chars=chunk_size_chars,
+            )
+            projected_reference, projected_hypothesis = _apply_label_projection(
+                enriched.manual_annotations,
+                hypothesis_spans,
+                label_projection=label_projection,  # type: ignore[arg-type]
+            )
+            metrics = _serialize_metrics_payload(
+                compute_metrics(projected_reference, projected_hypothesis, match_mode)
+            )
+            return (
+                method_variant_id,
+                doc_id,
+                target_model_ids,
+                {
+                    "status": "completed",
+                    "reference_source_used": "manual",
+                    "reference_spans": [
+                        span.model_dump() for span in enriched.manual_annotations
+                    ],
+                    "hypothesis_spans": [span.model_dump() for span in hypothesis_spans],
+                    "metrics": metrics,
+                    "warnings": warnings,
+                    "llm_confidence": (
+                        llm_confidence.model_dump() if llm_confidence is not None else None
+                    ),
+                    "updated_at": _now_iso(),
+                    "filename": enriched.filename,
+                },
+            )
+        except Exception as exc:
+            message = str(exc).strip() or exc.__class__.__name__
+            if len(message) > 800:
+                message = f"{message[:800]}..."
+            return (
+                method_variant_id,
+                doc_id,
+                target_model_ids,
+                {
+                    "status": "failed",
+                    "error": message,
+                    "updated_at": _now_iso(),
+                    "filename": enriched.filename,
+                },
+            )
+
+    try:
+        with ThreadPoolExecutor(max_workers=int(run.get("concurrency", 1))) as executor:
+            future_map = {
+                executor.submit(_execute_task, method_variant_id, doc_id, model_id): (
+                    method_variant_id,
+                    doc_id,
+                    model_id,
+                )
+                for method_variant_id, doc_id, model_id in tasks
+            }
+            for future in as_completed(future_map):
+                try:
+                    method_variant_id, doc_id, target_model_ids, result = future.result()
+                except Exception as exc:  # pragma: no cover - defensive fallback
+                    method_variant_id, doc_id, model_id = future_map[future]
+                    target_model_ids = [model_id] if model_id else all_model_ids
+                    result = {
+                        "status": "failed",
+                        "error": str(exc),
+                        "updated_at": _now_iso(),
+                    }
+                with _methods_lab_lock:
+                    latest = _load_methods_lab_run(run_id, session_id)
+                    if latest is None:
+                        continue
+                    cells = latest.get("cells", {})
+                    if not isinstance(cells, dict):
+                        continue
+                    for target_model_id in target_model_ids:
+                        cell_id = f"{target_model_id}__{method_variant_id}"
+                        if isinstance(cells.get(cell_id), dict):
+                            cells[cell_id]["documents"][doc_id] = copy.deepcopy(result)
+                    _save_methods_lab_run(latest, session_id)
+    except Exception as exc:
+        with _methods_lab_lock:
+            latest = _load_methods_lab_run(run_id, session_id)
+            if latest is not None:
+                latest["status"] = "failed"
+                latest["finished_at"] = _now_iso()
+                errors = latest.get("errors", [])
+                if not isinstance(errors, list):
+                    errors = []
+                errors.append(f"Methods Lab run failed: {exc}")
+                latest["errors"] = errors
+                _save_methods_lab_run(latest, session_id)
+        return
+
+    with _methods_lab_lock:
+        latest = _load_methods_lab_run(run_id, session_id)
+        if latest is None:
+            return
+        summary = _build_methods_lab_run_summary(latest)
+        latest["status"] = (
+            "completed_with_errors"
+            if int(summary.get("failed_tasks", 0)) > 0
+            else "completed"
+        )
+        latest["finished_at"] = _now_iso()
+        _save_methods_lab_run(latest, session_id)
+
+
 @app.post("/api/documents/{doc_id}/agent")
 def run_agent(doc_id: str, body: AgentRunBody):
     session_id = "default"
@@ -3051,47 +3472,9 @@ async def get_agent_run_progress(doc_id: str):
 
 @app.post("/api/prompt-lab/runs")
 async def create_prompt_lab_run(body: PromptLabRunCreateBody):
-    session_id = "default"
-    _validate_prompt_lab_request(body, session_id)
-    runtime = _resolve_prompt_lab_runtime(body.runtime)
-    api_key = str(runtime["api_key"])
-    api_base = str(runtime["api_base"])
-    requires_llm = False
-    for prompt in body.prompts:
-        if prompt.variant_type == "prompt":
-            requires_llm = True
-            break
-        preset_method = METHOD_DEFINITION_BY_ID.get(str(prompt.preset_method_id or ""))
-        if preset_method and bool(preset_method.get("uses_llm")):
-            requires_llm = True
-            break
+    from experiment_service import create_prompt_lab_run as create_prompt_lab_run_service
 
-    if requires_llm:
-        if not api_key:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "API key required for Prompt Lab runs. Set LITELLM_API_KEY "
-                    "or provide runtime.api_key in request."
-                ),
-            )
-        for model in body.models:
-            _validate_gateway_model_access(model=model.model, api_base=api_base, api_key=api_key)
-
-    with _prompt_lab_lock:
-        run = _initialize_prompt_lab_run(body, session_id, runtime)
-        ids = _load_prompt_lab_index(session_id)
-        ids.append(str(run["id"]))
-        _save_prompt_lab_run(run, session_id)
-        _save_prompt_lab_index(session_id)
-
-    worker = threading.Thread(
-        target=_run_prompt_lab_job,
-        args=(str(run["id"]), session_id, runtime),
-        daemon=True,
-    )
-    worker.start()
-    return _build_prompt_lab_run_detail(run)
+    return create_prompt_lab_run_service(body, session_id="default", run_async=True)
 
 
 @app.get("/api/prompt-lab/runs")
@@ -3175,6 +3558,97 @@ async def get_prompt_lab_document_detail(run_id: str, cell_id: str, doc_id: str)
         },
         "model": model,
         "prompt": prompt,
+    }
+
+
+@app.post("/api/methods-lab/runs")
+async def create_methods_lab_run(body: MethodsLabRunCreateBody):
+    from experiment_service import create_methods_lab_run as create_methods_lab_run_service
+
+    return create_methods_lab_run_service(body, session_id="default", run_async=True)
+
+
+@app.get("/api/methods-lab/runs")
+async def list_methods_lab_runs():
+    session_id = "default"
+    with _methods_lab_lock:
+        ids = list(_load_methods_lab_index(session_id))
+        results: list[dict] = []
+        for run_id in reversed(ids):
+            run = _load_methods_lab_run(run_id, session_id)
+            if run is None:
+                continue
+            results.append(_build_methods_lab_run_summary(run))
+        return {"runs": results}
+
+
+@app.get("/api/methods-lab/runs/{run_id}")
+async def get_methods_lab_run(run_id: str):
+    session_id = "default"
+    with _methods_lab_lock:
+        run = _load_methods_lab_run(run_id, session_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Methods Lab run not found")
+        return _build_methods_lab_run_detail(run)
+
+
+@app.get("/api/methods-lab/runs/{run_id}/cells/{cell_id}/documents/{doc_id}")
+async def get_methods_lab_document_detail(run_id: str, cell_id: str, doc_id: str):
+    session_id = "default"
+    with _methods_lab_lock:
+        run = _load_methods_lab_run(run_id, session_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Methods Lab run not found")
+        cells = run.get("cells", {})
+        if not isinstance(cells, dict):
+            raise HTTPException(status_code=404, detail="Methods Lab cell not found")
+        cell = cells.get(cell_id)
+        if not isinstance(cell, dict):
+            raise HTTPException(status_code=404, detail="Methods Lab cell not found")
+        documents = cell.get("documents", {})
+        if not isinstance(documents, dict):
+            raise HTTPException(status_code=404, detail="Methods Lab document result not found")
+        result = documents.get(doc_id)
+        if not isinstance(result, dict):
+            raise HTTPException(status_code=404, detail="Methods Lab document result not found")
+        model = next(
+            (item for item in run.get("models", []) if str(item.get("id")) == str(cell.get("model_id"))),
+            None,
+        )
+        method = next(
+            (item for item in run.get("methods", []) if str(item.get("id")) == str(cell.get("method_id"))),
+            None,
+        )
+        stored = copy.deepcopy(result)
+
+    doc = _load_doc(doc_id, session_id)
+    enriched = _enrich_doc(doc, session_id) if doc is not None else None
+    if enriched is None:
+        warnings = stored.get("warnings", [])
+        if not isinstance(warnings, list):
+            warnings = []
+        warnings.append("Referenced document is unavailable in current session.")
+        stored["warnings"] = warnings
+
+    return {
+        "run_id": run_id,
+        "cell_id": cell_id,
+        "doc_id": doc_id,
+        "status": stored.get("status", "pending"),
+        "error": stored.get("error"),
+        "warnings": stored.get("warnings", []),
+        "reference_source_used": stored.get("reference_source_used"),
+        "reference_spans": stored.get("reference_spans", []),
+        "hypothesis_spans": stored.get("hypothesis_spans", []),
+        "metrics": stored.get("metrics"),
+        "llm_confidence": stored.get("llm_confidence"),
+        "transcript_text": enriched.raw_text if enriched is not None else None,
+        "document": {
+            "id": doc_id,
+            "filename": enriched.filename if enriched is not None else stored.get("filename"),
+        },
+        "model": model,
+        "method": method,
     }
 
 
@@ -3317,6 +3791,7 @@ async def export_session_bundle():
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "documents": documents,
         "prompt_lab_runs": _export_prompt_lab_runs(session_id),
+        "methods_lab_runs": _export_methods_lab_runs(session_id),
         "config": _load_config(),
     }
 
@@ -3599,6 +4074,34 @@ async def import_session_bundle(file: UploadFile = File(...)):
                     imported_prompt_lab_runs += 1
                 _save_prompt_lab_index(session_id)
 
+    raw_methods_lab_runs = payload.get("methods_lab_runs", [])
+    imported_methods_lab_runs = 0
+    if raw_methods_lab_runs is not None:
+        if not isinstance(raw_methods_lab_runs, list):
+            warnings.append("Ignored methods_lab_runs because it is not an array.")
+        else:
+            with _methods_lab_lock:
+                methods_run_ids = _load_methods_lab_index(session_id)
+                existing_run_ids = set(methods_run_ids)
+                for run_item in raw_methods_lab_runs:
+                    if not isinstance(run_item, dict):
+                        warnings.append("Skipped malformed methods_lab_runs item (not an object).")
+                        continue
+                    remapped_run, remap_warnings = _remap_methods_lab_run_doc_ids(
+                        run_item,
+                        doc_id_remap,
+                    )
+                    warnings.extend(remap_warnings)
+                    run_id = str(remapped_run.get("id") or str(uuid.uuid4())[:8])
+                    while run_id in existing_run_ids:
+                        run_id = str(uuid.uuid4())[:8]
+                    remapped_run["id"] = run_id
+                    _save_methods_lab_run(remapped_run, session_id)
+                    methods_run_ids.append(run_id)
+                    existing_run_ids.add(run_id)
+                    imported_methods_lab_runs += 1
+                _save_methods_lab_index(session_id)
+
     return {
         "bundle_version": bundle_version,
         "imported_count": len(imported_ids),
@@ -3607,6 +4110,7 @@ async def import_session_bundle(file: UploadFile = File(...)):
         "skipped": skipped,
         "warnings": warnings,
         "imported_prompt_lab_runs": imported_prompt_lab_runs,
+        "imported_methods_lab_runs": imported_methods_lab_runs,
         "total_in_bundle": len(raw_documents),
     }
 
