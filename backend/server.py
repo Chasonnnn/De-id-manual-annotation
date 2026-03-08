@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import io
 import json
 import math
@@ -380,6 +381,24 @@ def _commit_imported_document(
     llm_confidence: LLMConfidenceMetric | None = None,
     imported_label_profile: Literal["simple", "advanced"] | None = None,
 ) -> str:
+    matched_doc_id = _find_existing_import_match(doc=doc, session_id=session_id, ids=ids)
+    if matched_doc_id is not None:
+        _merge_imported_sidecars_into_existing(
+            doc_id=matched_doc_id,
+            session_id=session_id,
+            manual_spans=manual_spans,
+            rule_spans=rule_spans,
+            llm_spans=llm_spans,
+            method_spans=method_spans,
+            llm_runs=llm_runs,
+            method_runs=method_runs,
+            llm_run_metadata=llm_run_metadata,
+            method_run_metadata=method_run_metadata,
+            llm_confidence=llm_confidence,
+            imported_label_profile=imported_label_profile,
+        )
+        return matched_doc_id
+
     new_id = doc.id
     while new_id in existing_ids:
         new_id = str(uuid.uuid4())[:8]
@@ -435,6 +454,195 @@ def _commit_imported_document(
     ids.append(new_id)
     existing_ids.add(new_id)
     return new_id
+
+
+def _document_import_fingerprint(doc: CanonicalDocument) -> tuple[str, str]:
+    return (
+        doc.filename,
+        hashlib.sha256(doc.raw_text.encode("utf-8")).hexdigest(),
+    )
+
+
+def _find_existing_import_match(
+    *,
+    doc: CanonicalDocument,
+    session_id: str,
+    ids: list[str],
+) -> str | None:
+    fingerprint = _document_import_fingerprint(doc)
+    exact = _load_doc(doc.id, session_id)
+    if exact is not None and _document_import_fingerprint(exact) == fingerprint:
+        return exact.id
+
+    best_match_id: str | None = None
+    best_manual_count = -1
+    for existing_id in ids:
+        existing_doc = _load_doc(existing_id, session_id)
+        if existing_doc is None:
+            continue
+        if _document_import_fingerprint(existing_doc) != fingerprint:
+            continue
+        manual_count = len(_load_sidecar(existing_id, "manual", session_id) or [])
+        if manual_count > best_manual_count:
+            best_match_id = existing_id
+            best_manual_count = manual_count
+    return best_match_id
+
+
+def _span_signature(spans: list[CanonicalSpan]) -> list[tuple[int, int, str, str]]:
+    return sorted((span.start, span.end, span.label, span.text) for span in spans)
+
+
+def _prefer_imported_spans(
+    existing_spans: list[CanonicalSpan] | None,
+    imported_spans: list[CanonicalSpan] | None,
+) -> tuple[list[CanonicalSpan] | None, bool]:
+    if not imported_spans:
+        return existing_spans, False
+    if not existing_spans:
+        return imported_spans, True
+    if _span_signature(existing_spans) == _span_signature(imported_spans):
+        return existing_spans, False
+    if len(imported_spans) > len(existing_spans):
+        return imported_spans, True
+    return existing_spans, False
+
+
+def _merge_span_sidecar(
+    *,
+    doc_id: str,
+    kind: str,
+    imported_spans: list[CanonicalSpan] | None,
+    session_id: str,
+):
+    existing_spans = _load_sidecar(doc_id, kind, session_id)
+    chosen_spans, should_save = _prefer_imported_spans(existing_spans, imported_spans)
+    if should_save and chosen_spans:
+        _save_sidecar(doc_id, kind, chosen_spans, session_id)
+
+
+def _total_span_map_count(payload: dict[str, list[CanonicalSpan]]) -> int:
+    return sum(len(spans) for spans in payload.values())
+
+
+def _merge_span_map_sidecar(
+    *,
+    doc_id: str,
+    kind: str,
+    imported_payload: dict[str, list[CanonicalSpan]] | None,
+    session_id: str,
+):
+    if not imported_payload:
+        return
+    existing_payload = _load_span_map_sidecar(doc_id, kind, session_id)
+    if not existing_payload or _total_span_map_count(imported_payload) > _total_span_map_count(
+        existing_payload
+    ):
+        _save_span_map_sidecar(doc_id, kind, imported_payload, session_id)
+
+
+def _merge_run_metadata_map_sidecar(
+    *,
+    doc_id: str,
+    kind: str,
+    imported_payload: dict[str, SavedRunMetadata] | None,
+    session_id: str,
+):
+    if not imported_payload:
+        return
+    existing_payload = _load_run_metadata_map_sidecar(doc_id, kind, session_id)
+    if not existing_payload or len(imported_payload) > len(existing_payload):
+        _save_run_metadata_map_sidecar(doc_id, kind, imported_payload, session_id)
+
+
+def _merge_imported_sidecars_into_existing(
+    *,
+    doc_id: str,
+    session_id: str,
+    manual_spans: list[CanonicalSpan] | None = None,
+    rule_spans: list[CanonicalSpan] | None = None,
+    llm_spans: list[CanonicalSpan] | None = None,
+    method_spans: dict[str, list[CanonicalSpan]] | None = None,
+    llm_runs: dict[str, list[CanonicalSpan]] | None = None,
+    method_runs: dict[str, list[CanonicalSpan]] | None = None,
+    llm_run_metadata: dict[str, SavedRunMetadata] | None = None,
+    method_run_metadata: dict[str, SavedRunMetadata] | None = None,
+    llm_confidence: LLMConfidenceMetric | None = None,
+    imported_label_profile: Literal["simple", "advanced"] | None = None,
+):
+    _merge_span_sidecar(
+        doc_id=doc_id,
+        kind="manual",
+        imported_spans=manual_spans,
+        session_id=session_id,
+    )
+    _merge_span_sidecar(
+        doc_id=doc_id,
+        kind="agent.rule",
+        imported_spans=rule_spans,
+        session_id=session_id,
+    )
+    _merge_span_sidecar(
+        doc_id=doc_id,
+        kind="agent.llm",
+        imported_spans=llm_spans,
+        session_id=session_id,
+    )
+    for method_id, spans in (method_spans or {}).items():
+        _merge_span_sidecar(
+            doc_id=doc_id,
+            kind=f"agent.method.{method_id}",
+            imported_spans=spans,
+            session_id=session_id,
+        )
+
+    _merge_span_map_sidecar(
+        doc_id=doc_id,
+        kind=LLM_RUNS_SIDECAR_KIND,
+        imported_payload=llm_runs,
+        session_id=session_id,
+    )
+    _merge_span_map_sidecar(
+        doc_id=doc_id,
+        kind=METHOD_RUNS_SIDECAR_KIND,
+        imported_payload=method_runs,
+        session_id=session_id,
+    )
+    _merge_run_metadata_map_sidecar(
+        doc_id=doc_id,
+        kind=LLM_RUNS_METADATA_SIDECAR_KIND,
+        imported_payload=llm_run_metadata,
+        session_id=session_id,
+    )
+    _merge_run_metadata_map_sidecar(
+        doc_id=doc_id,
+        kind=METHOD_RUNS_METADATA_SIDECAR_KIND,
+        imported_payload=method_run_metadata,
+        session_id=session_id,
+    )
+
+    if llm_confidence is not None:
+        existing_metric = _load_json_sidecar(doc_id, "agent.llm.metrics", session_id)
+        if not existing_metric:
+            _save_json_sidecar(
+                doc_id,
+                "agent.llm.metrics",
+                llm_confidence.model_dump(),
+                session_id,
+            )
+    if imported_label_profile is not None:
+        existing_last_run = _load_json_sidecar(doc_id, "agent.last_run", session_id)
+        if not existing_last_run:
+            _save_json_sidecar(
+                doc_id,
+                "agent.last_run",
+                {
+                    "mode": "imported",
+                    "label_profile": imported_label_profile,
+                    "updated_at": _now_iso(),
+                },
+                session_id,
+            )
 
 
 def _now_iso() -> str:

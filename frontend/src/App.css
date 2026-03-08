@@ -190,6 +190,13 @@ textarea:focus-visible {
   display: none;
 }
 
+.import-drop-zone {
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .sidebar-actions {
   display: flex;
   flex-direction: column;

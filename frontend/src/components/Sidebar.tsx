@@ -8,7 +8,7 @@ interface Props {
   onUpload: (file: File) => void;
   onDelete: (id: string) => void;
   onExportSession: (mode: "full" | "ground_truth", source: AnnotationSource) => void;
-  onImportSession: (file: File) => void;
+  onImportSession: (files: File[]) => void;
   exportSourceOptions: Array<{ value: AnnotationSource; label: string }>;
   sessionProfile: SessionProfile;
   onSessionProfileChange: (profile: SessionProfile) => void;
@@ -40,6 +40,7 @@ export default function Sidebar({
 }: Props) {
   const [search, setSearch] = useState("");
   const [dragOver, setDragOver] = useState(false);
+  const [importDragOver, setImportDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const [exportMode, setExportMode] = useState<"full" | "ground_truth">("full");
@@ -60,6 +61,17 @@ export default function Sidebar({
     [onUpload, uploading],
   );
 
+  const handleImportDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setImportDragOver(false);
+      if (importing || exporting || uploading) return;
+      const files = Array.from(e.dataTransfer.files ?? []);
+      if (files.length > 0) onImportSession(files);
+    },
+    [exporting, importing, onImportSession, uploading],
+  );
+
   const handleFileChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       if (uploading) return;
@@ -68,6 +80,21 @@ export default function Sidebar({
       e.target.value = "";
     },
     [onUpload, uploading],
+  );
+
+  const handleDropZoneKeyDown = useCallback(
+    (
+      event: React.KeyboardEvent<HTMLDivElement>,
+      openPicker: () => void,
+      disabled: boolean,
+    ) => {
+      if (disabled) return;
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openPicker();
+      }
+    },
+    [],
   );
 
   useEffect(() => {
@@ -97,7 +124,15 @@ export default function Sidebar({
           <li
             key={doc.id}
             className={doc.id === selectedId ? "active" : ""}
+            role="button"
+            tabIndex={0}
             onClick={() => onSelect(doc.id)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onSelect(doc.id);
+              }
+            }}
           >
             <span className="doc-row-main">
               <span className={`status-badge ${doc.status}`} />
@@ -135,6 +170,11 @@ export default function Sidebar({
           onDragLeave={() => setDragOver(false)}
           onDrop={handleDrop}
           onClick={() => !uploading && fileRef.current?.click()}
+          onKeyDown={(e) =>
+            handleDropZoneKeyDown(e, () => fileRef.current?.click(), uploading)
+          }
+          role="button"
+          tabIndex={uploading ? -1 : 0}
         >
           {uploading ? "Uploading..." : "Drop file here or click to upload"}
           <input
@@ -227,24 +267,45 @@ export default function Sidebar({
               </>
             )}
           </div>
-          <button
-            type="button"
-            className="sidebar-action-btn"
-            onClick={() => importRef.current?.click()}
-            disabled={importing || exporting || uploading || savingProfile}
+          <div
+            className={`drop-zone import-drop-zone ${importDragOver ? "drag-over" : ""} ${importing ? "uploading" : ""}`}
+            onDragOver={(e) => {
+              e.preventDefault();
+              if (!importing && !exporting && !uploading) {
+                setImportDragOver(true);
+              }
+            }}
+            onDragLeave={() => setImportDragOver(false)}
+            onDrop={handleImportDrop}
+            onClick={() =>
+              !importing && !exporting && !uploading && importRef.current?.click()
+            }
+            onKeyDown={(e) =>
+              handleDropZoneKeyDown(
+                e,
+                () => importRef.current?.click(),
+                importing || exporting || uploading,
+              )
+            }
+            role="button"
+            tabIndex={importing || exporting || uploading ? -1 : 0}
+            aria-label="Import session bundles"
           >
-            {importing ? "Importing..." : "Import Session"}
-          </button>
+            {importing
+              ? "Importing..."
+              : "Drop session bundles here or click to import"}
+          </div>
           <input
             ref={importRef}
             id="sidebar-import-file"
             name="import_file"
             type="file"
+            multiple
             accept=".json,.zip"
             style={{ display: "none" }}
             onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) onImportSession(file);
+              const files = Array.from(e.target.files ?? []);
+              if (files.length > 0) onImportSession(files);
               e.target.value = "";
             }}
             disabled={importing || exporting || uploading}

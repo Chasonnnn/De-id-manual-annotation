@@ -227,9 +227,14 @@ def test_session_export_import_roundtrip(client):
     assert isinstance(imported_doc["agent_outputs"]["rule"], list)
 
 
-def test_session_import_deduplicates_existing_ids(client):
+def test_session_import_reuses_existing_matching_document(client):
     first = _upload(client)
     doc_id = first.json()["id"]
+    save_resp = client.put(
+        f"/api/documents/{doc_id}/manual-annotations",
+        json=[{"start": 6, "end": 10, "label": "NAME", "text": "Anna"}],
+    )
+    assert save_resp.status_code == 200
 
     export_resp = client.get("/api/session/export")
     assert export_resp.status_code == 200
@@ -243,11 +248,90 @@ def test_session_import_deduplicates_existing_ids(client):
     assert import_resp.status_code == 200
     data = import_resp.json()
     assert data["imported_count"] == 1
-    assert data["imported_ids"][0] != doc_id
+    assert data["imported_ids"] == [doc_id]
 
     docs_resp = client.get("/api/documents")
     assert docs_resp.status_code == 200
-    assert len(docs_resp.json()) == 2
+    assert len(docs_resp.json()) == 1
+
+
+def test_session_import_matches_existing_doc_by_filename_and_transcript_and_prefers_richer_manual_annotations(
+    client,
+):
+    upload_resp = _upload(
+        client,
+        data=_make_hips_v1_custom(
+            "Hello Anna, call Sue please.",
+            pii_occurrences=[{"start": 6, "end": 10, "text": "Anna", "pii_type": "NAME"}],
+        ),
+        filename="shared.json",
+    )
+    assert upload_resp.status_code == 200
+    existing_doc_id = upload_resp.json()["id"]
+
+    existing_save = client.put(
+        f"/api/documents/{existing_doc_id}/manual-annotations",
+        json=[{"start": 6, "end": 10, "label": "NAME", "text": "Anna"}],
+    )
+    assert existing_save.status_code == 200
+
+    existing_doc = client.get(f"/api/documents/{existing_doc_id}").json()
+    imported_source = {
+        **existing_doc,
+        "id": "imported-doc-1",
+        "manual_annotations": [],
+        "agent_annotations": [],
+        "agent_outputs": {
+            "rule": [],
+            "llm": [],
+            "llm_runs": {},
+            "llm_run_metadata": {},
+            "methods": {},
+            "method_run_metadata": {},
+        },
+        "agent_run_warnings": [],
+        "agent_run_metrics": {"llm_confidence": None, "label_profile": None, "chunk_diagnostics": []},
+    }
+    import_payload = {
+        "format": "annotation_tool_session",
+        "version": 4,
+        "project": {"project_name": "", "author": ""},
+        "compatibility": {"tool_version": "2026.03.03", "import_supported_versions": [1, 2, 3, 4]},
+        "documents": [
+            {
+                "source": imported_source,
+                "manual_annotations": [
+                    {"start": 0, "end": 5, "label": "NAME", "text": "Hello"},
+                    {"start": 6, "end": 10, "label": "NAME", "text": "Anna"},
+                ],
+            }
+        ],
+        "prompt_lab_runs": [],
+        "methods_lab_runs": [],
+    }
+
+    import_resp = client.post(
+        "/api/session/import",
+        files={
+            "file": (
+                "session_bundle.json",
+                json.dumps(import_payload).encode(),
+                "application/json",
+            )
+        },
+    )
+    assert import_resp.status_code == 200
+    data = import_resp.json()
+    assert data["imported_ids"] == [existing_doc_id]
+
+    docs_resp = client.get("/api/documents")
+    assert docs_resp.status_code == 200
+    assert len(docs_resp.json()) == 1
+
+    refreshed = client.get(f"/api/documents/{existing_doc_id}")
+    assert refreshed.status_code == 200
+    refreshed_doc = refreshed.json()
+    assert len(refreshed_doc["manual_annotations"]) == 2
 
 
 def test_session_export_import_preserves_agent_llm_metrics(client, monkeypatch):
@@ -2097,7 +2181,7 @@ def test_prompt_lab_export_import_remaps_doc_ids(client, monkeypatch):
     imported = import_resp.json()
     assert imported["imported_prompt_lab_runs"] >= 1
     new_doc_id = imported["imported_ids"][0]
-    assert new_doc_id != original_doc_id
+    assert new_doc_id == original_doc_id
 
     runs_resp = client.get("/api/prompt-lab/runs")
     assert runs_resp.status_code == 200
@@ -2507,7 +2591,7 @@ def test_methods_lab_export_import_remaps_doc_ids(client, monkeypatch):
     imported = import_resp.json()
     assert imported["imported_methods_lab_runs"] >= 1
     new_doc_id = imported["imported_ids"][0]
-    assert new_doc_id != original_doc_id
+    assert new_doc_id == original_doc_id
 
     runs_resp = client.get("/api/methods-lab/runs")
     assert runs_resp.status_code == 200

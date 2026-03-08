@@ -48,6 +48,7 @@ import DashboardPanel from "./components/DashboardPanel";
 import { computeDiff } from "./components/DiffOverlay";
 import PromptLabTab from "./components/PromptLabTab";
 import MethodsLabTab from "./components/MethodsLabTab";
+import { importSessionFiles } from "./importSessionFiles";
 
 // ---------------------------------------------------------------------------
 // 4.3: Error boundary to prevent white-screen crashes
@@ -446,12 +447,15 @@ function AppContent() {
   }, [sessionProfile]);
 
   const handleImportSession = useCallback(
-    async (file: File) => {
+    async (files: File[]) => {
+      if (files.length === 0) return;
       setImporting(true);
+      setError(null);
+      setWarning(null);
       try {
-        const result = await importSession(file);
-        const refreshed = await refreshDocuments();
+        const result = await importSessionFiles(files, importSession);
         if (result.imported_ids.length > 0) {
+          const refreshed = await refreshDocuments();
           const firstImportedId = result.imported_ids[0] ?? null;
           const selectedStillExists =
             selectedId !== null && refreshed.some((docItem) => docItem.id === selectedId);
@@ -459,20 +463,44 @@ function AppContent() {
             setSelectedId(firstImportedId);
           }
         }
+        if (result.imported_count > 0) {
+          const refreshedProfile = await getSessionProfile();
+          setSessionProfile(refreshedProfile);
+        }
+
         const warnings: string[] = [];
-        if (result.skipped_count > 0) {
+        if (result.imported_count > 0) {
           warnings.push(
-            `Imported ${result.imported_count} document(s), skipped ${result.skipped_count}.`,
+            `Imported ${result.imported_count} document(s) from ${result.succeeded_file_count} file(s).`,
           );
-        } else {
-          warnings.push(`Imported ${result.imported_count} document(s).`);
+        }
+        if ((result.imported_prompt_lab_runs ?? 0) > 0) {
+          warnings.push(
+            `Imported ${result.imported_prompt_lab_runs} Prompt Lab run(s).`,
+          );
+        }
+        if ((result.imported_methods_lab_runs ?? 0) > 0) {
+          warnings.push(
+            `Imported ${result.imported_methods_lab_runs} Methods Lab run(s).`,
+          );
+        }
+        if (result.skipped_count > 0) {
+          warnings.push(`Skipped ${result.skipped_count} item(s).`);
         }
         if ((result.warnings ?? []).length > 0) {
           warnings.push(`Import warnings: ${result.warnings?.join(" | ")}`);
         }
-        setWarning(warnings.join(" "));
-        const refreshedProfile = await getSessionProfile();
-        setSessionProfile(refreshedProfile);
+        if (warnings.length > 0) {
+          setWarning(warnings.join(" "));
+        }
+        if (result.failed_file_count > 0) {
+          const failureSummary = result.failed_files
+            .map((item) => `${item.file_name}: ${item.message}`)
+            .join(" | ");
+          setError(
+            `Failed to import ${result.failed_file_count} file(s). ${failureSummary}`,
+          );
+        }
       } catch (e: unknown) {
         setError(String(e));
       } finally {
