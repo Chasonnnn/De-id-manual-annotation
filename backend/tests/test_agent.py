@@ -25,6 +25,7 @@ from agent import (
     run_method_with_metadata,
     run_regex,
 )
+import agent
 from models import CanonicalSpan, LLMConfidenceMetric
 
 
@@ -1266,3 +1267,8 @@ def test_run_presidio_pass_reuses_analyzer_within_thread(monkeypatch):
     assert [span.text for span in spans_second] == ["Bob "]
     assert provider_init_count == 1
     assert analyzer_init_count == 1
+
+
+def test_agent_does_not_keep_stale_name_affix_helpers():
+    assert not hasattr(agent, "_snap_name_boundary_affixes")
+    assert not hasattr(agent, "_canonicalize_name_boundary_text")
