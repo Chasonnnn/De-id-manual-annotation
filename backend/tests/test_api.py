@@ -73,6 +73,38 @@ def _make_hips_v1_custom(transcript: str, pii_occurrences: list[dict] | None = N
     ).encode()
 
 
+def _make_multi_record_jsonl() -> bytes:
+    records = [
+        {
+            "transcript": [
+                {
+                    "role": "volunteer",
+                    "content": "Hello Liam",
+                    "sequence_id": 0,
+                    "session_id": "session-001",
+                    "annotations": [
+                        {"start": 6, "end": 10, "pii_type": "NAME", "text": "Liam"}
+                    ],
+                }
+            ]
+        },
+        {
+            "transcript": [
+                {
+                    "role": "student",
+                    "content": "Meet Ava",
+                    "sequence_id": 0,
+                    "session_id": "session-002",
+                    "annotations": [
+                        {"start": 5, "end": 8, "pii_type": "NAME", "text": "Ava"}
+                    ],
+                }
+            ]
+        },
+    ]
+    return "\n".join(json.dumps(record) for record in records).encode()
+
+
 def _upload(client, data=None, filename="test.json"):
     if data is None:
         data = _make_hips_v1()
@@ -179,6 +211,264 @@ def test_get_document_not_found(client):
     assert resp.status_code == 404
 
 
+def test_upload_multirecord_jsonl_creates_import_folder_and_hidden_child_docs(client):
+    resp = _upload(
+        client,
+        data=_make_multi_record_jsonl(),
+        filename="sessions.jsonl",
+    )
+    assert resp.status_code == 200
+    merged = resp.json()
+
+    docs_resp = client.get("/api/documents")
+    assert docs_resp.status_code == 200
+    docs = docs_resp.json()
+    assert [item["id"] for item in docs] == [merged["id"]]
+
+    folders_resp = client.get("/api/folders")
+    assert folders_resp.status_code == 200
+    folders = folders_resp.json()
+    assert len(folders) == 1
+    folder = folders[0]
+    assert folder["name"] == "sessions"
+    assert folder["kind"] == "import"
+    assert folder["merged_doc_id"] == merged["id"]
+    assert folder["doc_count"] == 2
+    assert folder["child_folder_count"] == 0
+
+    detail_resp = client.get(f"/api/folders/{folder['id']}")
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert [item["display_name"] for item in detail["documents"]] == [
+        "Session session-001",
+        "Session session-002",
+    ]
+    assert [item["filename"] for item in detail["documents"]] == [
+        "sessions.record-0001.json",
+        "sessions.record-0002.json",
+    ]
+    assert detail["child_folder_ids"] == []
+    assert len(detail["doc_ids"]) == 2
+
+    hidden_doc_id = detail["documents"][0]["id"]
+    hidden_doc_resp = client.get(f"/api/documents/{hidden_doc_id}")
+    assert hidden_doc_resp.status_code == 200
+    assert hidden_doc_resp.json()["raw_text"] == "volunteer: Hello Liam"
+
+
+def test_sample_folder_creation_and_import_folder_deletion(client):
+    upload_resp = _upload(
+        client,
+        data=_make_multi_record_jsonl(),
+        filename="sessions.jsonl",
+    )
+    assert upload_resp.status_code == 200
+    merged_doc_id = upload_resp.json()["id"]
+
+    folder_id = client.get("/api/folders").json()[0]["id"]
+    import_detail = client.get(f"/api/folders/{folder_id}").json()
+    hidden_doc_id = import_detail["documents"][0]["id"]
+
+    sample_resp = client.post(
+        f"/api/folders/{folder_id}/samples",
+        json={"count": 1},
+    )
+    assert sample_resp.status_code == 200
+    sample = sample_resp.json()
+    assert sample["kind"] == "sample"
+    assert sample["parent_folder_id"] == folder_id
+    assert sample["source_folder_id"] == folder_id
+    assert sample["sample_size"] == 1
+    assert sample["sample_seed"] is not None
+    assert len(sample["doc_ids"]) == 1
+
+    too_large_resp = client.post(
+        f"/api/folders/{folder_id}/samples",
+        json={"count": 3},
+    )
+    assert too_large_resp.status_code == 400
+
+    hidden_delete_resp = client.delete(f"/api/documents/{hidden_doc_id}")
+    assert hidden_delete_resp.status_code == 409
+
+    delete_sample_resp = client.delete(f"/api/folders/{sample['id']}")
+    assert delete_sample_resp.status_code == 200
+    assert client.get(f"/api/documents/{hidden_doc_id}").status_code == 200
+
+    delete_import_resp = client.delete(f"/api/folders/{folder_id}")
+    assert delete_import_resp.status_code == 200
+    assert client.get(f"/api/documents/{hidden_doc_id}").status_code == 404
+    assert client.get(f"/api/documents/{merged_doc_id}").status_code == 200
+    assert client.get("/api/folders").json() == []
+    assert [item["id"] for item in client.get("/api/documents").json()] == [merged_doc_id]
+
+
+def test_prompt_lab_run_accepts_folder_ids(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_llm_with_metadata(**kwargs):
+        text = str(kwargs["text"])
+        target = "Liam" if "Liam" in text else "Ava"
+        start = text.index(target)
+        return SimpleNamespace(
+            spans=[
+                CanonicalSpan(
+                    start=start,
+                    end=start + len(target),
+                    label="NAME",
+                    text=target,
+                )
+            ],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(),
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    upload_resp = _upload(
+        client,
+        data=_make_multi_record_jsonl(),
+        filename="sessions.jsonl",
+    )
+    assert upload_resp.status_code == 200
+    folder_id = client.get("/api/folders").json()[0]["id"]
+    folder_detail = client.get(f"/api/folders/{folder_id}").json()
+    child_doc_ids = [item["id"] for item in folder_detail["documents"]]
+
+    create_resp = client.post(
+        "/api/prompt-lab/runs",
+        json={
+            "name": "folder-prompt-run",
+            "folder_ids": [folder_id],
+            "prompts": [
+                {
+                    "id": "p1",
+                    "label": "Baseline",
+                    "system_prompt": "Detect pii spans as strict JSON",
+                }
+            ],
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "reference_source": "pre",
+                "fallback_reference_source": "pre",
+            },
+            "concurrency": 2,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+
+    final = _wait_for_prompt_lab_terminal(client, run_id)
+    assert final["status"] == "completed"
+    assert final["folder_ids"] == [folder_id]
+    assert final["doc_ids"] == child_doc_ids
+    assert final["matrix"]["cells"][0]["completed_docs"] == 2
+
+
+def test_methods_lab_run_accepts_folder_ids(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_method_with_metadata(**kwargs):
+        text = str(kwargs["text"])
+        target = "Liam" if "Liam" in text else "Ava"
+        start = text.index(target)
+        return SimpleNamespace(
+            spans=[
+                CanonicalSpan(
+                    start=start,
+                    end=start + len(target),
+                    label="NAME",
+                    text=target,
+                )
+            ],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(),
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    upload_resp = _upload(
+        client,
+        data=_make_multi_record_jsonl(),
+        filename="sessions.jsonl",
+    )
+    assert upload_resp.status_code == 200
+    folder_id = client.get("/api/folders").json()[0]["id"]
+    folder_detail = client.get(f"/api/folders/{folder_id}").json()
+    child_doc_ids = [item["id"] for item in folder_detail["documents"]]
+
+    for doc_id in child_doc_ids:
+        document = client.get(f"/api/documents/{doc_id}").json()
+        save_resp = client.put(
+            f"/api/documents/{doc_id}/manual-annotations",
+            json=document["pre_annotations"],
+        )
+        assert save_resp.status_code == 200
+
+    create_resp = client.post(
+        "/api/methods-lab/runs",
+        json={
+            "name": "folder-methods-run",
+            "folder_ids": [folder_id],
+            "methods": [
+                {
+                    "id": "method_1",
+                    "label": "Default",
+                    "method_id": "default",
+                }
+            ],
+            "models": [
+                {
+                    "id": "model_1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "label_profile": "simple",
+                "label_projection": "native",
+                "chunk_mode": "off",
+                "chunk_size_chars": 10000,
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+
+    final = _wait_for_methods_lab_terminal(client, run_id)
+    assert final["status"] == "completed"
+    assert final["folder_ids"] == [folder_id]
+    assert final["doc_ids"] == child_doc_ids
+    assert final["matrix"]["cells"][0]["completed_docs"] == 2
+
+
 def test_delete_document(client):
     resp = _upload(client)
     doc_id = resp.json()["id"]
@@ -218,7 +508,7 @@ def test_session_export_import_roundtrip(client):
     assert export_resp.status_code == 200
     bundle = export_resp.json()
     assert bundle["format"] == "annotation_tool_session"
-    assert bundle["version"] == 4
+    assert bundle["version"] == 5
     assert "project" in bundle
     assert "compatibility" in bundle
     assert len(bundle["documents"]) == 1
@@ -234,7 +524,7 @@ def test_session_export_import_roundtrip(client):
     )
     assert import_resp.status_code == 200
     imported = import_resp.json()
-    assert imported["bundle_version"] == 4
+    assert imported["bundle_version"] == 5
     assert imported["imported_count"] == 1
     assert imported["skipped_count"] == 0
 
@@ -244,6 +534,132 @@ def test_session_export_import_roundtrip(client):
     imported_doc = doc_resp.json()
     assert len(imported_doc["manual_annotations"]) == 1
     assert isinstance(imported_doc["agent_outputs"]["rule"], list)
+
+
+def test_session_export_import_roundtrip_preserves_folders_and_folder_run_selections(
+    client,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_llm_with_metadata(**kwargs):
+        text = str(kwargs["text"])
+        target = "Liam" if "Liam" in text else "Ava"
+        start = text.index(target)
+        return SimpleNamespace(
+            spans=[
+                CanonicalSpan(
+                    start=start,
+                    end=start + len(target),
+                    label="NAME",
+                    text=target,
+                )
+            ],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(),
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    upload_resp = _upload(
+        client,
+        data=_make_multi_record_jsonl(),
+        filename="sessions.jsonl",
+    )
+    assert upload_resp.status_code == 200
+    merged_doc_id = upload_resp.json()["id"]
+    folder_id = client.get("/api/folders").json()[0]["id"]
+
+    run_resp = client.post(
+        "/api/prompt-lab/runs",
+        json={
+            "name": "folder-prompt-run",
+            "folder_ids": [folder_id],
+            "prompts": [
+                {
+                    "id": "p1",
+                    "label": "Baseline",
+                    "system_prompt": "Detect pii spans as strict JSON",
+                }
+            ],
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "reference_source": "pre",
+                "fallback_reference_source": "pre",
+            },
+            "concurrency": 2,
+        },
+    )
+    assert run_resp.status_code == 200
+    original_run_id = run_resp.json()["id"]
+    _wait_for_prompt_lab_terminal(client, original_run_id)
+
+    export_resp = client.get("/api/session/export")
+    assert export_resp.status_code == 200
+    bundle = export_resp.json()
+    assert bundle["version"] == 5
+    assert len(bundle["documents"]) == 3
+    assert len(bundle["folders"]) == 1
+    assert bundle["prompt_lab_runs"][0]["folder_ids"] == [folder_id]
+
+    delete_folder_resp = client.delete(f"/api/folders/{folder_id}")
+    assert delete_folder_resp.status_code == 200
+    delete_doc_resp = client.delete(f"/api/documents/{merged_doc_id}")
+    assert delete_doc_resp.status_code == 200
+    assert client.get("/api/documents").json() == []
+
+    import_resp = client.post(
+        "/api/session/import",
+        files={"file": ("session_bundle.json", json.dumps(bundle).encode(), "application/json")},
+    )
+    assert import_resp.status_code == 200
+    imported = import_resp.json()
+    assert imported["bundle_version"] == 5
+    assert imported["imported_count"] == 3
+    assert imported["imported_prompt_lab_runs"] >= 1
+
+    docs_resp = client.get("/api/documents")
+    assert docs_resp.status_code == 200
+    docs = docs_resp.json()
+    assert len(docs) == 1
+
+    folders_resp = client.get("/api/folders")
+    assert folders_resp.status_code == 200
+    folders = folders_resp.json()
+    assert len(folders) == 1
+    imported_folder_id = folders[0]["id"]
+
+    folder_detail_resp = client.get(f"/api/folders/{imported_folder_id}")
+    assert folder_detail_resp.status_code == 200
+    assert len(folder_detail_resp.json()["documents"]) == 2
+
+    runs_resp = client.get("/api/prompt-lab/runs")
+    assert runs_resp.status_code == 200
+    runs = runs_resp.json()["runs"]
+    imported_run = next((item for item in runs if item["id"] != original_run_id), None)
+    assert imported_run is not None
+
+    imported_detail_resp = client.get(f"/api/prompt-lab/runs/{imported_run['id']}")
+    assert imported_detail_resp.status_code == 200
+    imported_detail = imported_detail_resp.json()
+    assert imported_detail["folder_ids"] == [imported_folder_id]
+    assert len(imported_detail["doc_ids"]) == 2
 
 
 def test_session_import_reuses_existing_matching_document(client):

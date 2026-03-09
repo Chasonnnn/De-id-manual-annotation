@@ -11,6 +11,8 @@ import type {
   CanonicalSpan,
   DashboardMetricsResult,
   DocumentSummary,
+  FolderDetail,
+  FolderSummary,
   LabelProjection,
   MatchMode,
   MethodView,
@@ -19,9 +21,12 @@ import type {
   SessionProfile,
 } from "./types";
 import {
+  createFolderSample,
+  deleteFolder,
   deleteDocument,
   exportGroundTruth,
   exportSession,
+  getFolder,
   getAgentProgress,
   getAgentMethods,
   getDocument,
@@ -29,6 +34,7 @@ import {
   getMetrics,
   getSessionProfile,
   importSession,
+  listFolders,
   listDocuments,
   runAgent,
   updateSessionProfile,
@@ -231,13 +237,15 @@ function toPromptTemplatesFromSnapshot(
 // ---------------------------------------------------------------------------
 // Main App
 // ---------------------------------------------------------------------------
-function AppContent() {
+function useAppContentController() {
   const [mainTab, setMainTab] = useState<
     "workspace" | "prompt_lab" | "methods_lab" | "dashboard"
   >(
     "workspace",
   );
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
+  const [folders, setFolders] = useState<FolderSummary[]>([]);
+  const [folderDetailsById, setFolderDetailsById] = useState<Record<string, FolderDetail>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [doc, setDoc] = useState<CanonicalDocument | null>(null);
   const [loading, setLoading] = useState(false);
@@ -247,6 +255,7 @@ function AppContent() {
   const [agentRunProgress, setAgentRunProgress] = useState<AgentRunProgress | null>(null);
   const [uploading, setUploading] = useState(false); // 4.2: upload loading
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [folderBusyId, setFolderBusyId] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
@@ -298,8 +307,23 @@ function AppContent() {
 
   const refreshDocuments = useCallback(async () => {
     const docs = await listDocuments();
+    const nextFolders = await listFolders();
+    const folderDetails = await Promise.all(
+      nextFolders.map(async (folder) => getFolder(folder.id)),
+    );
+    const detailMap = Object.fromEntries(
+      folderDetails.map((detail) => [detail.id, detail]),
+    ) as Record<string, FolderDetail>;
     setDocuments(docs);
-    return docs;
+    setFolders(nextFolders);
+    setFolderDetailsById(detailMap);
+    return {
+      documents: docs,
+      allDocIds: new Set([
+        ...docs.map((item) => item.id),
+        ...folderDetails.flatMap((detail) => detail.documents.map((item) => item.id)),
+      ]),
+    };
   }, []);
 
   // Load document list
@@ -319,28 +343,42 @@ function AppContent() {
       .catch((e: unknown) => setError(String(e)));
   }, []);
 
-  // Load selected document
-  useEffect(() => {
-    if (!selectedId) {
-      setDoc(null);
-      setAgentChunked(false);
-      setMethodChunked(false);
-      setAgentRunProgress(null);
+  const clearSelectedDocumentState = useCallback(() => {
+    setDoc(null);
+    setAgentChunked(false);
+    setMethodChunked(false);
+    setAgentRunProgress(null);
+  }, []);
+
+  const applyLoadedDocumentState = useCallback((nextDoc: CanonicalDocument) => {
+    setDoc(nextDoc);
+    setMetrics(null);
+    setSaveStatus("idle");
+    setWarning(null);
+    setAgentChunked(false);
+    setMethodChunked(false);
+  }, []);
+
+  const loadSelectedDocument = useCallback(async (docId: string | null) => {
+    if (!docId) {
+      clearSelectedDocumentState();
       return;
     }
     setLoading(true);
-    getDocument(selectedId)
-      .then((d) => {
-        setDoc(d);
-        setMetrics(null);
-        setSaveStatus("idle");
-        setWarning(null);
-        setAgentChunked(false);
-        setMethodChunked(false);
-      })
-      .catch((e: unknown) => setError(String(e)))
-      .finally(() => setLoading(false));
-  }, [selectedId]);
+    try {
+      const nextDoc = await getDocument(docId);
+      applyLoadedDocumentState(nextDoc);
+    } catch (e: unknown) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [applyLoadedDocumentState, clearSelectedDocumentState]);
+
+  // Load selected document
+  useEffect(() => {
+    void loadSelectedDocument(selectedId);
+  }, [loadSelectedDocument, selectedId]);
 
   useEffect(() => {
     if (!doc || (!agentRunning && !methodRunning)) return;
@@ -397,8 +435,8 @@ function AppContent() {
       try {
         await deleteDocument(docId);
         const refreshed = await refreshDocuments();
-        if (selectedId === docId) {
-          const nextId = refreshed[0]?.id ?? null;
+        if (selectedId === docId || !refreshed.allDocIds.has(selectedId ?? "")) {
+          const nextId = refreshed.documents[0]?.id ?? null;
           setSelectedId(nextId);
           if (!nextId) {
             setDoc(null);
@@ -409,6 +447,45 @@ function AppContent() {
         setError(String(e));
       } finally {
         setDeletingId(null);
+      }
+    },
+    [refreshDocuments, selectedId],
+  );
+
+  const handleCreateFolderSample = useCallback(
+    async (folderId: string, count: number) => {
+      setFolderBusyId(folderId);
+      try {
+        await createFolderSample(folderId, count);
+        await refreshDocuments();
+      } catch (e: unknown) {
+        setError(String(e));
+      } finally {
+        setFolderBusyId(null);
+      }
+    },
+    [refreshDocuments],
+  );
+
+  const handleDeleteFolder = useCallback(
+    async (folderId: string) => {
+      if (!window.confirm("Delete this folder and its managed transcript set?")) return;
+      setFolderBusyId(folderId);
+      try {
+        await deleteFolder(folderId);
+        const refreshed = await refreshDocuments();
+        if (selectedId && !refreshed.allDocIds.has(selectedId)) {
+          const nextId = refreshed.documents[0]?.id ?? null;
+          setSelectedId(nextId);
+          if (!nextId) {
+            setDoc(null);
+            setMetrics(null);
+          }
+        }
+      } catch (e: unknown) {
+        setError(String(e));
+      } finally {
+        setFolderBusyId(null);
       }
     },
     [refreshDocuments, selectedId],
@@ -459,7 +536,7 @@ function AppContent() {
           const refreshed = await refreshDocuments();
           const firstImportedId = result.imported_ids[0] ?? null;
           const selectedStillExists =
-            selectedId !== null && refreshed.some((docItem) => docItem.id === selectedId);
+            selectedId !== null && refreshed.allDocIds.has(selectedId);
           if (!selectedStillExists && firstImportedId) {
             setSelectedId(firstImportedId);
           }
@@ -991,7 +1068,162 @@ function AppContent() {
     return getGlobalDiffForSource(source);
   };
 
-  // Build ordered list of panes to render
+  return {
+    mainTab,
+    setMainTab,
+    documents,
+    folders,
+    folderDetailsById,
+    selectedId,
+    setSelectedId,
+    doc,
+    loading,
+    error,
+    setError,
+    warning,
+    setWarning,
+    runToasts,
+    dismissRunToast,
+    agentRunProgress,
+    uploading,
+    deletingId,
+    folderBusyId,
+    exporting,
+    importing,
+    savingProfile,
+    sessionProfile,
+    setSessionProfile,
+    orderedVisiblePanes,
+    diffMode,
+    setDiffMode,
+    reference,
+    setReference,
+    hypothesis,
+    setHypothesis,
+    matchMode,
+    setMatchMode,
+    labelProjection,
+    setLabelProjection,
+    agentView,
+    setAgentView,
+    agentLlmRun,
+    setAgentLlmRun,
+    methodCatalog,
+    methodView,
+    setMethodView,
+    agentRunning,
+    methodRunning,
+    agentChunked,
+    methodChunked,
+    metrics,
+    metricsLoading,
+    dashboard,
+    dashboardLoading,
+    saveStatus,
+    registerPane,
+    handleScroll,
+    sourceOptions,
+    llmRunOptions,
+    agentChunkDiagnostics,
+    methodChunkDiagnostics,
+    handleUpload,
+    handleDeleteDocument,
+    handleCreateFolderSample,
+    handleDeleteFolder,
+    handleExportSession,
+    handleImportSession,
+    handleSaveSessionProfile,
+    handleDashboardRefresh,
+    handleTogglePane,
+    handleManualChange,
+    handleRunAgent,
+    handleRunMethod,
+    handleMetricsRefresh,
+    getDiffSpans,
+    getAgentSpans,
+    getMethodSpans,
+  };
+}
+
+type AppContentController = ReturnType<typeof useAppContentController>;
+
+function renderAppContent(controller: AppContentController) {
+  const {
+    mainTab,
+    setMainTab,
+    documents,
+    folders,
+    folderDetailsById,
+    selectedId,
+    setSelectedId,
+    doc,
+    loading,
+    error,
+    setError,
+    warning,
+    setWarning,
+    runToasts,
+    dismissRunToast,
+    agentRunProgress,
+    uploading,
+    deletingId,
+    folderBusyId,
+    exporting,
+    importing,
+    savingProfile,
+    sessionProfile,
+    setSessionProfile,
+    orderedVisiblePanes,
+    diffMode,
+    setDiffMode,
+    reference,
+    setReference,
+    hypothesis,
+    setHypothesis,
+    matchMode,
+    setMatchMode,
+    labelProjection,
+    setLabelProjection,
+    agentView,
+    setAgentView,
+    agentLlmRun,
+    setAgentLlmRun,
+    methodCatalog,
+    methodView,
+    setMethodView,
+    agentRunning,
+    methodRunning,
+    agentChunked,
+    methodChunked,
+    metrics,
+    metricsLoading,
+    dashboard,
+    dashboardLoading,
+    saveStatus,
+    registerPane,
+    handleScroll,
+    sourceOptions,
+    llmRunOptions,
+    agentChunkDiagnostics,
+    methodChunkDiagnostics,
+    handleUpload,
+    handleDeleteDocument,
+    handleCreateFolderSample,
+    handleDeleteFolder,
+    handleExportSession,
+    handleImportSession,
+    handleSaveSessionProfile,
+    handleDashboardRefresh,
+    handleTogglePane,
+    handleManualChange,
+    handleRunAgent,
+    handleRunMethod,
+    handleMetricsRefresh,
+    getDiffSpans,
+    getAgentSpans,
+    getMethodSpans,
+  } = controller;
+
   const allPanes: PaneType[] = orderedVisiblePanes;
   let paneIndex = 0;
 
@@ -999,10 +1231,14 @@ function AppContent() {
     <div className="app-layout">
       <Sidebar
         documents={documents}
+        folders={folders}
+        folderDetailsById={folderDetailsById}
         selectedId={selectedId}
         onSelect={setSelectedId}
         onUpload={handleUpload}
         onDelete={handleDeleteDocument}
+        onCreateFolderSample={handleCreateFolderSample}
+        onDeleteFolder={handleDeleteFolder}
         onExportSession={handleExportSession}
         onImportSession={handleImportSession}
         exportSourceOptions={sourceOptions}
@@ -1011,6 +1247,7 @@ function AppContent() {
         onSaveSessionProfile={handleSaveSessionProfile}
         uploading={uploading}
         deletingId={deletingId}
+        folderBusyId={folderBusyId}
         exporting={exporting}
         importing={importing}
         savingProfile={savingProfile}
@@ -1049,12 +1286,14 @@ function AppContent() {
         {mainTab === "prompt_lab" ? (
           <PromptLabTab
             documents={documents}
+            folders={folders}
             selectedDocumentId={selectedId}
             onSelectDocument={setSelectedId}
           />
         ) : mainTab === "methods_lab" ? (
           <MethodsLabTab
             documents={documents}
+            folders={folders}
             selectedDocumentId={selectedId}
             onSelectDocument={setSelectedId}
           />
@@ -1064,7 +1303,10 @@ function AppContent() {
               <div className="dashboard-tab-controls">
                 <label>
                   Reference
-                  <select value={reference} onChange={(e) => setReference(e.target.value as AnnotationSource)}>
+                  <select
+                    value={reference}
+                    onChange={(e) => setReference(e.target.value as AnnotationSource)}
+                  >
                     {sourceOptions.map((option) => (
                       <option key={`dash-ref-${option.value}`} value={option.value}>
                         {option.label}
@@ -1134,9 +1376,7 @@ function AppContent() {
         ) : (
           <>
             {!doc && !loading && (
-              <div className="empty-state">
-                Select a document or upload a file to begin
-              </div>
+              <div className="empty-state">Select a document or upload a file to begin</div>
             )}
             {loading && <div className="loading">Loading document...</div>}
             {doc && (
@@ -1260,31 +1500,35 @@ function AppContent() {
         )}
       </div>
       {error && (
-        <div className="error-toast" onClick={() => setError(null)}>
+        <button type="button" className="error-toast" onClick={() => setError(null)}>
           {error}
-        </div>
+        </button>
       )}
       {warning && (
-        <div className="warning-toast" onClick={() => setWarning(null)}>
+        <button type="button" className="warning-toast" onClick={() => setWarning(null)}>
           {warning}
-        </div>
+        </button>
       )}
       {runToasts.length > 0 && (
         <div className="run-toast-stack" aria-live="polite" aria-atomic="false">
           {runToasts.map((toast) => (
-            <div
+            <button
               key={toast.id}
+              type="button"
               className={`run-toast ${toast.kind}`}
               onClick={() => dismissRunToast(toast.id)}
-              role="status"
             >
               {toast.message}
-            </div>
+            </button>
           ))}
         </div>
       )}
     </div>
   );
+}
+
+function AppContent() {
+  return renderAppContent(useAppContentController());
 }
 
 function getDisplayedSources(

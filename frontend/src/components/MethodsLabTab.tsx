@@ -14,6 +14,7 @@ import type {
   AgentMethodOption,
   DocumentSummary,
   ExperimentLimits,
+  FolderSummary,
   MethodsLabDocResult,
   MethodsLabRunCreateRequest,
   MethodsLabRunDetail,
@@ -25,6 +26,7 @@ import MethodsLabRunForm from "./MethodsLabRunForm";
 
 interface Props {
   documents: DocumentSummary[];
+  folders: FolderSummary[];
   selectedDocumentId: string | null;
   onSelectDocument: (docId: string) => void;
 }
@@ -54,11 +56,8 @@ function readSessionStorageValue(key: string): string | undefined {
   }
 }
 
-export default function MethodsLabTab({
-  documents,
-  selectedDocumentId,
-  onSelectDocument,
-}: Props) {
+function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
+  const [setupCollapsed, setSetupCollapsed] = useState(false);
   const [runs, setRuns] = useState<MethodsLabRunSummary[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
   const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
@@ -98,11 +97,39 @@ export default function MethodsLabTab({
     setToasts((prev) => prev.filter((item) => item.id !== id));
   }, []);
 
-  const clearSelectedDocState = useCallback(() => {
+  const clearDocDetailState = useCallback(() => {
     latestDocRequestRef.current = null;
+    setDocDetail(null);
+    setDocLoading(false);
+  }, []);
+
+  const clearSelectedDocState = useCallback(() => {
     setSelectedCellId(null);
     setSelectedDocId(null);
-    setDocDetail(null);
+    clearDocDetailState();
+  }, [clearDocDetailState]);
+
+  const beginDocLoad = useCallback((shouldStart: boolean) => {
+    if (shouldStart) {
+      setDocLoading(true);
+    }
+  }, []);
+
+  const handleDocLoadError = useCallback(
+    (requestKey: string, active: boolean, error: unknown) => {
+      if (!active || latestDocRequestRef.current !== requestKey) {
+        return;
+      }
+      setDocDetail(null);
+      setRunError(String(error));
+    },
+    [],
+  );
+
+  const finishDocLoad = useCallback((requestKey: string, active: boolean) => {
+    if (!active || latestDocRequestRef.current !== requestKey) {
+      return;
+    }
     setDocLoading(false);
   }, []);
 
@@ -113,9 +140,11 @@ export default function MethodsLabTab({
       setRuns(next);
       setSelectedRunId((current) => {
         if (next.length === 0) {
+          setSetupCollapsed(false);
           return null;
         }
         if (!current || !next.some((run) => run.id === current)) {
+          setSetupCollapsed(true);
           return next[0]?.id ?? null;
         }
         return current;
@@ -173,6 +202,49 @@ export default function MethodsLabTab({
       setRunError(String(e));
     }
   }, [selectedRunId]);
+
+  const loadSelectedDocDetail = useCallback(
+    async (
+      requestKey: string,
+      runId: string,
+      cellId: string,
+      docId: string,
+      onStale: () => boolean,
+    ) => {
+      const detail = await getMethodsLabDocResult(runId, cellId, docId);
+      if (onStale() || latestDocRequestRef.current !== requestKey) {
+        return;
+      }
+      setDocDetail(detail);
+      setRunError(null);
+      const key = `${detail.run_id}::${detail.cell_id}::${detail.doc_id}`;
+      const previousStatus = previousDocStatusRef.current[key];
+      if (previousStatus && previousStatus !== detail.status) {
+        const filename = detail.document.filename || detail.document.id;
+        const modelLabel = detail.model?.label ?? detail.model?.model ?? "model";
+        const methodLabel = detail.method?.label ?? "method";
+        if (detail.status === "completed") {
+          pushToast(
+            "success",
+            `Doc completed: ${filename} (${modelLabel} × ${methodLabel}).`,
+          );
+        } else if (detail.status === "cancelled") {
+          pushToast(
+            "info",
+            `Doc cancelled: ${filename} (${modelLabel} × ${methodLabel}).`,
+          );
+        } else if (detail.status === "failed" || detail.status === "unavailable") {
+          pushToast(
+            "error",
+            `Doc failed: ${filename} (${modelLabel} × ${methodLabel}).`,
+          );
+        }
+      }
+      previousDocStatusRef.current[key] = detail.status;
+      onSelectDocument(detail.doc_id);
+    },
+    [onSelectDocument, pushToast],
+  );
 
   useEffect(() => {
     void refreshRunDetail();
@@ -243,23 +315,17 @@ export default function MethodsLabTab({
     return () => window.clearInterval(timer);
   }, [runDetail, refreshRunDetail, refreshRuns]);
 
+  const hasValidDocSelection = Boolean(
+    runDetail &&
+      selectedCellId &&
+      selectedDocId &&
+      runDetail.matrix.cells.some((cell) => cell.id === selectedCellId) &&
+      runDetail.doc_ids.includes(selectedDocId),
+  );
+
   useEffect(() => {
-    if (!runDetail || !selectedCellId || !selectedDocId) {
-      latestDocRequestRef.current = null;
-      setDocDetail(null);
-      setDocLoading(false);
-      return;
-    }
-    if (!runDetail.matrix.cells.some((cell) => cell.id === selectedCellId)) {
-      latestDocRequestRef.current = null;
-      setDocDetail(null);
-      setDocLoading(false);
-      return;
-    }
-    if (!runDetail.doc_ids.includes(selectedDocId)) {
-      latestDocRequestRef.current = null;
-      setDocDetail(null);
-      setDocLoading(false);
+    if (!runDetail || !selectedCellId || !selectedDocId || !hasValidDocSelection) {
+      clearDocDetailState();
       return;
     }
     const requestKey = `${runDetail.id}::${selectedCellId}::${selectedDocId}`;
@@ -271,67 +337,48 @@ export default function MethodsLabTab({
     const previousRequestKey = latestDocRequestRef.current;
     latestDocRequestRef.current = requestKey;
     let active = true;
-    if (previousRequestKey !== requestKey || !hasVisibleDetailForSelection) {
-      setDocLoading(true);
-    }
-    getMethodsLabDocResult(runDetail.id, selectedCellId, selectedDocId)
-      .then((detail) => {
-        if (!active || latestDocRequestRef.current !== requestKey) {
-          return;
-        }
-        setDocDetail(detail);
-        setRunError(null);
-        const key = `${detail.run_id}::${detail.cell_id}::${detail.doc_id}`;
-        const previousStatus = previousDocStatusRef.current[key];
-        if (previousStatus && previousStatus !== detail.status) {
-          const filename = detail.document.filename || detail.document.id;
-          const modelLabel = detail.model?.label ?? detail.model?.model ?? "model";
-          const methodLabel = detail.method?.label ?? "method";
-          if (detail.status === "completed") {
-            pushToast(
-              "success",
-              `Doc completed: ${filename} (${modelLabel} × ${methodLabel}).`,
-            );
-          } else if (detail.status === "cancelled") {
-            pushToast(
-              "info",
-              `Doc cancelled: ${filename} (${modelLabel} × ${methodLabel}).`,
-            );
-          } else if (detail.status === "failed" || detail.status === "unavailable") {
-            pushToast(
-              "error",
-              `Doc failed: ${filename} (${modelLabel} × ${methodLabel}).`,
-            );
-          }
-        }
-        previousDocStatusRef.current[key] = detail.status;
-        onSelectDocument(detail.doc_id);
-      })
-      .catch((e: unknown) => {
-        if (!active || latestDocRequestRef.current !== requestKey) {
-          return;
-        }
-        setDocDetail(null);
-        setRunError(String(e));
-      })
-      .finally(() => {
-        if (!active || latestDocRequestRef.current !== requestKey) {
-          return;
-        }
-        setDocLoading(false);
-      });
+    beginDocLoad(previousRequestKey !== requestKey || !hasVisibleDetailForSelection);
+    void loadSelectedDocDetail(
+      requestKey,
+      runDetail.id,
+      selectedCellId,
+      selectedDocId,
+      () => !active,
+    )
+      .catch((e: unknown) => handleDocLoadError(requestKey, active, e))
+      .finally(() => finishDocLoad(requestKey, active));
     return () => {
       active = false;
     };
-  }, [onSelectDocument, pushToast, runDetail, selectedCellId, selectedDocId]);
+  }, [
+    beginDocLoad,
+    clearDocDetailState,
+    finishDocLoad,
+    handleDocLoadError,
+    hasValidDocSelection,
+    loadSelectedDocDetail,
+    runDetail,
+    selectedCellId,
+    selectedDocId,
+  ]);
 
   const selectedCell = useMemo(
     () => runDetail?.matrix.cells.find((cell) => cell.id === selectedCellId) ?? null,
     [runDetail, selectedCellId],
   );
 
+  const handleToggleSetup = useCallback(() => {
+    setSetupCollapsed((prev) => !prev);
+  }, []);
+
+  const handleSelectRun = useCallback((runId: string) => {
+    setSelectedRunId(runId);
+    setSetupCollapsed(true);
+  }, []);
+
   const createAndSelectRun = useCallback(async (payload: MethodsLabRunCreateRequest) => {
     const created = await createMethodsLabRun(payload);
+    setSetupCollapsed(true);
     setSelectedRunId(created.id);
     setRunDetail(created);
     setSelectedCellId(created.matrix.cells[0]?.id ?? null);
@@ -390,6 +437,7 @@ export default function MethodsLabTab({
       const created = await createAndSelectRun({
         name: `${runDetail.name} · ${selectedCell.model_label} × ${selectedCell.method_label} · error docs`,
         doc_ids: errorDocIds,
+        folder_ids: [],
         methods: [selectedMethod],
         models: [selectedModel],
         runtime: {
@@ -428,6 +476,9 @@ export default function MethodsLabTab({
             ? (next[0]?.id ?? null)
             : selectedRunId;
         setSelectedRunId(nextSelectedRunId);
+        if (!nextSelectedRunId) {
+          setSetupCollapsed(false);
+        }
         if (selectedRunId === run.id) {
           setRunDetail(null);
           clearSelectedDocState();
@@ -470,16 +521,87 @@ export default function MethodsLabTab({
     [pushToast, refreshRunDetail, refreshRuns, selectedRunId],
   );
 
+  return {
+    setupCollapsed,
+    runs,
+    runsLoading,
+    deletingRunId,
+    stoppingRunId,
+    selectedRunId,
+    runDetail,
+    runError,
+    creatingRun,
+    rerunningErrorCellId,
+    selectedCellId,
+    selectedDocId,
+    docDetail,
+    docLoading,
+    methodCatalog,
+    experimentLimits,
+    toasts,
+    selectedCell,
+    dismissToast,
+    refreshRuns,
+    handleCreateRun,
+    handleDeleteRun,
+    handleRerunErrorDocs,
+    handleSelectRun,
+    handleStopRun,
+    handleToggleSetup,
+    setSelectedCellId,
+    setSelectedDocId,
+  };
+}
+
+export default function MethodsLabTab({
+  documents,
+  folders,
+  selectedDocumentId,
+  onSelectDocument,
+}: Props) {
+  const {
+    setupCollapsed,
+    runs,
+    runsLoading,
+    deletingRunId,
+    stoppingRunId,
+    selectedRunId,
+    runDetail,
+    runError,
+    creatingRun,
+    rerunningErrorCellId,
+    selectedCellId,
+    selectedDocId,
+    docDetail,
+    docLoading,
+    methodCatalog,
+    experimentLimits,
+    toasts,
+    selectedCell,
+    dismissToast,
+    refreshRuns,
+    handleCreateRun,
+    handleDeleteRun,
+    handleRerunErrorDocs,
+    handleSelectRun,
+    handleStopRun,
+    handleToggleSetup,
+    setSelectedCellId,
+    setSelectedDocId,
+  } = useMethodsLabTabController(onSelectDocument);
+
   return (
     <div className="prompt-lab-tab">
-      <MethodsLabRunForm
-        documents={documents}
-        selectedDocumentId={selectedDocumentId}
-        methods={methodCatalog}
+        <MethodsLabRunForm
+          documents={documents}
+          folders={folders}
+          selectedDocumentId={selectedDocumentId}
+          methods={methodCatalog}
         concurrencyMax={experimentLimits.methods_lab_max_concurrency}
         onRun={handleCreateRun}
         running={creatingRun}
-        forceCollapsed={Boolean(runDetail)}
+        collapsed={setupCollapsed}
+        onToggleCollapsed={handleToggleSetup}
       />
 
       <div className="prompt-lab-body">
@@ -496,7 +618,7 @@ export default function MethodsLabTab({
                 <button
                   type="button"
                   className={`prompt-lab-history-select ${selectedRunId === run.id ? "active" : ""}`}
-                  onClick={() => setSelectedRunId(run.id)}
+                  onClick={() => handleSelectRun(run.id)}
                 >
                   <div className="prompt-lab-history-name">{run.name}</div>
                   <div className="prompt-lab-history-meta">

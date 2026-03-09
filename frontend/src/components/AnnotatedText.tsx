@@ -17,7 +17,7 @@ interface Props {
   text: string;
   spans: CanonicalSpan[];
   clickable?: boolean;
-  onSpanClick?: (index: number, e: React.MouseEvent) => void;
+  onSpanClick?: (index: number, e: React.MouseEvent | React.KeyboardEvent) => void;
   diffSpans?: DiffSpanInfo[];
 }
 
@@ -28,12 +28,14 @@ interface RenderSegment {
   diffClass: string;
 }
 
+const EMPTY_DIFF_SPANS: DiffSpanInfo[] = [];
+
 export default function AnnotatedText({
   text,
   spans,
   clickable = false,
   onSpanClick,
-  diffSpans = [],
+  diffSpans = EMPTY_DIFF_SPANS,
 }: Props) {
   const sorted = [...spans].sort((a, b) => a.start - b.start);
   const offsetTable = buildCodePointOffsetTable(text, [
@@ -129,19 +131,52 @@ function renderSegment(
   );
   const clickableIndex = pickClickableSpanIndex(activeSpanIndices, sortedSpans);
   const color = getLabelColor(labels[0] ?? "MISC_ID");
+  const isClickable = clickable && onSpanClick && clickableIndex !== null;
+  const handleActivate = (e: React.MouseEvent | React.KeyboardEvent) => {
+    if (clickableIndex === null || !onSpanClick) {
+      return;
+    }
+    onSpanClick(clickableIndex, e);
+  };
+
+  if (isClickable) {
+    return (
+      <span
+        key={`segment-${start}-${end}`}
+        className={`ann-span clickable ${diffClass}`}
+        style={{ "--ann-color": color } as CSSProperties}
+        data-offset={start}
+        data-offset-end={end}
+        role="button"
+        tabIndex={0}
+        onClick={handleActivate}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter" && e.key !== " ") {
+            return;
+          }
+          e.preventDefault();
+          handleActivate(e);
+        }}
+      >
+        {segmentText}
+        <span
+          className="ann-span-label"
+          data-annotation-label="true"
+          aria-hidden="true"
+        >
+          {labels.join(" · ")}
+        </span>
+      </span>
+    );
+  }
 
   return (
     <span
       key={`segment-${start}-${end}`}
-      className={`ann-span ${clickable && clickableIndex !== null ? "clickable" : ""} ${diffClass}`}
+      className={`ann-span ${diffClass}`}
       style={{ "--ann-color": color } as CSSProperties}
       data-offset={start}
       data-offset-end={end}
-      onClick={
-        clickable && onSpanClick && clickableIndex !== null
-          ? (e) => onSpanClick(clickableIndex, e)
-          : undefined
-      }
     >
       {segmentText}
       <span

@@ -67,9 +67,13 @@ export function buildCodePointOffsetTable(
 
   while (
     requestedIndex < normalizedOffsets.length &&
-    normalizedOffsets[requestedIndex] <= codePointOffset
+    (normalizedOffsets[requestedIndex] ?? Number.POSITIVE_INFINITY) <= codePointOffset
   ) {
-    codeUnitByCodePoint.set(normalizedOffsets[requestedIndex], codeUnitOffset);
+    const requestedOffset = normalizedOffsets[requestedIndex];
+    if (requestedOffset == null) {
+      break;
+    }
+    codeUnitByCodePoint.set(requestedOffset, codeUnitOffset);
     requestedIndex += 1;
   }
 

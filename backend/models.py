@@ -103,3 +103,19 @@ class CanonicalDocument(BaseModel):
     agent_run_warnings: list[str] = Field(default_factory=list)
     agent_run_metrics: AgentRunMetrics = Field(default_factory=AgentRunMetrics)
     status: Literal["pending", "in_progress", "reviewed"] = "pending"
+
+
+class FolderRecord(BaseModel):
+    id: str
+    name: str
+    kind: Literal["import", "sample"]
+    parent_folder_id: str | None = None
+    merged_doc_id: str | None = None
+    doc_ids: list[str] = Field(default_factory=list)
+    child_folder_ids: list[str] = Field(default_factory=list)
+    source_filename: str | None = None
+    source_folder_id: str | None = None
+    sample_size: int | None = None
+    sample_seed: int | None = None
+    created_at: str
+    doc_display_names: dict[str, str] = Field(default_factory=dict)

@@ -6,6 +6,7 @@ import io
 import json
 import math
 import os
+import random
 import re
 import shutil
 import threading
@@ -30,11 +31,12 @@ from models import (
     AgentRunMetrics,
     CanonicalDocument,
     CanonicalSpan,
+    FolderRecord,
     LLMConfidenceMetric,
     ResolutionEvent,
     SavedRunMetadata,
 )
-from normalizer import parse_file
+from normalizer import parse_file, parse_jsonl_file
 from agent import (
     METHOD_DEFINITION_BY_ID,
     MODEL_PRESETS,
@@ -71,8 +73,8 @@ CONFIG_PATH = BASE_DIR / "config.json"
 PROFILE_PATH = BASE_DIR / "session_profile.json"
 
 BUNDLE_FORMAT = "annotation_tool_session"
-BUNDLE_VERSION = 4
-SUPPORTED_BUNDLE_VERSIONS = {1, 2, 3, 4}
+BUNDLE_VERSION = 5
+SUPPORTED_BUNDLE_VERSIONS = {1, 2, 3, 4, 5}
 TOOL_VERSION = "2026.03.03"
 PROMPT_LAB_DIR_NAME = "prompt_lab"
 METHODS_LAB_DIR_NAME = "methods_lab"
@@ -173,6 +175,128 @@ def _migrate_legacy_storage_if_needed():
 def _session_dir(session_id: str = "default") -> Path:
     _migrate_legacy_storage_if_needed()
     return SESSIONS_DIR / session_id
+
+
+def _folders_dir(session_id: str = "default") -> Path:
+    return _session_dir(session_id) / "folders"
+
+
+def _load_folder_index(session_id: str = "default") -> list[str]:
+    idx_path = _folders_dir(session_id) / "_index.json"
+    if not idx_path.exists():
+        return []
+    raw = json.loads(idx_path.read_text())
+    if not isinstance(raw, list):
+        return []
+    return [str(value) for value in raw if str(value).strip()]
+
+
+def _save_folder_index(folder_ids: list[str], session_id: str = "default") -> None:
+    folder_dir = _folders_dir(session_id)
+    folder_dir.mkdir(parents=True, exist_ok=True)
+    (folder_dir / "_index.json").write_text(json.dumps(folder_ids, indent=2))
+
+
+def _load_folder(folder_id: str, session_id: str = "default") -> FolderRecord | None:
+    path = _folders_dir(session_id) / f"{folder_id}.json"
+    if not path.exists():
+        return None
+    return FolderRecord.model_validate_json(path.read_text())
+
+
+def _save_folder(folder: FolderRecord, session_id: str = "default") -> None:
+    folder_dir = _folders_dir(session_id)
+    folder_dir.mkdir(parents=True, exist_ok=True)
+    (folder_dir / f"{folder.id}.json").write_text(folder.model_dump_json(indent=2))
+
+
+def _delete_folder_file(folder_id: str, session_id: str = "default") -> bool:
+    path = _folders_dir(session_id) / f"{folder_id}.json"
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
+
+
+def _load_all_folders(session_id: str = "default") -> list[FolderRecord]:
+    folders: list[FolderRecord] = []
+    for folder_id in _load_folder_index(session_id):
+        folder = _load_folder(folder_id, session_id)
+        if folder is not None:
+            folders.append(folder)
+    return folders
+
+
+def _build_document_summary(
+    doc_id: str,
+    session_id: str = "default",
+    *,
+    display_name: str | None = None,
+) -> dict[str, str]:
+    doc = _load_doc(doc_id, session_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
+    manual = _load_sidecar(doc_id, "manual", session_id)
+    status = "in_progress" if manual else "pending"
+    return {
+        "id": doc.id,
+        "filename": doc.filename,
+        "display_name": display_name or doc.filename,
+        "status": status,
+    }
+
+
+def _folder_to_summary(folder: FolderRecord, session_id: str = "default") -> dict[str, object]:
+    return {
+        "id": folder.id,
+        "name": folder.name,
+        "kind": folder.kind,
+        "parent_folder_id": folder.parent_folder_id,
+        "merged_doc_id": folder.merged_doc_id,
+        "doc_count": len(folder.doc_ids),
+        "child_folder_count": len(folder.child_folder_ids),
+        "source_filename": folder.source_filename,
+        "source_folder_id": folder.source_folder_id,
+        "sample_size": folder.sample_size,
+        "sample_seed": folder.sample_seed,
+        "created_at": folder.created_at,
+    }
+
+
+def _folder_to_detail(folder: FolderRecord, session_id: str = "default") -> dict[str, object]:
+    documents: list[dict[str, str]] = []
+    for doc_id in folder.doc_ids:
+        doc = _load_doc(doc_id, session_id)
+        if doc is None:
+            continue
+        documents.append(
+            _build_document_summary(
+                doc_id,
+                session_id,
+                display_name=folder.doc_display_names.get(doc_id),
+            )
+        )
+    child_folders: list[dict[str, object]] = []
+    for child_folder_id in folder.child_folder_ids:
+        child = _load_folder(child_folder_id, session_id)
+        if child is None:
+            continue
+        child_folders.append(_folder_to_summary(child, session_id))
+    return {
+        **_folder_to_summary(folder, session_id),
+        "doc_ids": [item["id"] for item in documents],
+        "child_folder_ids": [item["id"] for item in child_folders],
+        "documents": documents,
+        "child_folders": child_folders,
+    }
+
+
+def _find_folders_for_doc(doc_id: str, session_id: str = "default") -> list[FolderRecord]:
+    return [folder for folder in _load_all_folders(session_id) if doc_id in folder.doc_ids]
+
+
+def _save_hidden_doc(doc: CanonicalDocument, session_id: str = "default") -> None:
+    _save_doc(doc, session_id)
 
 
 def _save_doc(doc: CanonicalDocument, session_id: str = "default"):
@@ -412,6 +536,7 @@ def _commit_imported_document(
     session_id: str,
     ids: list[str],
     existing_ids: set[str],
+    add_to_session_index: bool = True,
     manual_spans: list[CanonicalSpan] | None = None,
     rule_spans: list[CanonicalSpan] | None = None,
     llm_spans: list[CanonicalSpan] | None = None,
@@ -422,9 +547,11 @@ def _commit_imported_document(
     method_run_metadata: dict[str, SavedRunMetadata] | None = None,
     llm_confidence: LLMConfidenceMetric | None = None,
     imported_label_profile: Literal["simple", "advanced"] | None = None,
-) -> str:
+    ) -> str:
     matched_doc_id = _find_existing_import_match(doc=doc, session_id=session_id, ids=ids)
     if matched_doc_id is not None:
+        if add_to_session_index and matched_doc_id not in ids:
+            ids.append(matched_doc_id)
         _merge_imported_sidecars_into_existing(
             doc_id=matched_doc_id,
             session_id=session_id,
@@ -493,7 +620,8 @@ def _commit_imported_document(
             session_id,
         )
 
-    ids.append(new_id)
+    if add_to_session_index:
+        ids.append(new_id)
     existing_ids.add(new_id)
     return new_id
 
@@ -1125,6 +1253,7 @@ def _export_prompt_lab_runs(session_id: str = "default") -> list[dict]:
 def _remap_prompt_lab_run_doc_ids(
     run: dict,
     doc_id_remap: dict[str, str],
+    folder_id_remap: dict[str, str] | None = None,
 ) -> tuple[dict, list[str]]:
     remapped = copy.deepcopy(run)
     warnings: list[str] = []
@@ -1145,6 +1274,19 @@ def _remap_prompt_lab_run_doc_ids(
                 f"Referenced document '{old_id}' was not imported; marked as unavailable."
             )
     remapped["doc_ids"] = mapped_doc_ids
+
+    original_folder_ids = remapped.get("folder_ids", [])
+    if not isinstance(original_folder_ids, list):
+        original_folder_ids = []
+    mapped_folder_ids: list[str] = []
+    seen_folder_ids: set[str] = set()
+    for value in original_folder_ids:
+        old_id = str(value)
+        new_id = (folder_id_remap or {}).get(old_id, old_id)
+        if new_id not in seen_folder_ids:
+            mapped_folder_ids.append(new_id)
+            seen_folder_ids.add(new_id)
+    remapped["folder_ids"] = mapped_folder_ids
 
     cells = remapped.get("cells", {})
     if isinstance(cells, dict):
@@ -1216,6 +1358,7 @@ def _export_methods_lab_runs(session_id: str = "default") -> list[dict]:
 def _remap_methods_lab_run_doc_ids(
     run: dict,
     doc_id_remap: dict[str, str],
+    folder_id_remap: dict[str, str] | None = None,
 ) -> tuple[dict, list[str]]:
     remapped = copy.deepcopy(run)
     warnings: list[str] = []
@@ -1236,6 +1379,19 @@ def _remap_methods_lab_run_doc_ids(
                 f"Referenced document '{old_id}' was not imported; marked as unavailable."
             )
     remapped["doc_ids"] = mapped_doc_ids
+
+    original_folder_ids = remapped.get("folder_ids", [])
+    if not isinstance(original_folder_ids, list):
+        original_folder_ids = []
+    mapped_folder_ids: list[str] = []
+    seen_folder_ids: set[str] = set()
+    for value in original_folder_ids:
+        old_id = str(value)
+        new_id = (folder_id_remap or {}).get(old_id, old_id)
+        if new_id not in seen_folder_ids:
+            mapped_folder_ids.append(new_id)
+            seen_folder_ids.add(new_id)
+    remapped["folder_ids"] = mapped_folder_ids
 
     cells = remapped.get("cells", {})
     if isinstance(cells, dict):
@@ -2866,6 +3022,10 @@ def _run_method_for_document(
 # --- Routes ---
 
 
+class FolderSampleCreateBody(BaseModel):
+    count: int = Field(gt=0)
+
+
 @app.get("/api/documents")
 async def list_documents():
     session_id = "default"
@@ -2874,16 +3034,23 @@ async def list_documents():
     for did in ids:
         doc = _load_doc(did, session_id)
         if doc:
-            manual = _load_sidecar(did, "manual", session_id)
-            status = "in_progress" if manual else "pending"
-            docs.append(
-                {
-                    "id": doc.id,
-                    "filename": doc.filename,
-                    "status": status,
-                }
-            )
+            docs.append(_build_document_summary(did, session_id))
     return docs
+
+
+@app.get("/api/folders")
+async def list_folders():
+    session_id = "default"
+    return [_folder_to_summary(folder, session_id) for folder in _load_all_folders(session_id)]
+
+
+@app.get("/api/folders/{folder_id}")
+async def get_folder(folder_id: str):
+    session_id = "default"
+    folder = _load_folder(folder_id, session_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    return _folder_to_detail(folder, session_id)
 
 
 @app.get("/api/documents/{doc_id}")
@@ -2903,11 +3070,50 @@ async def upload_file(file: UploadFile = File(...)):
     doc_id = str(uuid.uuid4())[:8]
 
     try:
-        docs = parse_file(raw, filename, doc_id)
+        if filename.endswith(".jsonl"):
+            merged_doc, record_docs, record_display_names = parse_jsonl_file(
+                raw,
+                filename,
+                doc_id,
+            )
+            docs = [merged_doc]
+        else:
+            docs = parse_file(raw, filename, doc_id)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     ids = _load_session_index(session_id)
+    if filename.endswith(".jsonl"):
+        merged_doc = docs[0]
+        _save_doc(merged_doc, session_id)
+        ids.append(merged_doc.id)
+        _save_session_index(session_id)
+        if len(record_docs) > 1:
+            for child_doc in record_docs:
+                _save_hidden_doc(child_doc, session_id)
+            folder_id = str(uuid.uuid4())[:8]
+            while _load_folder(folder_id, session_id) is not None:
+                folder_id = str(uuid.uuid4())[:8]
+            folder = FolderRecord(
+                id=folder_id,
+                name=Path(filename).stem or filename,
+                kind="import",
+                merged_doc_id=merged_doc.id,
+                doc_ids=[doc.id for doc in record_docs],
+                child_folder_ids=[],
+                source_filename=filename,
+                created_at=_now_iso(),
+                doc_display_names={
+                    doc.id: record_display_names[index]
+                    for index, doc in enumerate(record_docs)
+                },
+            )
+            folder_ids = _load_folder_index(session_id)
+            folder_ids.append(folder.id)
+            _save_folder(folder, session_id)
+            _save_folder_index(folder_ids, session_id)
+        return _enrich_doc(merged_doc, session_id)
+
     for doc in docs:
         _save_doc(doc, session_id)
         ids.append(doc.id)
@@ -2923,6 +3129,11 @@ async def upload_file(file: UploadFile = File(...)):
 @app.delete("/api/documents/{doc_id}")
 async def delete_document(doc_id: str):
     session_id = "default"
+    if _find_folders_for_doc(doc_id, session_id):
+        raise HTTPException(
+            status_code=409,
+            detail="Document is managed by a folder and cannot be deleted directly.",
+        )
     ids = _load_session_index(session_id)
     in_index = doc_id in ids
     removed_files = _delete_doc_files(doc_id, session_id)
@@ -2933,7 +3144,108 @@ async def delete_document(doc_id: str):
         _session_docs[session_id] = [did for did in ids if did != doc_id]
         _save_session_index(session_id)
 
+    for folder in _load_all_folders(session_id):
+        if folder.merged_doc_id != doc_id:
+            continue
+        _save_folder(folder.model_copy(update={"merged_doc_id": None}), session_id)
+
     return {"deleted": True, "doc_id": doc_id}
+
+
+def _resolve_import_parent_folder(folder: FolderRecord, session_id: str) -> FolderRecord:
+    current = folder
+    seen: set[str] = set()
+    while current.kind != "import" and current.parent_folder_id:
+        if current.id in seen:
+            break
+        seen.add(current.id)
+        parent = _load_folder(current.parent_folder_id, session_id)
+        if parent is None:
+            break
+        current = parent
+    return current
+
+
+def _delete_folder_tree(folder: FolderRecord, session_id: str) -> None:
+    for child_folder_id in list(folder.child_folder_ids):
+        child = _load_folder(child_folder_id, session_id)
+        if child is not None:
+            _delete_folder_tree(child, session_id)
+    if folder.kind == "import":
+        for doc_id in folder.doc_ids:
+            _delete_doc_files(doc_id, session_id)
+    if folder.parent_folder_id:
+        parent = _load_folder(folder.parent_folder_id, session_id)
+        if parent is not None:
+            updated_parent = parent.model_copy(
+                update={
+                    "child_folder_ids": [
+                        child_id for child_id in parent.child_folder_ids if child_id != folder.id
+                    ]
+                }
+            )
+            _save_folder(updated_parent, session_id)
+    folder_ids = [item for item in _load_folder_index(session_id) if item != folder.id]
+    _save_folder_index(folder_ids, session_id)
+    _delete_folder_file(folder.id, session_id)
+
+
+@app.post("/api/folders/{folder_id}/samples")
+async def create_folder_sample(folder_id: str, body: FolderSampleCreateBody):
+    session_id = "default"
+    folder = _load_folder(folder_id, session_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    if body.count > len(folder.doc_ids):
+        raise HTTPException(
+            status_code=400,
+            detail="Sample count cannot exceed the number of direct documents in the folder.",
+        )
+    parent_folder = _resolve_import_parent_folder(folder, session_id)
+    sample_seed = random.randint(0, 2**31 - 1)
+    rng = random.Random(sample_seed)
+    sampled_doc_ids = rng.sample(folder.doc_ids, body.count)
+    sample_id = str(uuid.uuid4())[:8]
+    while _load_folder(sample_id, session_id) is not None:
+        sample_id = str(uuid.uuid4())[:8]
+    sample_folder = FolderRecord(
+        id=sample_id,
+        name=f"Sample {body.count}",
+        kind="sample",
+        parent_folder_id=parent_folder.id,
+        merged_doc_id=None,
+        doc_ids=sampled_doc_ids,
+        child_folder_ids=[],
+        source_filename=folder.source_filename,
+        source_folder_id=folder.id,
+        sample_size=body.count,
+        sample_seed=sample_seed,
+        created_at=_now_iso(),
+        doc_display_names={
+            doc_id: folder.doc_display_names.get(doc_id, _load_doc(doc_id, session_id).filename)
+            for doc_id in sampled_doc_ids
+            if _load_doc(doc_id, session_id) is not None
+        },
+    )
+    updated_parent = parent_folder.model_copy(
+        update={"child_folder_ids": [*parent_folder.child_folder_ids, sample_folder.id]}
+    )
+    folder_ids = _load_folder_index(session_id)
+    folder_ids.append(sample_folder.id)
+    _save_folder(sample_folder, session_id)
+    _save_folder(updated_parent, session_id)
+    _save_folder_index(folder_ids, session_id)
+    return _folder_to_detail(sample_folder, session_id)
+
+
+@app.delete("/api/folders/{folder_id}")
+async def delete_folder(folder_id: str):
+    session_id = "default"
+    folder = _load_folder(folder_id, session_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    _delete_folder_tree(folder, session_id)
+    return {"deleted": True, "folder_id": folder_id}
 
 
 @app.put("/api/documents/{doc_id}/manual-annotations")
@@ -3021,6 +3333,7 @@ class PromptLabRuntimeInput(BaseModel):
 class PromptLabRunCreateBody(BaseModel):
     name: str | None = None
     doc_ids: list[str] = Field(default_factory=list)
+    folder_ids: list[str] = Field(default_factory=list)
     prompts: list[PromptLabPromptInput]
     models: list[PromptLabModelInput]
     runtime: PromptLabRuntimeInput
@@ -3049,6 +3362,7 @@ class MethodsLabRuntimeInput(BaseModel):
 class MethodsLabRunCreateBody(BaseModel):
     name: str | None = None
     doc_ids: list[str] = Field(default_factory=list)
+    folder_ids: list[str] = Field(default_factory=list)
     methods: list[MethodsLabMethodInput]
     models: list[PromptLabModelInput]
     runtime: MethodsLabRuntimeInput
@@ -4576,8 +4890,28 @@ async def update_session_profile(body: SessionProfileBody):
 async def export_session_bundle():
     session_id = "default"
     ids = _load_session_index(session_id)
-    documents: list[dict] = []
+    folder_records = _load_all_folders(session_id)
+    doc_ids_to_export: list[str] = []
+    seen_doc_ids: set[str] = set()
+
+    def _append_export_doc_id(doc_id: str | None) -> None:
+        if not doc_id:
+            return
+        normalized = str(doc_id).strip()
+        if not normalized or normalized in seen_doc_ids:
+            return
+        seen_doc_ids.add(normalized)
+        doc_ids_to_export.append(normalized)
+
     for did in ids:
+        _append_export_doc_id(did)
+    for folder in folder_records:
+        _append_export_doc_id(folder.merged_doc_id)
+        for doc_id in folder.doc_ids:
+            _append_export_doc_id(doc_id)
+
+    documents: list[dict] = []
+    for did in doc_ids_to_export:
         doc = _load_doc(did, session_id)
         if not doc:
             continue
@@ -4654,6 +4988,7 @@ async def export_session_bundle():
         },
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "documents": documents,
+        "folders": [folder.model_dump() for folder in folder_records],
         "prompt_lab_runs": _export_prompt_lab_runs(session_id),
         "methods_lab_runs": _export_methods_lab_runs(session_id),
         "config": _load_config(),
@@ -4777,6 +5112,23 @@ async def import_session_bundle(file: UploadFile = File(...)):
     doc_id_remap: dict[str, str] = {}
     skipped: list[dict[str, str | int]] = []
     warnings: list[str] = []
+    raw_folders = payload.get("folders", [])
+    hidden_original_doc_ids: set[str] = set()
+    if raw_folders is None:
+        raw_folders = []
+    if not isinstance(raw_folders, list):
+        warnings.append("Ignored folders because it is not an array.")
+        raw_folders = []
+    else:
+        for folder_item in raw_folders:
+            if not isinstance(folder_item, dict):
+                continue
+            folder_doc_ids = folder_item.get("doc_ids", [])
+            if not isinstance(folder_doc_ids, list):
+                continue
+            hidden_original_doc_ids.update(
+                str(doc_id).strip() for doc_id in folder_doc_ids if str(doc_id).strip()
+            )
 
     incoming_project = payload.get("project")
     if incoming_project is not None:
@@ -4921,6 +5273,7 @@ async def import_session_bundle(file: UploadFile = File(...)):
             session_id=session_id,
             ids=ids,
             existing_ids=existing_ids,
+            add_to_session_index=original_doc_id not in hidden_original_doc_ids,
             manual_spans=manual_spans,
             rule_spans=rule_spans,
             llm_spans=llm_spans,
@@ -4936,6 +5289,84 @@ async def import_session_bundle(file: UploadFile = File(...)):
         doc_id_remap[original_doc_id] = new_id
 
     _save_session_index(session_id)
+
+    imported_folder_ids: list[str] = []
+    folder_id_remap: dict[str, str] = {}
+    if raw_folders:
+        existing_folder_ids = set(_load_folder_index(session_id))
+        provisional_folders: list[tuple[str, dict]] = []
+        for index, raw_folder in enumerate(raw_folders):
+            if not isinstance(raw_folder, dict):
+                warnings.append(f"Skipped malformed folders item at index {index} (not an object).")
+                continue
+            original_folder_id = str(raw_folder.get("id") or "").strip()
+            if not original_folder_id:
+                warnings.append(f"Skipped folders item at index {index} without an id.")
+                continue
+            new_folder_id = original_folder_id
+            while new_folder_id in existing_folder_ids or new_folder_id in folder_id_remap.values():
+                new_folder_id = str(uuid.uuid4())[:8]
+            folder_id_remap[original_folder_id] = new_folder_id
+            provisional_folders.append((original_folder_id, raw_folder))
+
+        folder_index = _load_folder_index(session_id)
+        for original_folder_id, raw_folder in provisional_folders:
+            mapped_doc_ids: list[str] = []
+            for raw_doc_id in raw_folder.get("doc_ids", []):
+                mapped_doc_id = doc_id_remap.get(str(raw_doc_id).strip())
+                if mapped_doc_id:
+                    mapped_doc_ids.append(mapped_doc_id)
+            mapped_child_folder_ids: list[str] = []
+            for raw_child_id in raw_folder.get("child_folder_ids", []):
+                mapped_child_id = folder_id_remap.get(str(raw_child_id).strip())
+                if mapped_child_id:
+                    mapped_child_folder_ids.append(mapped_child_id)
+            raw_display_names = raw_folder.get("doc_display_names", {})
+            doc_display_names: dict[str, str] = {}
+            if isinstance(raw_display_names, dict):
+                for raw_doc_id, raw_display_name in raw_display_names.items():
+                    mapped_doc_id = doc_id_remap.get(str(raw_doc_id).strip())
+                    if mapped_doc_id and isinstance(raw_display_name, str):
+                        doc_display_names[mapped_doc_id] = raw_display_name
+
+            folder = FolderRecord(
+                id=folder_id_remap[original_folder_id],
+                name=str(raw_folder.get("name") or folder_id_remap[original_folder_id]),
+                kind=str(raw_folder.get("kind") or "import"),
+                parent_folder_id=folder_id_remap.get(
+                    str(raw_folder.get("parent_folder_id") or "").strip()
+                )
+                or None,
+                merged_doc_id=doc_id_remap.get(str(raw_folder.get("merged_doc_id") or "").strip())
+                or None,
+                doc_ids=list(dict.fromkeys(mapped_doc_ids)),
+                child_folder_ids=list(dict.fromkeys(mapped_child_folder_ids)),
+                source_filename=(
+                    str(raw_folder.get("source_filename")).strip()
+                    if raw_folder.get("source_filename") is not None
+                    else None
+                ),
+                source_folder_id=folder_id_remap.get(
+                    str(raw_folder.get("source_folder_id") or "").strip()
+                )
+                or None,
+                sample_size=(
+                    int(raw_folder.get("sample_size"))
+                    if isinstance(raw_folder.get("sample_size"), int)
+                    else None
+                ),
+                sample_seed=(
+                    int(raw_folder.get("sample_seed"))
+                    if isinstance(raw_folder.get("sample_seed"), int)
+                    else None
+                ),
+                created_at=str(raw_folder.get("created_at") or _now_iso()),
+                doc_display_names=doc_display_names,
+            )
+            _save_folder(folder, session_id)
+            folder_index.append(folder.id)
+            imported_folder_ids.append(folder.id)
+        _save_folder_index(folder_index, session_id)
 
     raw_prompt_lab_runs = payload.get("prompt_lab_runs", [])
     imported_prompt_lab_runs = 0
@@ -4953,6 +5384,7 @@ async def import_session_bundle(file: UploadFile = File(...)):
                     remapped_run, remap_warnings = _remap_prompt_lab_run_doc_ids(
                         run_item,
                         doc_id_remap,
+                        folder_id_remap,
                     )
                     warnings.extend(remap_warnings)
                     run_id = str(remapped_run.get("id") or str(uuid.uuid4())[:8])
@@ -4981,6 +5413,7 @@ async def import_session_bundle(file: UploadFile = File(...)):
                     remapped_run, remap_warnings = _remap_methods_lab_run_doc_ids(
                         run_item,
                         doc_id_remap,
+                        folder_id_remap,
                     )
                     warnings.extend(remap_warnings)
                     run_id = str(remapped_run.get("id") or str(uuid.uuid4())[:8])

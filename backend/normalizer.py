@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from models import CanonicalDocument, CanonicalSpan, UtteranceRow
@@ -251,23 +252,59 @@ def _merge_jsonl_documents(
     )
 
 
-def parse_file(raw_bytes: bytes, filename: str, doc_id: str) -> list[CanonicalDocument]:
+def _derive_jsonl_record_display_name(data: dict[str, Any], index: int) -> str:
+    transcript = data.get("transcript", [])
+    session_ids: set[str] = set()
+    if isinstance(data.get("session_id"), (str, int)):
+        value = str(data.get("session_id")).strip()
+        if value:
+            session_ids.add(value)
+    if isinstance(transcript, list):
+        for turn in transcript:
+            if not isinstance(turn, dict):
+                continue
+            raw_session_id = turn.get("session_id")
+            if isinstance(raw_session_id, (str, int)):
+                value = str(raw_session_id).strip()
+                if value:
+                    session_ids.add(value)
+    if len(session_ids) == 1:
+        return f"Session {next(iter(session_ids))}"
+    return f"Record {index + 1}"
+
+
+def parse_jsonl_file(
+    raw_bytes: bytes,
+    filename: str,
+    doc_id: str,
+) -> tuple[CanonicalDocument, list[CanonicalDocument], list[str]]:
     text = raw_bytes.decode("utf-8")
+    record_docs: list[CanonicalDocument] = []
+    record_display_names: list[str] = []
+    stem = Path(filename).stem or "record"
+    for i, line in enumerate(text.strip().splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        data = json.loads(line)
+        rid = f"{doc_id}_line{i}"
+        record_name = f"{stem}.record-{i + 1:04d}.json"
+        record_docs.append(parse_jsonl_record(data, record_name, rid))
+        record_display_names.append(_derive_jsonl_record_display_name(data, i))
+    if not record_docs:
+        raise ValueError("No JSONL records parsed from file")
+    merged = _merge_jsonl_documents(record_docs, filename, doc_id)
+    return merged, record_docs, record_display_names
+
+
+def parse_file(raw_bytes: bytes, filename: str, doc_id: str) -> list[CanonicalDocument]:
     docs: list[CanonicalDocument] = []
 
     if filename.endswith(".jsonl"):
-        record_docs: list[CanonicalDocument] = []
-        for i, line in enumerate(text.strip().splitlines()):
-            line = line.strip()
-            if not line:
-                continue
-            data = json.loads(line)
-            rid = f"{doc_id}_line{i}"
-            record_name = f"{filename}#record-{i}"
-            record_docs.append(parse_jsonl_record(data, record_name, rid))
-        if record_docs:
-            docs.append(_merge_jsonl_documents(record_docs, filename, doc_id))
+        merged, _, _ = parse_jsonl_file(raw_bytes, filename, doc_id)
+        docs.append(merged)
     else:
+        text = raw_bytes.decode("utf-8")
         data = json.loads(text)
         fmt = _detect_format(data)
         if fmt == "hips_v1":

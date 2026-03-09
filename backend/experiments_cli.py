@@ -91,6 +91,7 @@ def _build_prompt_body_from_args(args: argparse.Namespace) -> PromptLabRunCreate
     return PromptLabRunCreateBody(
         name=args.name,
         doc_ids=list(dict.fromkeys(args.doc_id)),
+        folder_ids=list(dict.fromkeys(args.folder_id)),
         prompts=prompts,
         models=models,
         runtime=runtime,
@@ -126,6 +127,7 @@ def _build_methods_body_from_args(args: argparse.Namespace) -> MethodsLabRunCrea
     return MethodsLabRunCreateBody(
         name=args.name,
         doc_ids=list(dict.fromkeys(args.doc_id)),
+        folder_ids=list(dict.fromkeys(args.folder_id)),
         methods=methods,
         models=models,
         runtime=runtime,
@@ -170,6 +172,9 @@ def _load_manifest(path_value: str) -> tuple[str, str, Any, Path]:
     raw_doc_ids = body_payload.get("doc_ids")
     if isinstance(raw_doc_ids, list):
         body_payload["doc_ids"] = [str(value) for value in raw_doc_ids]
+    raw_folder_ids = body_payload.get("folder_ids")
+    if isinstance(raw_folder_ids, list):
+        body_payload["folder_ids"] = [str(value) for value in raw_folder_ids]
     if kind == "prompt_lab":
         body = PromptLabRunCreateBody.model_validate(body_payload)
     elif kind == "methods_lab":
@@ -409,6 +414,7 @@ def _add_runtime_args(parser: argparse.ArgumentParser, *, prompt_mode: bool) -> 
     parser.add_argument("--session", default="default")
     parser.add_argument("--name")
     parser.add_argument("--doc-id", action="append", default=[])
+    parser.add_argument("--folder-id", action="append", default=[])
     parser.add_argument("--model", action="append", default=[])
     parser.add_argument("--api-key")
     parser.add_argument("--api-base")

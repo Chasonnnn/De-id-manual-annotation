@@ -15,6 +15,8 @@ import type {
   MatchMode,
   DocumentSummary,
   ExperimentLimits,
+  FolderDetail,
+  FolderSummary,
   MetricsResult,
   MethodsLabDocResult,
   MethodsLabRunCreateRequest,
@@ -53,7 +55,36 @@ async function request<T>(
 }
 
 export async function listDocuments(): Promise<DocumentSummary[]> {
-  return request("/documents");
+  const raw = await request<Record<string, unknown>[]>("/documents");
+  return raw.map(normalizeDocumentSummary);
+}
+
+export async function listFolders(): Promise<FolderSummary[]> {
+  const raw = await request<Record<string, unknown>[]>("/folders");
+  return raw.map(normalizeFolderSummary);
+}
+
+export async function getFolder(folderId: string): Promise<FolderDetail> {
+  const raw = await request<Record<string, unknown>>(`/folders/${folderId}`);
+  return normalizeFolderDetail(raw);
+}
+
+export async function createFolderSample(
+  folderId: string,
+  count: number,
+): Promise<FolderDetail> {
+  const raw = await request<Record<string, unknown>>(`/folders/${folderId}/samples`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ count }),
+  });
+  return normalizeFolderDetail(raw);
+}
+
+export async function deleteFolder(
+  folderId: string,
+): Promise<{ deleted: boolean; folder_id: string }> {
+  return request(`/folders/${folderId}`, { method: "DELETE" });
 }
 
 export async function getDocument(id: string): Promise<CanonicalDocument> {
@@ -483,6 +514,9 @@ function normalizePromptLabRunDetail(raw: Record<string, unknown>): PromptLabRun
   const docIds = Array.isArray(raw.doc_ids)
     ? raw.doc_ids.map((value) => String(value))
     : [];
+  const folderIds = Array.isArray(raw.folder_ids)
+    ? raw.folder_ids.map((value) => String(value))
+    : [];
   const promptsRaw = Array.isArray(raw.prompts) ? raw.prompts : [];
   const modelsRaw = Array.isArray(raw.models) ? raw.models : [];
   const runtimeRaw = isRecord(raw.runtime) ? raw.runtime : {};
@@ -508,6 +542,7 @@ function normalizePromptLabRunDetail(raw: Record<string, unknown>): PromptLabRun
   return {
     ...summary,
     doc_ids: docIds,
+    folder_ids: folderIds,
     prompts: promptsRaw
       .filter(isRecord)
       .map((prompt, index) => normalizePromptLabPrompt(prompt, index)),
@@ -577,6 +612,9 @@ function normalizeMethodsLabRunDetail(raw: Record<string, unknown>): MethodsLabR
   const docIds = Array.isArray(raw.doc_ids)
     ? raw.doc_ids.map((value) => String(value))
     : [];
+  const folderIds = Array.isArray(raw.folder_ids)
+    ? raw.folder_ids.map((value) => String(value))
+    : [];
   const methodsRaw = Array.isArray(raw.methods) ? raw.methods : [];
   const modelsRaw = Array.isArray(raw.models) ? raw.models : [];
   const runtimeRaw = isRecord(raw.runtime) ? raw.runtime : {};
@@ -602,6 +640,7 @@ function normalizeMethodsLabRunDetail(raw: Record<string, unknown>): MethodsLabR
   return {
     ...summary,
     doc_ids: docIds,
+    folder_ids: folderIds,
     methods: methodsRaw
       .filter(isRecord)
       .map((method, index) => normalizeMethodsLabMethod(method, index)),
@@ -1074,6 +1113,51 @@ function normalizeDashboardMetrics(
       band_counts: { ...defaultBandCounts, ...bandCounts },
     },
     documents,
+  };
+}
+
+function normalizeDocumentSummary(raw: Record<string, unknown>): DocumentSummary {
+  return {
+    id: String(raw.id ?? ""),
+    filename: String(raw.filename ?? ""),
+    display_name:
+      typeof raw.display_name === "string" && raw.display_name.trim()
+        ? raw.display_name
+        : String(raw.filename ?? ""),
+    status: (raw.status as DocumentSummary["status"] | undefined) ?? "pending",
+  };
+}
+
+function normalizeFolderSummary(raw: Record<string, unknown>): FolderSummary {
+  return {
+    id: String(raw.id ?? ""),
+    name: String(raw.name ?? ""),
+    kind: raw.kind === "sample" ? "sample" : "import",
+    parent_folder_id: typeof raw.parent_folder_id === "string" ? raw.parent_folder_id : null,
+    merged_doc_id: typeof raw.merged_doc_id === "string" ? raw.merged_doc_id : null,
+    doc_count: toNumber(raw.doc_count, 0),
+    child_folder_count: toNumber(raw.child_folder_count, 0),
+    source_filename: typeof raw.source_filename === "string" ? raw.source_filename : null,
+    source_folder_id: typeof raw.source_folder_id === "string" ? raw.source_folder_id : null,
+    sample_size: typeof raw.sample_size === "number" ? raw.sample_size : null,
+    sample_seed: typeof raw.sample_seed === "number" ? raw.sample_seed : null,
+    created_at: String(raw.created_at ?? ""),
+  };
+}
+
+function normalizeFolderDetail(raw: Record<string, unknown>): FolderDetail {
+  return {
+    ...normalizeFolderSummary(raw),
+    doc_ids: Array.isArray(raw.doc_ids) ? raw.doc_ids.map((value) => String(value)) : [],
+    child_folder_ids: Array.isArray(raw.child_folder_ids)
+      ? raw.child_folder_ids.map((value) => String(value))
+      : [],
+    documents: Array.isArray(raw.documents)
+      ? raw.documents.filter(isRecord).map(normalizeDocumentSummary)
+      : [],
+    child_folders: Array.isArray(raw.child_folders)
+      ? raw.child_folders.filter(isRecord).map(normalizeFolderSummary)
+      : [],
   };
 }
 

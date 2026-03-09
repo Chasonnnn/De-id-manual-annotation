@@ -16,6 +16,23 @@ def _server():
     return server
 
 
+def _normalize_requested_ids(values: object) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    return [str(item).strip() for item in values if str(item).strip()]
+
+
+def _resolve_folder_doc_ids(folder_ids: list[str], *, session_id: str) -> list[str]:
+    srv = _server()
+    resolved: list[str] = []
+    for folder_id in folder_ids:
+        folder = srv._load_folder(folder_id, session_id)
+        if folder is None:
+            raise HTTPException(status_code=404, detail=f"Folder not found: {folder_id}")
+        resolved.extend(folder.doc_ids)
+    return list(dict.fromkeys(resolved))
+
+
 def _resolve_text_file_path(path_value: str, *, context_dir: Path | None) -> Path:
     raw_path = Path(str(path_value).strip())
     if not raw_path.is_absolute():
@@ -106,11 +123,14 @@ def prepare_prompt_lab_body(
             )
         prompt_items.append(prompt)
 
-    requested_doc_ids = [
-        str(item).strip() for item in (body.doc_ids or []) if str(item).strip()
-    ]
-    if requested_doc_ids:
-        doc_ids = list(dict.fromkeys(requested_doc_ids))
+    requested_doc_ids = _normalize_requested_ids(body.doc_ids or [])
+    requested_folder_ids = _normalize_requested_ids(getattr(body, "folder_ids", []))
+    resolved_folder_doc_ids = _resolve_folder_doc_ids(
+        requested_folder_ids,
+        session_id=session_id,
+    )
+    if requested_doc_ids or requested_folder_ids:
+        doc_ids = list(dict.fromkeys([*requested_doc_ids, *resolved_folder_doc_ids]))
     else:
         doc_ids = list(dict.fromkeys(srv._load_session_index(session_id)))
 
@@ -120,7 +140,13 @@ def prepare_prompt_lab_body(
             detail=f"No documents found in session '{session_id}'.",
         )
 
-    return body.model_copy(update={"doc_ids": doc_ids, "prompts": prompt_items})
+    return body.model_copy(
+        update={
+            "doc_ids": doc_ids,
+            "folder_ids": requested_folder_ids,
+            "prompts": prompt_items,
+        }
+    )
 
 
 def prepare_methods_lab_body(
@@ -130,11 +156,14 @@ def prepare_methods_lab_body(
 ):
     srv = _server()
 
-    requested_doc_ids = [
-        str(item).strip() for item in (body.doc_ids or []) if str(item).strip()
-    ]
-    if requested_doc_ids:
-        doc_ids = list(dict.fromkeys(requested_doc_ids))
+    requested_doc_ids = _normalize_requested_ids(body.doc_ids or [])
+    requested_folder_ids = _normalize_requested_ids(getattr(body, "folder_ids", []))
+    resolved_folder_doc_ids = _resolve_folder_doc_ids(
+        requested_folder_ids,
+        session_id=session_id,
+    )
+    if requested_doc_ids or requested_folder_ids:
+        doc_ids = list(dict.fromkeys([*requested_doc_ids, *resolved_folder_doc_ids]))
     else:
         doc_ids: list[str] = []
         for doc_id in srv._load_session_index(session_id):
@@ -151,7 +180,7 @@ def prepare_methods_lab_body(
             detail=f"No manual-annotated documents found in session '{session_id}'.",
         )
 
-    return body.model_copy(update={"doc_ids": doc_ids})
+    return body.model_copy(update={"doc_ids": doc_ids, "folder_ids": requested_folder_ids})
 
 
 def resolve_prompt_lab_runtime(runtime: Any) -> dict[str, object]:
@@ -214,10 +243,12 @@ def validate_prompt_lab_request(body: Any, session_id: str = "default"):
     if len(body.prompts) * len(body.models) > srv.PROMPT_LAB_MAX_VARIANTS * srv.PROMPT_LAB_MAX_VARIANTS:
         raise HTTPException(status_code=400, detail="Matrix limit exceeded (max 6x6)")
 
-    known_ids = set(srv._load_session_index(session_id))
     for doc_id in body.doc_ids:
-        if doc_id not in known_ids:
+        if srv._load_doc(doc_id, session_id) is None:
             raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
+    for folder_id in getattr(body, "folder_ids", []):
+        if srv._load_folder(folder_id, session_id) is None:
+            raise HTTPException(status_code=404, detail=f"Folder not found: {folder_id}")
 
     prompt_ids_seen: set[str] = set()
     for index, prompt in enumerate(body.prompts):
@@ -373,6 +404,7 @@ def initialize_prompt_lab_run(
         "started_at": None,
         "finished_at": None,
         "doc_ids": list(dict.fromkeys(body.doc_ids)),
+        "folder_ids": list(dict.fromkeys(getattr(body, "folder_ids", []))),
         "prompts": prompts,
         "models": models,
         "runtime": {
@@ -761,6 +793,7 @@ def build_prompt_lab_run_detail(run: dict) -> dict:
     return {
         **summary,
         "doc_ids": run.get("doc_ids", []),
+        "folder_ids": run.get("folder_ids", []),
         "prompts": run.get("prompts", []),
         "models": run.get("models", []),
         "runtime": {
@@ -1203,10 +1236,12 @@ def validate_methods_lab_request(body: Any, session_id: str = "default"):
         max_allowed=methods_lab_max_concurrency,
     )
 
-    known_ids = set(srv._load_session_index(session_id))
     for doc_id in body.doc_ids:
-        if doc_id not in known_ids:
+        if srv._load_doc(doc_id, session_id) is None:
             raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
+    for folder_id in getattr(body, "folder_ids", []):
+        if srv._load_folder(folder_id, session_id) is None:
+            raise HTTPException(status_code=404, detail=f"Folder not found: {folder_id}")
 
     method_ids_seen: set[str] = set()
     for index, method in enumerate(body.methods):
@@ -1307,6 +1342,7 @@ def initialize_methods_lab_run(
         "started_at": None,
         "finished_at": None,
         "doc_ids": list(dict.fromkeys(body.doc_ids)),
+        "folder_ids": list(dict.fromkeys(getattr(body, "folder_ids", []))),
         "methods": methods,
         "models": models,
         "runtime": {
@@ -1554,6 +1590,7 @@ def build_methods_lab_run_detail(run: dict) -> dict:
     return {
         **summary,
         "doc_ids": run.get("doc_ids", []),
+        "folder_ids": run.get("folder_ids", []),
         "methods": run.get("methods", []),
         "models": run.get("models", []),
         "runtime": {

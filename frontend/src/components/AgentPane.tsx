@@ -101,12 +101,6 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
       getAgentCredentialStatus()
         .then((status) => {
           setCredentialStatus(status);
-          if (status.has_api_key && !apiKey) {
-            setShowApiKeyInput(false);
-          }
-          if (status.has_api_base && !apiBase) {
-            setShowApiBaseInput(false);
-          }
         })
         .catch(() => {
           setCredentialStatus(null);

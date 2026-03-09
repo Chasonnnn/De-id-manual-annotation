@@ -116,6 +116,7 @@ function makeRunDetail(
   return {
     ...summary,
     doc_ids: [docId],
+    folder_ids: [],
     methods: [
       {
         id: methodId,
@@ -206,7 +207,7 @@ function makeDocResult(
 
 describe("MethodsLabTab", () => {
   const documents: DocumentSummary[] = [
-    { id: "doc-1", filename: "doc-1.txt", status: "reviewed" },
+    { id: "doc-1", filename: "doc-1.txt", display_name: "doc-1.txt", status: "reviewed" },
   ];
 
   const codexSummary = makeRunSummary("5bcf6ed4", "methods_lab__codex");
@@ -274,6 +275,7 @@ describe("MethodsLabTab", () => {
     render(
       <MethodsLabTab
         documents={documents}
+        folders={[]}
         selectedDocumentId={null}
         onSelectDocument={vi.fn()}
       />,
@@ -305,6 +307,7 @@ describe("MethodsLabTab", () => {
     render(
       <MethodsLabTab
         documents={documents}
+        folders={[]}
         selectedDocumentId="doc-1"
         onSelectDocument={() => {}}
       />,
@@ -343,6 +346,7 @@ describe("MethodsLabTab", () => {
     render(
       <MethodsLabTab
         documents={documents}
+        folders={[]}
         selectedDocumentId={null}
         onSelectDocument={vi.fn()}
       />,
@@ -402,6 +406,7 @@ describe("MethodsLabTab", () => {
     render(
       <MethodsLabTab
         documents={documents}
+        folders={[]}
         selectedDocumentId={null}
         onSelectDocument={vi.fn()}
       />,
@@ -473,6 +478,7 @@ describe("MethodsLabTab", () => {
     render(
       <MethodsLabTab
         documents={documents}
+        folders={[]}
         selectedDocumentId={null}
         onSelectDocument={vi.fn()}
       />,
@@ -571,6 +577,7 @@ describe("MethodsLabTab", () => {
     render(
       <MethodsLabTab
         documents={documents}
+        folders={[]}
         selectedDocumentId={null}
         onSelectDocument={vi.fn()}
       />,
@@ -584,6 +591,7 @@ describe("MethodsLabTab", () => {
       expect(clientMocks.createMethodsLabRun).toHaveBeenCalledWith(
         expect.objectContaining({
           doc_ids: ["doc-2"],
+          folder_ids: [],
           methods: [errorRunDetail.methods[0]],
           models: [errorRunDetail.models[0]],
           runtime: expect.objectContaining(errorRunDetail.runtime),

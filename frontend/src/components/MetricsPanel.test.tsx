@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import MetricsPanel from "./MetricsPanel";
@@ -42,5 +42,34 @@ describe("MetricsPanel", () => {
     expect(screen.getByText("Overlap Micro F1")).not.toBeNull();
     expect(screen.getAllByText("90.0%").length).toBeGreaterThan(0);
     expect(screen.getByText("Exact diagnostic: P 50.0% · R 30.0% · F1 40.0%")).not.toBeNull();
+  });
+
+  it("supports keyboard toggling on the metrics header", () => {
+    const view = render(
+      <MetricsPanel
+        reference="manual"
+        hypothesis="agent.llm"
+        matchMode="exact"
+        sourceOptions={[
+          { value: "manual", label: "Manual" },
+          { value: "agent.llm", label: "LLM" },
+        ]}
+        metrics={null}
+        loading={false}
+        onRefresh={vi.fn()}
+        onReferenceChange={vi.fn()}
+        onHypothesisChange={vi.fn()}
+        onMatchModeChange={vi.fn()}
+      />,
+    );
+
+    const header = view.container.querySelector(".metrics-header");
+    expect(header).not.toBeNull();
+    if (!header) {
+      throw new Error("Expected metrics header to render");
+    }
+    fireEvent.keyDown(header, { key: "Enter" });
+
+    expect(view.queryByText(/No per-document metrics yet/i)).toBeNull();
   });
 });

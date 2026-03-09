@@ -116,6 +116,7 @@ function makeRunDetail(
   return {
     ...summary,
     doc_ids: [docId],
+    folder_ids: [],
     prompts: [
       {
         id: promptId,
@@ -208,7 +209,7 @@ function makeDocResult(
 
 describe("PromptLabTab", () => {
   const documents: DocumentSummary[] = [
-    { id: "doc-1", filename: "doc-1.txt", status: "reviewed" },
+    { id: "doc-1", filename: "doc-1.txt", display_name: "doc-1.txt", status: "reviewed" },
   ];
 
   const openAiSummary = makeRunSummary("15fad00a", "prompt_lab__prompt_text_core__openai");
@@ -276,6 +277,7 @@ describe("PromptLabTab", () => {
     render(
       <PromptLabTab
         documents={documents}
+        folders={[]}
         selectedDocumentId={null}
         onSelectDocument={vi.fn()}
       />,
@@ -307,6 +309,7 @@ describe("PromptLabTab", () => {
     render(
       <PromptLabTab
         documents={documents}
+        folders={[]}
         selectedDocumentId="doc-1"
         onSelectDocument={() => {}}
       />,
@@ -369,6 +372,7 @@ describe("PromptLabTab", () => {
     render(
       <PromptLabTab
         documents={documents}
+        folders={[]}
         selectedDocumentId={null}
         onSelectDocument={vi.fn()}
       />,
@@ -427,6 +431,7 @@ describe("PromptLabTab", () => {
     render(
       <PromptLabTab
         documents={documents}
+        folders={[]}
         selectedDocumentId={null}
         onSelectDocument={vi.fn()}
       />,
@@ -486,6 +491,7 @@ describe("PromptLabTab", () => {
     render(
       <PromptLabTab
         documents={documents}
+        folders={[]}
         selectedDocumentId={null}
         onSelectDocument={vi.fn()}
       />,
@@ -573,6 +579,7 @@ describe("PromptLabTab", () => {
     render(
       <PromptLabTab
         documents={documents}
+        folders={[]}
         selectedDocumentId={null}
         onSelectDocument={vi.fn()}
       />,
@@ -586,6 +593,7 @@ describe("PromptLabTab", () => {
       expect(clientMocks.createPromptLabRun).toHaveBeenCalledWith(
         expect.objectContaining({
           doc_ids: ["doc-2"],
+          folder_ids: [],
           prompts: [errorRunDetail.prompts[0]],
           models: [errorRunDetail.models[0]],
           runtime: expect.objectContaining(errorRunDetail.runtime),

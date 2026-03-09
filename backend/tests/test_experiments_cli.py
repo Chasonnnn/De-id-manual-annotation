@@ -53,6 +53,38 @@ def _make_hips_v1(
     ).encode()
 
 
+def _make_multi_record_jsonl() -> bytes:
+    records = [
+        {
+            "transcript": [
+                {
+                    "role": "volunteer",
+                    "content": "Hello Liam",
+                    "sequence_id": 0,
+                    "session_id": "session-001",
+                    "annotations": [
+                        {"start": 6, "end": 10, "pii_type": "NAME", "text": "Liam"}
+                    ],
+                }
+            ]
+        },
+        {
+            "transcript": [
+                {
+                    "role": "student",
+                    "content": "Meet Ava",
+                    "sequence_id": 0,
+                    "session_id": "session-002",
+                    "annotations": [
+                        {"start": 5, "end": 8, "pii_type": "NAME", "text": "Ava"}
+                    ],
+                }
+            ]
+        },
+    ]
+    return "\n".join(json.dumps(record) for record in records).encode()
+
+
 def _upload(client: TestClient, data: bytes | None = None, filename: str = "test.json") -> str:
     resp = client.post(
         "/api/documents/upload",
@@ -249,6 +281,135 @@ def test_manifest_methods_run_persists_artifacts(client, monkeypatch, tmp_path, 
     assert saved is not None
     assert saved["status"] == "completed"
     assert saved["doc_ids"] == [doc_id]
+
+
+def test_manifest_prompt_run_accepts_folder_ids(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_llm_with_metadata(**kwargs):
+        text = str(kwargs["text"])
+        target = "Liam" if "Liam" in text else "Ava"
+        start = text.index(target)
+        return SimpleNamespace(
+            spans=[
+                CanonicalSpan(
+                    start=start,
+                    end=start + len(target),
+                    label="NAME",
+                    text=target,
+                )
+            ],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(),
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    _upload(client, data=_make_multi_record_jsonl(), filename="sessions.jsonl")
+    folder_id = client.get("/api/folders").json()[0]["id"]
+    folder_detail = client.get(f"/api/folders/{folder_id}").json()
+    child_doc_ids = [item["id"] for item in folder_detail["documents"]]
+
+    manifest_path = tmp_path / "prompt_folder_manifest.yaml"
+    manifest_path.write_text(
+        "\n".join(
+            [
+                "kind: prompt_lab",
+                "name: manifest-prompt-folder",
+                "session: default",
+                "folder_ids:",
+                f"  - {folder_id}",
+                "prompts:",
+                "  - id: p1",
+                "    label: Baseline",
+                "    system_prompt: Detect pii spans as strict JSON",
+                "models:",
+                "  - id: m1",
+                "    label: Codex",
+                "    model: openai.gpt-5.3-codex",
+                "    reasoning_effort: xhigh",
+                "runtime:",
+                "  api_key: request-key",
+                "  api_base: https://proxy.example.com/v1",
+                "  temperature: 0.0",
+                "  match_mode: exact",
+                "  reference_source: pre",
+                "  fallback_reference_source: pre",
+                "concurrency: 2",
+            ]
+        )
+    )
+
+    exit_code = main(["run", str(manifest_path)])
+
+    assert exit_code == 0
+    run_ids = _load_prompt_lab_index()
+    saved = _load_prompt_lab_run(run_ids[0])
+    assert saved is not None
+    assert saved["folder_ids"] == [folder_id]
+    assert saved["doc_ids"] == child_doc_ids
+
+
+def test_flag_methods_run_accepts_folder_id(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_method_with_metadata(**kwargs):
+        text = str(kwargs["text"])
+        target = "Liam" if "Liam" in text else "Ava"
+        start = text.index(target)
+        return SimpleNamespace(
+            spans=[
+                CanonicalSpan(
+                    start=start,
+                    end=start + len(target),
+                    label="NAME",
+                    text=target,
+                )
+            ],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(model="openai.gpt-5.3-codex"),
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    _upload(client, data=_make_multi_record_jsonl(), filename="sessions.jsonl")
+    folder_id = client.get("/api/folders").json()[0]["id"]
+    folder_detail = client.get(f"/api/folders/{folder_id}").json()
+    child_doc_ids = [item["id"] for item in folder_detail["documents"]]
+    for doc_id in child_doc_ids:
+        document = client.get(f"/api/documents/{doc_id}").json()
+        _set_manual_annotations(client, doc_id, document["pre_annotations"])
+
+    exit_code = main(
+        [
+            "methods",
+            "--session",
+            "default",
+            "--folder-id",
+            folder_id,
+            "--method",
+            "Default=default",
+            "--model",
+            "Codex=openai.gpt-5.3-codex",
+            "--api-key",
+            "request-key",
+            "--api-base",
+            "https://proxy.example.com/v1",
+        ]
+    )
+
+    assert exit_code == 0
+    run_ids = _load_methods_lab_index()
+    saved = _load_methods_lab_run(run_ids[0])
+    assert saved is not None
+    assert saved["folder_ids"] == [folder_id]
+    assert saved["doc_ids"] == child_doc_ids
 
 
 def test_manifest_prompt_run_accepts_concurrency_above_legacy_limit(

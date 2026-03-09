@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { render } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render } from "@testing-library/react";
 
 import AnnotatedText from "./AnnotatedText";
 
@@ -52,5 +52,26 @@ describe("AnnotatedText", () => {
     );
 
     expect(getRenderedRawText(container)).toBe(text);
+  });
+
+  it("adds button semantics for clickable spans and supports keyboard activation", () => {
+    const onSpanClick = vi.fn();
+    const { container } = render(
+      <AnnotatedText
+        text="hello anna"
+        spans={[{ start: 6, end: 10, label: "NAME", text: "anna" }]}
+        clickable
+        onSpanClick={onSpanClick}
+      />,
+    );
+
+    const span = container.querySelector(".ann-span");
+    expect(span?.getAttribute("role")).toBe("button");
+    expect(span?.getAttribute("tabindex")).toBe("0");
+
+    fireEvent.keyDown(span as HTMLElement, { key: "Enter" });
+
+    expect(onSpanClick).toHaveBeenCalledTimes(1);
+    expect(onSpanClick).toHaveBeenCalledWith(0, expect.any(Object));
   });
 });

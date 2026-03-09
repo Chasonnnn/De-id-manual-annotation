@@ -130,7 +130,30 @@ export interface CanonicalDocument {
 export interface DocumentSummary {
   id: string;
   filename: string;
+  display_name: string;
   status: "pending" | "in_progress" | "reviewed";
+}
+
+export interface FolderSummary {
+  id: string;
+  name: string;
+  kind: "import" | "sample";
+  parent_folder_id: string | null;
+  merged_doc_id: string | null;
+  doc_count: number;
+  child_folder_count: number;
+  source_filename: string | null;
+  source_folder_id: string | null;
+  sample_size: number | null;
+  sample_seed: number | null;
+  created_at: string;
+}
+
+export interface FolderDetail extends FolderSummary {
+  doc_ids: string[];
+  child_folder_ids: string[];
+  documents: DocumentSummary[];
+  child_folders: FolderSummary[];
 }
 
 export interface MetricsResult {
@@ -263,6 +286,7 @@ export interface SessionExportBundle {
   exported_at: string;
   prompt_lab_runs?: PromptLabRunExport[];
   methods_lab_runs?: MethodsLabRunExport[];
+  folders?: Array<Record<string, unknown>>;
   documents: Array<{
     source: CanonicalDocument;
     manual_annotations: CanonicalSpan[];
@@ -416,6 +440,7 @@ export interface PromptLabRuntimeInput {
 export interface PromptLabRunCreateRequest {
   name?: string;
   doc_ids: string[];
+  folder_ids: string[];
   prompts: PromptLabPromptInput[];
   models: PromptLabModelInput[];
   runtime: PromptLabRuntimeInput;
@@ -444,6 +469,7 @@ export interface MethodsLabRuntimeInput {
 export interface MethodsLabRunCreateRequest {
   name?: string;
   doc_ids: string[];
+  folder_ids: string[];
   methods: MethodsLabMethodInput[];
   models: PromptLabModelInput[];
   runtime: MethodsLabRuntimeInput;
@@ -523,6 +549,7 @@ export interface PromptLabRunSummary {
 
 export interface PromptLabRunDetail extends PromptLabRunSummary {
   doc_ids: string[];
+  folder_ids: string[];
   prompts: PromptLabPromptInput[];
   models: PromptLabModelInput[];
   runtime: Omit<PromptLabRuntimeInput, "api_key"> & { api_base?: string };
@@ -629,6 +656,7 @@ export interface MethodsLabRunSummary {
 
 export interface MethodsLabRunDetail extends MethodsLabRunSummary {
   doc_ids: string[];
+  folder_ids: string[];
   methods: MethodsLabMethodInput[];
   models: PromptLabModelInput[];
   runtime: Omit<MethodsLabRuntimeInput, "api_key"> & { api_base?: string };

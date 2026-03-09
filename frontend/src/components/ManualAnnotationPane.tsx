@@ -212,14 +212,17 @@ const ManualAnnotationPane = forwardRef<HTMLDivElement, Props>(
     }, [text, trimBoundaries]);
 
     const handleSpanClick = useCallback(
-      (index: number, e: React.MouseEvent) => {
+      (index: number, e: React.MouseEvent | React.KeyboardEvent) => {
         const sorted = [...spans].sort((a, b) => a.start - b.start);
         const span = sorted[index];
         if (!span) return;
         const originalIndex = spans.indexOf(span);
+        const targetRect = (e.currentTarget as HTMLElement | null)?.getBoundingClientRect?.();
+        const x = "clientX" in e ? e.clientX : targetRect?.left ?? 0;
+        const y = "clientY" in e ? e.clientY + 4 : (targetRect?.bottom ?? 0) + 4;
         setPopup({
-          x: e.clientX,
-          y: e.clientY + 4,
+          x,
+          y,
           selStart: span.start,
           selEnd: span.end,
           selText: span.text,
@@ -275,6 +278,7 @@ const ManualAnnotationPane = forwardRef<HTMLDivElement, Props>(
           ref={mergedRefCallback}
           onScroll={(e) => onScroll((e.target as HTMLDivElement).scrollTop)}
           onMouseUp={handleMouseUp}
+          role="presentation"
         >
           <AnnotatedText
             text={text}

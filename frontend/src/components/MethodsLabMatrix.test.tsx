@@ -21,6 +21,7 @@ describe("MethodsLabMatrix", () => {
       completed_tasks: 1,
       failed_tasks: 0,
       doc_ids: ["doc-1"],
+      folder_ids: [],
       methods: [{ id: "method_1", label: "Default", method_id: "default", method_verify_override: null }],
       models: [
         {

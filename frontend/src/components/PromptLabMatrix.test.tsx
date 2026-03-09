@@ -21,6 +21,7 @@ describe("PromptLabMatrix", () => {
       completed_tasks: 1,
       failed_tasks: 0,
       doc_ids: ["doc-1"],
+      folder_ids: [],
       prompts: [{ id: "baseline_raw", label: "baseline_raw", variant_type: "prompt", system_prompt: "test" }],
       models: [
         {
