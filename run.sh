@@ -7,6 +7,9 @@ FRONTEND_DIR="$ROOT_DIR/frontend"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 INSTALL_DEPS=false
+backend_job_pid=""
+frontend_job_pid=""
+cleanup_started=0
 
 usage() {
     cat <<'EOF'
@@ -133,20 +136,43 @@ restart_repo_processes_on_port() {
 }
 
 cleanup() {
+    if [[ "$cleanup_started" -eq 1 ]]; then
+        return
+    fi
+    cleanup_started=1
+    trap - SIGINT SIGTERM EXIT
     echo "Shutting down..."
-    kill 0
+    terminate_pid_tree "$backend_job_pid"
+    terminate_pid_tree "$frontend_job_pid"
     wait
 }
-trap cleanup SIGINT SIGTERM
+
+terminate_pid_tree() {
+    local pid="$1"
+    [[ -z "$pid" ]] && return 0
+
+    local children
+    children="$(pgrep -P "$pid" 2>/dev/null || true)"
+    while IFS= read -r child_pid; do
+        [[ -z "$child_pid" ]] && continue
+        terminate_pid_tree "$child_pid"
+    done <<< "$children"
+
+    kill "$pid" 2>/dev/null || true
+}
+
+trap cleanup EXIT SIGINT SIGTERM
 
 restart_repo_processes_on_port "$BACKEND_PORT" "backend" "$BACKEND_DIR" "uvicorn" "server:app"
 restart_repo_processes_on_port "$FRONTEND_PORT" "frontend" "$FRONTEND_DIR" "vite"
 
 echo "Starting backend (FastAPI)..."
 (cd "$BACKEND_DIR" && uv run uvicorn server:app --reload --port "$BACKEND_PORT") &
+backend_job_pid=$!
 
 echo "Starting frontend (Vite)..."
 (cd "$FRONTEND_DIR" && npm run dev -- --port "$FRONTEND_PORT") &
+frontend_job_pid=$!
 
 echo "Backend: http://localhost:$BACKEND_PORT"
 echo "Frontend: http://localhost:$FRONTEND_PORT"
