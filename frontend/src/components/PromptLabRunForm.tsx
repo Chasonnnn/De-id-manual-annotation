@@ -642,7 +642,7 @@ function usePromptLabRunFormController({
   });
   const [runtimeState, setRuntimeState] = useState<PromptLabRuntimeState>({
     temperature: 0,
-    matchMode: "exact",
+    matchMode: "overlap",
     referenceSource: "manual",
     fallbackSource: "pre",
     apiKey: readSessionValue("prompt_lab_api_key"),

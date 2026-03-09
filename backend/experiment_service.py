@@ -165,19 +165,26 @@ def prepare_methods_lab_body(
     if requested_doc_ids or requested_folder_ids:
         doc_ids = list(dict.fromkeys([*requested_doc_ids, *resolved_folder_doc_ids]))
     else:
+        reference_source = getattr(body.runtime, "reference_source", "manual")
+        fallback_reference_source = getattr(body.runtime, "fallback_reference_source", "pre")
         doc_ids: list[str] = []
         for doc_id in srv._load_session_index(session_id):
             doc = srv._load_doc(doc_id, session_id)
             if doc is None:
                 continue
             enriched = srv._enrich_doc(doc, session_id)
-            if enriched.manual_annotations:
+            _, reference_spans = _resolve_prompt_lab_reference(
+                enriched,
+                str(reference_source),
+                str(fallback_reference_source),
+            )
+            if reference_spans:
                 doc_ids.append(doc_id)
 
     if not doc_ids:
         raise HTTPException(
             status_code=400,
-            detail=f"No manual-annotated documents found in session '{session_id}'.",
+            detail=f"No reference-annotated documents found in session '{session_id}'.",
         )
 
     return body.model_copy(update={"doc_ids": doc_ids, "folder_ids": requested_folder_ids})
@@ -1204,6 +1211,8 @@ def resolve_methods_lab_runtime(runtime: Any) -> dict[str, object]:
         "api_base": api_base,
         "temperature": runtime.temperature,
         "match_mode": match_mode,
+        "reference_source": runtime.reference_source,
+        "fallback_reference_source": runtime.fallback_reference_source,
         "chunk_mode": chunk_mode,
         "chunk_size_chars": chunk_size_chars,
         "label_profile": label_profile,
@@ -1348,6 +1357,8 @@ def initialize_methods_lab_run(
         "runtime": {
             "temperature": runtime["temperature"],
             "match_mode": runtime["match_mode"],
+            "reference_source": runtime["reference_source"],
+            "fallback_reference_source": runtime["fallback_reference_source"],
             "label_profile": runtime["label_profile"],
             "label_projection": runtime["label_projection"],
             "api_base": runtime["api_base"],
@@ -1596,6 +1607,8 @@ def build_methods_lab_run_detail(run: dict) -> dict:
         "runtime": {
             "temperature": runtime.get("temperature", 0.0),
             "match_mode": runtime.get("match_mode", "exact"),
+            "reference_source": runtime.get("reference_source", "manual"),
+            "fallback_reference_source": runtime.get("fallback_reference_source", "pre"),
             "label_profile": runtime.get("label_profile", "simple"),
             "label_projection": runtime.get("label_projection", "native"),
             "api_base": runtime.get("api_base", ""),
@@ -1678,6 +1691,8 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
     api_base = str(runtime["api_base"])
     temperature = float(runtime["temperature"])
     match_mode = str(runtime["match_mode"])
+    reference_source = str(runtime["reference_source"])
+    fallback_reference_source = str(runtime["fallback_reference_source"])
     label_profile = str(runtime["label_profile"])
     label_projection = srv._normalize_label_projection(runtime.get("label_projection", "native"))
     chunk_mode = str(runtime["chunk_mode"])
@@ -1777,14 +1792,19 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
             )
 
         enriched = srv._enrich_doc(doc, session_id)
-        if not enriched.manual_annotations:
+        resolved_reference_source, reference_spans = _resolve_prompt_lab_reference(
+            enriched,
+            reference_source,
+            fallback_reference_source,
+        )
+        if not reference_spans:
             return (
                 method_variant_id,
                 doc_id,
                 target_model_ids,
                 {
                     "status": "unavailable",
-                    "error": "Methods Lab requires manual annotations for scoring.",
+                    "error": "Methods Lab requires reference annotations for scoring.",
                     "updated_at": srv._now_iso(),
                     "filename": enriched.filename,
                 },
@@ -1929,12 +1949,12 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                 finally:
                     task_executor.shutdown(wait=not timed_out, cancel_futures=timed_out)
             projected_reference, projected_hypothesis = srv._apply_label_projection(
-                enriched.manual_annotations,
+                reference_spans,
                 hypothesis_spans,
                 label_projection=label_projection,  # type: ignore[arg-type]
             )
             projected_reference_raw, projected_hypothesis_raw = srv._apply_label_projection(
-                enriched.manual_annotations,
+                reference_spans,
                 raw_hypothesis_spans,
                 label_projection=label_projection,  # type: ignore[arg-type]
             )
@@ -1950,10 +1970,8 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                 target_model_ids,
                 {
                     "status": "completed",
-                    "reference_source_used": "manual",
-                    "reference_spans": [
-                        span.model_dump() for span in enriched.manual_annotations
-                    ],
+                    "reference_source_used": resolved_reference_source,
+                    "reference_spans": [span.model_dump() for span in reference_spans],
                     "raw_hypothesis_spans": [
                         span.model_dump() for span in raw_hypothesis_spans
                     ],

@@ -75,6 +75,26 @@ describe("PromptLabRunForm", () => {
     expect((screen.getByLabelText("Chunk Mode") as HTMLSelectElement).value).toBe("off");
   });
 
+  it("defaults prompt lab match mode to overlap", async () => {
+    render(
+      <PromptLabRunForm
+        documents={documents}
+        folders={[]}
+        selectedDocumentId="doc-1"
+        methods={[]}
+        onRun={vi.fn()}
+        running={false}
+        concurrencyMax={12}
+      />,
+    );
+
+    await waitFor(() => {
+      expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
+    });
+
+    expect((screen.getByLabelText("Match") as HTMLSelectElement).value).toBe("overlap");
+  });
+
   it("submits selected folder ids separately from explicit doc ids", async () => {
     const onRun = vi.fn().mockResolvedValue(undefined);
 

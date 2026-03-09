@@ -1,10 +1,14 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import MethodsLabRunForm from "./MethodsLabRunForm";
 import type { DocumentSummary, FolderSummary } from "../types";
 
 describe("MethodsLabRunForm", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
   const documents: DocumentSummary[] = [
     { id: "doc-1", filename: "doc-1.txt", display_name: "doc-1.txt", status: "reviewed" },
   ];
@@ -75,6 +79,26 @@ describe("MethodsLabRunForm", () => {
     expect((screen.getByLabelText("Chunk Mode") as HTMLSelectElement).value).toBe("off");
   });
 
+  it("defaults methods lab match mode to overlap", async () => {
+    render(
+      <MethodsLabRunForm
+        documents={documents}
+        folders={[]}
+        selectedDocumentId="doc-1"
+        methods={[]}
+        onRun={vi.fn()}
+        running={false}
+        concurrencyMax={12}
+      />,
+    );
+
+    await waitFor(() => {
+      expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
+    });
+
+    expect((screen.getByLabelText("Match") as HTMLSelectElement).value).toBe("overlap");
+  });
+
   it("submits selected folder ids separately from explicit doc ids", async () => {
     const onRun = vi.fn().mockResolvedValue(undefined);
 
@@ -103,5 +127,76 @@ describe("MethodsLabRunForm", () => {
       );
     });
     expect(scoped.getByText(/Requests:/).textContent).toContain("3");
+  });
+
+  it("submits the selected match mode", async () => {
+    const onRun = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <MethodsLabRunForm
+        documents={documents}
+        folders={[]}
+        selectedDocumentId="doc-1"
+        methods={[]}
+        onRun={onRun}
+        running={false}
+        concurrencyMax={12}
+      />,
+    );
+
+    await waitFor(() => {
+      expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
+    });
+
+    fireEvent.change(screen.getByLabelText("Match"), {
+      target: { value: "boundary" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run Methods Lab" }));
+
+    await waitFor(() => {
+      expect(onRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtime: expect.objectContaining({
+            match_mode: "boundary",
+          }),
+        }),
+      );
+    });
+  });
+
+  it("lets the user compare against pre-annotations", async () => {
+    const onRun = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <MethodsLabRunForm
+        documents={documents}
+        folders={[]}
+        selectedDocumentId="doc-1"
+        methods={[]}
+        onRun={onRun}
+        running={false}
+        concurrencyMax={12}
+      />,
+    );
+
+    await waitFor(() => {
+      expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
+    });
+
+    fireEvent.change(screen.getByLabelText("Reference"), {
+      target: { value: "pre" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run Methods Lab" }));
+
+    await waitFor(() => {
+      expect(onRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtime: expect.objectContaining({
+            reference_source: "pre",
+            fallback_reference_source: "pre",
+          }),
+        }),
+      );
+    });
   });
 });

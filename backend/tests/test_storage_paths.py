@@ -14,7 +14,6 @@ def test_runtime_storage_is_anchored_to_backend_dir():
     assert server.BASE_DIR == backend_dir / ".annotation_tool"
     assert server.SESSIONS_DIR == server.BASE_DIR / "sessions"
     assert server.CONFIG_PATH == server.BASE_DIR / "config.json"
-    assert server.PROFILE_PATH == server.BASE_DIR / "session_profile.json"
 
 
 def test_legacy_repo_root_storage_is_migrated_to_backend_storage(tmp_path, monkeypatch):
@@ -53,12 +52,18 @@ def test_legacy_repo_root_storage_is_migrated_to_backend_storage(tmp_path, monke
     monkeypatch.setattr("server.LEGACY_BASE_DIR", legacy_base_dir)
     monkeypatch.setattr("server.SESSIONS_DIR", backend_base_dir / "sessions")
     monkeypatch.setattr("server.CONFIG_PATH", backend_base_dir / "config.json")
-    monkeypatch.setattr("server.PROFILE_PATH", backend_base_dir / "session_profile.json")
     server._session_docs.clear()
 
     client = TestClient(server.app)
     resp = client.get("/api/documents")
 
     assert resp.status_code == 200
-    assert resp.json() == [{"id": "legacy-doc", "filename": "legacy.json", "status": "pending"}]
+    assert resp.json() == [
+        {
+            "id": "legacy-doc",
+            "filename": "legacy.json",
+            "display_name": "legacy.json",
+            "status": "pending",
+        }
+    ]
     assert (backend_base_dir / "sessions" / "default" / "_index.json").exists()

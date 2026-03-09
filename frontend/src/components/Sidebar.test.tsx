@@ -1,10 +1,15 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import type { ComponentProps } from "react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import Sidebar from "./Sidebar";
-import type { DocumentSummary, FolderDetail, FolderSummary, SessionProfile } from "../types";
+import type { DocumentSummary, FolderDetail, FolderSummary } from "../types";
 
 describe("Sidebar", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
   const documents: DocumentSummary[] = [
     {
       id: "doc-merged",
@@ -20,7 +25,7 @@ describe("Sidebar", () => {
     parent_folder_id: null,
     merged_doc_id: "doc-merged",
     doc_count: 2,
-    child_folder_count: 1,
+    child_folder_count: 0,
     source_filename: "batch.jsonl",
     source_folder_id: null,
     sample_size: null,
@@ -31,7 +36,7 @@ describe("Sidebar", () => {
     id: "folder-sample",
     name: "Sample 1",
     kind: "sample",
-    parent_folder_id: "folder-import",
+    parent_folder_id: null,
     merged_doc_id: null,
     doc_count: 1,
     child_folder_count: 0,
@@ -41,13 +46,27 @@ describe("Sidebar", () => {
     sample_seed: 7,
     created_at: "2026-03-09T12:01:00Z",
   };
-  const folders: FolderSummary[] = [importFolder, sampleFolder];
+  const manualFolder: FolderSummary = {
+    id: "folder-manual",
+    name: "Manual Set",
+    kind: "manual",
+    parent_folder_id: null,
+    merged_doc_id: null,
+    doc_count: 0,
+    child_folder_count: 0,
+    source_filename: null,
+    source_folder_id: null,
+    sample_size: null,
+    sample_seed: null,
+    created_at: "2026-03-09T12:02:00Z",
+  };
+  const folders: FolderSummary[] = [importFolder, sampleFolder, manualFolder];
 
   const folderDetailsById: Record<string, FolderDetail> = {
     "folder-import": {
       ...importFolder,
       doc_ids: ["doc-child-1", "doc-child-2"],
-      child_folder_ids: ["folder-sample"],
+      child_folder_ids: [],
       documents: [
         {
           id: "doc-child-1",
@@ -62,7 +81,7 @@ describe("Sidebar", () => {
           status: "reviewed",
         },
       ],
-      child_folders: [sampleFolder],
+      child_folders: [],
     },
     "folder-sample": {
       ...sampleFolder,
@@ -78,46 +97,103 @@ describe("Sidebar", () => {
       ],
       child_folders: [],
     },
+    "folder-manual": {
+      ...manualFolder,
+      doc_ids: [],
+      child_folder_ids: [],
+      documents: [],
+      child_folders: [],
+    },
   };
 
-  const sessionProfile: SessionProfile = {
-    project_name: "",
-    author: "",
-  };
-
-  it("renders top-level documents separately from folder children and lets child docs be selected", async () => {
-    const onSelect = vi.fn();
-
-    render(
+  function renderSidebar(overrides?: Partial<ComponentProps<typeof Sidebar>>) {
+    return render(
       <Sidebar
         documents={documents}
         folders={folders}
         folderDetailsById={folderDetailsById}
         selectedId={null}
-        onSelect={onSelect}
-        onUpload={vi.fn()}
+        onSelect={vi.fn()}
+        onIngestFiles={vi.fn()}
         onDelete={vi.fn()}
+        onCreateFolder={vi.fn()}
         onCreateFolderSample={vi.fn()}
         onDeleteFolder={vi.fn()}
+        onPruneFolder={vi.fn()}
         onExportSession={vi.fn()}
-        onImportSession={vi.fn()}
         exportSourceOptions={[{ value: "manual", label: "Manual annotations" }]}
-        sessionProfile={sessionProfile}
-        onSessionProfileChange={vi.fn()}
-        onSaveSessionProfile={vi.fn()}
+        {...overrides}
       />,
     );
+  }
 
+  it("renders top-level documents separately from folder children and lets child docs be selected", async () => {
+    const onSelect = vi.fn();
+    renderSidebar({ onSelect });
+
+    expect(
+      screen.getByText("Drop transcript/session bundle/ground truth here or click to add"),
+    ).toBeTruthy();
     expect(screen.getByText("Top-Level Documents")).toBeTruthy();
     expect(screen.getByText("batch.jsonl")).toBeTruthy();
     expect(screen.getByText("Folders")).toBeTruthy();
     expect(screen.getByText("batch")).toBeTruthy();
+    expect(screen.getByText("Manual Set")).toBeTruthy();
+    expect(screen.getByText("Sample 1")).toBeTruthy();
+    expect(screen.queryByText("Session alpha")).toBeNull();
+    expect(screen.queryByText("Session beta")).toBeNull();
+
+    const expandButtons = screen.getAllByRole("button", { name: "Expand folder" });
+    fireEvent.click(expandButtons[0]!);
+
     expect(await screen.findByText("Session alpha")).toBeTruthy();
     expect(screen.getByText("Session beta")).toBeTruthy();
-    expect(screen.getByText("Sample 1")).toBeTruthy();
 
     fireEvent.click(screen.getByText("Session alpha"));
 
     expect(onSelect).toHaveBeenCalledWith("doc-child-1");
+  });
+
+  it("creates top-level folders and nested subfolders from prompt actions", () => {
+    const onCreateFolder = vi.fn();
+    const promptSpy = vi
+      .spyOn(window, "prompt")
+      .mockReturnValueOnce("Research Batch")
+      .mockReturnValueOnce("Reviewed");
+
+    renderSidebar({ onCreateFolder });
+
+    fireEvent.click(screen.getByRole("button", { name: "New Folder" }));
+    const subfolderButtons = screen.getAllByRole("button", { name: "New" });
+    fireEvent.click(subfolderButtons[0]!);
+
+    expect(onCreateFolder).toHaveBeenNthCalledWith(1, "Research Batch", null);
+    expect(onCreateFolder).toHaveBeenNthCalledWith(2, "Reviewed", "folder-import");
+
+    promptSpy.mockRestore();
+  });
+
+  it("triggers the folder prune action", () => {
+    const onPruneFolder = vi.fn();
+    renderSidebar({ onPruneFolder });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Prune Empty" })[0]!);
+
+    expect(onPruneFolder).toHaveBeenCalledWith("folder-import");
+  });
+
+  it("passes the selected import conflict policy to ingest", () => {
+    const onIngestFiles = vi.fn();
+    const view = renderSidebar({ onIngestFiles });
+    const file = new File(["{}"], "bundle.json", { type: "application/json" });
+
+    fireEvent.change(screen.getByLabelText("Import Conflicts"), {
+      target: { value: "keep_current" },
+    });
+    fireEvent.change(view.container.querySelector("#sidebar-ingest-file")!, {
+      target: { files: [file] },
+    });
+
+    expect(onIngestFiles).toHaveBeenCalledWith([file], "keep_current");
   });
 });

@@ -1,6 +1,7 @@
 export type PIILabel = string;
 export type LabelProfile = "simple" | "advanced";
 export type LabelProjection = "native" | "coarse_simple";
+export type ImportConflictPolicy = "replace" | "add_new" | "keep_current";
 
 export const PII_LABELS: PIILabel[] = [
   "NAME",
@@ -137,7 +138,7 @@ export interface DocumentSummary {
 export interface FolderSummary {
   id: string;
   name: string;
-  kind: "import" | "sample";
+  kind: "import" | "sample" | "manual";
   parent_folder_id: string | null;
   merged_doc_id: string | null;
   doc_count: number;
@@ -154,6 +155,13 @@ export interface FolderDetail extends FolderSummary {
   child_folder_ids: string[];
   documents: DocumentSummary[];
   child_folders: FolderSummary[];
+}
+
+export interface FolderPruneResult {
+  folder_id: string;
+  removed_count: number;
+  removed_doc_ids: string[];
+  updated_folder_ids: string[];
 }
 
 export interface MetricsResult {
@@ -278,7 +286,6 @@ export interface DashboardMetricsResult {
 export interface SessionExportBundle {
   format: string;
   version: number;
-  project?: SessionProfile;
   compatibility?: {
     tool_version?: string;
     import_supported_versions?: number[];
@@ -314,6 +321,13 @@ export interface SessionImportResult {
   bundle_version?: number;
   imported_count: number;
   imported_ids: string[];
+  created_count?: number;
+  created_ids?: string[];
+  conflict_policy?: ImportConflictPolicy;
+  conflict_count?: number;
+  replaced_count?: number;
+  kept_current_count?: number;
+  added_as_new_count?: number;
   imported_prompt_lab_runs?: number;
   imported_methods_lab_runs?: number;
   skipped_count: number;
@@ -322,9 +336,11 @@ export interface SessionImportResult {
   total_in_bundle: number;
 }
 
-export interface SessionProfile {
-  project_name: string;
-  author: string;
+export interface SessionIngestResult extends SessionImportResult {
+  mode: "upload" | "import";
+  created_count: number;
+  created_ids: string[];
+  uploaded_count: number;
 }
 
 export interface AgentConfig {
@@ -459,6 +475,8 @@ export interface MethodsLabRuntimeInput {
   api_base?: string;
   temperature: number;
   match_mode: MatchMode;
+  reference_source?: "manual" | "pre";
+  fallback_reference_source?: "manual" | "pre";
   label_profile?: LabelProfile;
   label_projection?: LabelProjection;
   chunk_mode?: "auto" | "off" | "force";
@@ -683,7 +701,7 @@ export interface MethodsLabDocResult {
   status: "pending" | "completed" | "failed" | "unavailable" | "cancelled";
   error?: string | null;
   warnings: string[];
-  reference_source_used?: "manual";
+  reference_source_used?: "manual" | "pre";
   reference_spans: CanonicalSpan[];
   hypothesis_spans: CanonicalSpan[];
   metrics: MetricsResult | null;

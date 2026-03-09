@@ -16,12 +16,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal, cast
+from typing import Annotated, Any, Callable, Literal, cast
 from urllib.parse import urlparse
 
 import httpx
 from dotenv import dotenv_values
-from fastapi import FastAPI, HTTPException, UploadFile, File, Query, Response
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -70,7 +70,6 @@ BASE_DIR = BACKEND_DIR / ".annotation_tool"
 LEGACY_BASE_DIR = REPO_ROOT / ".annotation_tool"
 SESSIONS_DIR = BASE_DIR / "sessions"
 CONFIG_PATH = BASE_DIR / "config.json"
-PROFILE_PATH = BASE_DIR / "session_profile.json"
 
 BUNDLE_FORMAT = "annotation_tool_session"
 BUNDLE_VERSION = 5
@@ -129,11 +128,6 @@ DEFAULT_CONFIG = {
     "anthropic_thinking_budget_tokens": None,
     "prompt_lab_max_concurrency": PROMPT_LAB_DEFAULT_MAX_CONCURRENCY,
     "methods_lab_max_concurrency": METHODS_LAB_DEFAULT_MAX_CONCURRENCY,
-}
-
-DEFAULT_SESSION_PROFILE = {
-    "project_name": "",
-    "author": "",
 }
 
 MANUAL_RUNS_SIDECAR_KIND = "manual.runs"
@@ -293,6 +287,84 @@ def _folder_to_detail(folder: FolderRecord, session_id: str = "default") -> dict
 
 def _find_folders_for_doc(doc_id: str, session_id: str = "default") -> list[FolderRecord]:
     return [folder for folder in _load_all_folders(session_id) if doc_id in folder.doc_ids]
+
+
+def _doc_has_pre_or_manual_annotations(doc_id: str, session_id: str = "default") -> bool:
+    doc = _load_doc(doc_id, session_id)
+    if doc is None:
+        return False
+    if doc.pre_annotations:
+        return True
+    return bool(_load_sidecar(doc_id, "manual", session_id) or [])
+
+
+def _remove_doc_ids_from_folder_records(
+    doc_ids: set[str],
+    session_id: str = "default",
+) -> list[str]:
+    if not doc_ids:
+        return []
+
+    updated_folder_ids: list[str] = []
+    for folder in _load_all_folders(session_id):
+        next_doc_ids = [doc_id for doc_id in folder.doc_ids if doc_id not in doc_ids]
+        next_doc_display_names = {
+            doc_id: display_name
+            for doc_id, display_name in folder.doc_display_names.items()
+            if doc_id in next_doc_ids
+        }
+        next_merged_doc_id = None if folder.merged_doc_id in doc_ids else folder.merged_doc_id
+        if (
+            next_doc_ids == folder.doc_ids
+            and next_doc_display_names == folder.doc_display_names
+            and next_merged_doc_id == folder.merged_doc_id
+        ):
+            continue
+
+        _save_folder(
+            folder.model_copy(
+                update={
+                    "doc_ids": next_doc_ids,
+                    "doc_display_names": next_doc_display_names,
+                    "merged_doc_id": next_merged_doc_id,
+                }
+            ),
+            session_id,
+        )
+        updated_folder_ids.append(folder.id)
+
+    return updated_folder_ids
+
+
+def _remove_doc_ids_from_session_index(doc_ids: set[str], session_id: str = "default") -> None:
+    if not doc_ids:
+        return
+    ids = _load_session_index(session_id)
+    next_ids = [doc_id for doc_id in ids if doc_id not in doc_ids]
+    if next_ids == ids:
+        return
+    _session_docs[session_id] = next_ids
+    _save_session_index(session_id)
+
+
+def _prune_unannotated_folder_docs(
+    folder: FolderRecord,
+    session_id: str = "default",
+) -> tuple[list[str], list[str]]:
+    removed_doc_ids = [
+        doc_id
+        for doc_id in folder.doc_ids
+        if not _doc_has_pre_or_manual_annotations(doc_id, session_id)
+    ]
+    if not removed_doc_ids:
+        return [], []
+
+    removed_doc_id_set = set(removed_doc_ids)
+    updated_folder_ids = _remove_doc_ids_from_folder_records(removed_doc_id_set, session_id)
+    _remove_doc_ids_from_session_index(removed_doc_id_set, session_id)
+    for doc_id in removed_doc_ids:
+        _delete_doc_files(doc_id, session_id)
+    return removed_doc_ids, updated_folder_ids
 
 
 def _save_hidden_doc(doc: CanonicalDocument, session_id: str = "default") -> None:
@@ -530,6 +602,137 @@ def _save_session_index(session_id: str = "default"):
     (d / "_index.json").write_text(json.dumps(_session_docs.get(session_id, [])))
 
 
+ImportConflictPolicy = Literal["replace", "add_new", "keep_current"]
+
+
+@dataclass(frozen=True)
+class ImportedDocumentCommitResult:
+    doc_id: str
+    created: bool
+    conflict_action: ImportConflictPolicy | None = None
+
+
+def _empty_import_conflict_counts() -> dict[ImportConflictPolicy, int]:
+    return {"replace": 0, "add_new": 0, "keep_current": 0}
+
+
+def _record_import_conflict(
+    counts: dict[ImportConflictPolicy, int],
+    result: ImportedDocumentCommitResult,
+) -> None:
+    if result.conflict_action is None:
+        return
+    counts[result.conflict_action] += 1
+
+
+def _persist_imported_document(
+    *,
+    doc_id: str,
+    doc: CanonicalDocument,
+    session_id: str,
+    manual_spans: list[CanonicalSpan] | None = None,
+    rule_spans: list[CanonicalSpan] | None = None,
+    llm_spans: list[CanonicalSpan] | None = None,
+    method_spans: dict[str, list[CanonicalSpan]] | None = None,
+    llm_runs: dict[str, list[CanonicalSpan]] | None = None,
+    method_runs: dict[str, list[CanonicalSpan]] | None = None,
+    llm_run_metadata: dict[str, SavedRunMetadata] | None = None,
+    method_run_metadata: dict[str, SavedRunMetadata] | None = None,
+    llm_confidence: LLMConfidenceMetric | None = None,
+    imported_label_profile: Literal["simple", "advanced"] | None = None,
+) -> None:
+    persisted_doc = doc if doc.id == doc_id else doc.model_copy(update={"id": doc_id})
+    _save_doc(persisted_doc, session_id)
+    if manual_spans:
+        _save_sidecar(doc_id, "manual", manual_spans, session_id)
+    if rule_spans:
+        _save_sidecar(doc_id, "agent.rule", rule_spans, session_id)
+    if llm_spans:
+        _save_sidecar(doc_id, "agent.llm", llm_spans, session_id)
+    for method_id, spans in (method_spans or {}).items():
+        _save_sidecar(doc_id, f"agent.method.{method_id}", spans, session_id)
+    if llm_runs:
+        _save_span_map_sidecar(doc_id, LLM_RUNS_SIDECAR_KIND, llm_runs, session_id)
+    if method_runs:
+        _save_span_map_sidecar(doc_id, METHOD_RUNS_SIDECAR_KIND, method_runs, session_id)
+    if llm_run_metadata:
+        _save_run_metadata_map_sidecar(
+            doc_id,
+            LLM_RUNS_METADATA_SIDECAR_KIND,
+            llm_run_metadata,
+            session_id,
+        )
+    if method_run_metadata:
+        _save_run_metadata_map_sidecar(
+            doc_id,
+            METHOD_RUNS_METADATA_SIDECAR_KIND,
+            method_run_metadata,
+            session_id,
+        )
+    if llm_confidence is not None:
+        _save_json_sidecar(
+            doc_id,
+            "agent.llm.metrics",
+            llm_confidence.model_dump(),
+            session_id,
+        )
+    if imported_label_profile is not None:
+        _save_json_sidecar(
+            doc_id,
+            "agent.last_run",
+            {
+                "mode": "imported",
+                "label_profile": imported_label_profile,
+                "updated_at": _now_iso(),
+            },
+            session_id,
+        )
+
+
+def _create_imported_document(
+    *,
+    doc: CanonicalDocument,
+    session_id: str,
+    ids: list[str],
+    existing_ids: set[str],
+    add_to_session_index: bool = True,
+    manual_spans: list[CanonicalSpan] | None = None,
+    rule_spans: list[CanonicalSpan] | None = None,
+    llm_spans: list[CanonicalSpan] | None = None,
+    method_spans: dict[str, list[CanonicalSpan]] | None = None,
+    llm_runs: dict[str, list[CanonicalSpan]] | None = None,
+    method_runs: dict[str, list[CanonicalSpan]] | None = None,
+    llm_run_metadata: dict[str, SavedRunMetadata] | None = None,
+    method_run_metadata: dict[str, SavedRunMetadata] | None = None,
+    llm_confidence: LLMConfidenceMetric | None = None,
+    imported_label_profile: Literal["simple", "advanced"] | None = None,
+) -> str:
+    new_id = doc.id
+    while new_id in existing_ids or _load_doc(new_id, session_id) is not None:
+        new_id = str(uuid.uuid4())[:8]
+
+    _persist_imported_document(
+        doc_id=new_id,
+        doc=doc,
+        session_id=session_id,
+        manual_spans=manual_spans,
+        rule_spans=rule_spans,
+        llm_spans=llm_spans,
+        method_spans=method_spans,
+        llm_runs=llm_runs,
+        method_runs=method_runs,
+        llm_run_metadata=llm_run_metadata,
+        method_run_metadata=method_run_metadata,
+        llm_confidence=llm_confidence,
+        imported_label_profile=imported_label_profile,
+    )
+
+    if add_to_session_index:
+        ids.append(new_id)
+    existing_ids.add(new_id)
+    return new_id
+
+
 def _commit_imported_document(
     *,
     doc: CanonicalDocument,
@@ -547,83 +750,64 @@ def _commit_imported_document(
     method_run_metadata: dict[str, SavedRunMetadata] | None = None,
     llm_confidence: LLMConfidenceMetric | None = None,
     imported_label_profile: Literal["simple", "advanced"] | None = None,
-    ) -> str:
+    conflict_policy: ImportConflictPolicy = "replace",
+) -> ImportedDocumentCommitResult:
     matched_doc_id = _find_existing_import_match(doc=doc, session_id=session_id, ids=ids)
     if matched_doc_id is not None:
+        existing_ids.add(matched_doc_id)
         if add_to_session_index and matched_doc_id not in ids:
             ids.append(matched_doc_id)
-        _merge_imported_sidecars_into_existing(
-            doc_id=matched_doc_id,
-            session_id=session_id,
-            manual_spans=manual_spans,
-            rule_spans=rule_spans,
-            llm_spans=llm_spans,
-            method_spans=method_spans,
-            llm_runs=llm_runs,
-            method_runs=method_runs,
-            llm_run_metadata=llm_run_metadata,
-            method_run_metadata=method_run_metadata,
-            llm_confidence=llm_confidence,
-            imported_label_profile=imported_label_profile,
-        )
-        return matched_doc_id
+        if conflict_policy == "keep_current":
+            return ImportedDocumentCommitResult(
+                doc_id=matched_doc_id,
+                created=False,
+                conflict_action="keep_current",
+            )
+        if conflict_policy == "replace":
+            _delete_doc_files(matched_doc_id, session_id)
+            _persist_imported_document(
+                doc_id=matched_doc_id,
+                doc=doc,
+                session_id=session_id,
+                manual_spans=manual_spans,
+                rule_spans=rule_spans,
+                llm_spans=llm_spans,
+                method_spans=method_spans,
+                llm_runs=llm_runs,
+                method_runs=method_runs,
+                llm_run_metadata=llm_run_metadata,
+                method_run_metadata=method_run_metadata,
+                llm_confidence=llm_confidence,
+                imported_label_profile=imported_label_profile,
+            )
+            return ImportedDocumentCommitResult(
+                doc_id=matched_doc_id,
+                created=False,
+                conflict_action="replace",
+            )
 
-    new_id = doc.id
-    while new_id in existing_ids:
-        new_id = str(uuid.uuid4())[:8]
-    if new_id != doc.id:
-        doc = doc.model_copy(update={"id": new_id})
-
-    _save_doc(doc, session_id)
-    if manual_spans:
-        _save_sidecar(new_id, "manual", manual_spans, session_id)
-    if rule_spans:
-        _save_sidecar(new_id, "agent.rule", rule_spans, session_id)
-    if llm_spans:
-        _save_sidecar(new_id, "agent.llm", llm_spans, session_id)
-    for method_id, spans in (method_spans or {}).items():
-        _save_sidecar(new_id, f"agent.method.{method_id}", spans, session_id)
-    if llm_runs:
-        _save_span_map_sidecar(new_id, LLM_RUNS_SIDECAR_KIND, llm_runs, session_id)
-    if method_runs:
-        _save_span_map_sidecar(new_id, METHOD_RUNS_SIDECAR_KIND, method_runs, session_id)
-    if llm_run_metadata:
-        _save_run_metadata_map_sidecar(
-            new_id,
-            LLM_RUNS_METADATA_SIDECAR_KIND,
-            llm_run_metadata,
-            session_id,
-        )
-    if method_run_metadata:
-        _save_run_metadata_map_sidecar(
-            new_id,
-            METHOD_RUNS_METADATA_SIDECAR_KIND,
-            method_run_metadata,
-            session_id,
-        )
-    if llm_confidence is not None:
-        _save_json_sidecar(
-            new_id,
-            "agent.llm.metrics",
-            llm_confidence.model_dump(),
-            session_id,
-        )
-    if imported_label_profile is not None:
-        _save_json_sidecar(
-            new_id,
-            "agent.last_run",
-            {
-                "mode": "imported",
-                "label_profile": imported_label_profile,
-                "updated_at": _now_iso(),
-            },
-            session_id,
-        )
-
-    if add_to_session_index:
-        ids.append(new_id)
-    existing_ids.add(new_id)
-    return new_id
+    new_id = _create_imported_document(
+        doc=doc,
+        session_id=session_id,
+        ids=ids,
+        existing_ids=existing_ids,
+        add_to_session_index=add_to_session_index,
+        manual_spans=manual_spans,
+        rule_spans=rule_spans,
+        llm_spans=llm_spans,
+        method_spans=method_spans,
+        llm_runs=llm_runs,
+        method_runs=method_runs,
+        llm_run_metadata=llm_run_metadata,
+        method_run_metadata=method_run_metadata,
+        llm_confidence=llm_confidence,
+        imported_label_profile=imported_label_profile,
+    )
+    return ImportedDocumentCommitResult(
+        doc_id=new_id,
+        created=True,
+        conflict_action="add_new" if matched_doc_id is not None else None,
+    )
 
 
 def _document_import_fingerprint(doc: CanonicalDocument) -> tuple[str, str]:
@@ -1605,7 +1789,8 @@ def _import_ground_truth_payload(
     session_id: str,
     ids: list[str],
     existing_ids: set[str],
-) -> str:
+    conflict_policy: ImportConflictPolicy,
+) -> ImportedDocumentCommitResult:
     doc_id_raw = payload.get("id")
     doc_id = (
         doc_id_raw.strip()
@@ -1632,12 +1817,41 @@ def _import_ground_truth_payload(
     )
 
     imported_doc = parsed_doc.model_copy(update={"pre_annotations": []})
-    return _commit_imported_document(
+    matched_doc_id = _find_existing_import_match(doc=imported_doc, session_id=session_id, ids=ids)
+    if matched_doc_id is not None:
+        existing_ids.add(matched_doc_id)
+        if conflict_policy == "keep_current":
+            if matched_doc_id not in ids:
+                ids.append(matched_doc_id)
+            return ImportedDocumentCommitResult(
+                doc_id=matched_doc_id,
+                created=False,
+                conflict_action="keep_current",
+            )
+        if conflict_policy == "replace":
+            if matched_doc_id not in ids:
+                ids.append(matched_doc_id)
+            if manual_spans:
+                _save_sidecar(matched_doc_id, "manual", manual_spans, session_id)
+            else:
+                _delete_sidecar(matched_doc_id, "manual", session_id)
+            return ImportedDocumentCommitResult(
+                doc_id=matched_doc_id,
+                created=False,
+                conflict_action="replace",
+            )
+
+    new_id = _create_imported_document(
         doc=imported_doc,
         session_id=session_id,
         ids=ids,
         existing_ids=existing_ids,
         manual_spans=manual_spans,
+    )
+    return ImportedDocumentCommitResult(
+        doc_id=new_id,
+        created=True,
+        conflict_action="add_new" if matched_doc_id is not None else None,
     )
 
 
@@ -1652,14 +1866,21 @@ def _looks_like_ground_truth_payload(payload: dict[str, object]) -> bool:
     )
 
 
-def _import_ground_truth_archive(raw: bytes, session_id: str = "default") -> dict[str, object]:
+def _import_ground_truth_archive(
+    raw: bytes,
+    session_id: str = "default",
+    *,
+    conflict_policy: ImportConflictPolicy = "replace",
+) -> dict[str, object]:
     archive_buffer = io.BytesIO(raw)
     try:
         with zipfile.ZipFile(archive_buffer, mode="r") as archive:
             ids = _load_session_index(session_id)
             existing_ids = set(ids)
             imported_ids: list[str] = []
+            created_ids: list[str] = []
             skipped: list[dict[str, str | int]] = []
+            conflict_counts = _empty_import_conflict_counts()
 
             members = [name for name in archive.namelist() if not name.endswith("/")]
             if not members:
@@ -1691,13 +1912,14 @@ def _import_ground_truth_archive(raw: bytes, session_id: str = "default") -> dic
                     continue
 
                 try:
-                    new_id = _import_ground_truth_payload(
+                    commit_result = _import_ground_truth_payload(
                         payload=member_payload,
                         raw=member_raw,
                         upload_filename=Path(member_name).name,
                         session_id=session_id,
                         ids=ids,
                         existing_ids=existing_ids,
+                        conflict_policy=conflict_policy,
                     )
                 except ValueError as exc:
                     skipped.append({"index": idx, "reason": f"{member_name}: {exc}"})
@@ -1707,7 +1929,10 @@ def _import_ground_truth_archive(raw: bytes, session_id: str = "default") -> dic
                         {"index": idx, "reason": f"{member_name}: {exc}"}
                     )
                     continue
-                imported_ids.append(new_id)
+                imported_ids.append(commit_result.doc_id)
+                if commit_result.created:
+                    created_ids.append(commit_result.doc_id)
+                _record_import_conflict(conflict_counts, commit_result)
     except zipfile.BadZipFile as exc:
         raise HTTPException(
             status_code=400,
@@ -1720,6 +1945,13 @@ def _import_ground_truth_archive(raw: bytes, session_id: str = "default") -> dic
         "bundle_version": None,
         "imported_count": len(imported_ids),
         "imported_ids": imported_ids,
+        "created_count": len(created_ids),
+        "created_ids": created_ids,
+        "conflict_policy": conflict_policy,
+        "conflict_count": sum(conflict_counts.values()),
+        "replaced_count": conflict_counts["replace"],
+        "kept_current_count": conflict_counts["keep_current"],
+        "added_as_new_count": conflict_counts["add_new"],
         "skipped_count": len(skipped),
         "skipped": skipped,
         "warnings": [],
@@ -1837,7 +2069,7 @@ def _normalize_label_projection(raw: object) -> Literal["native", "coarse_simple
 
 
 def _normalize_match_mode(raw: object) -> Literal["exact", "boundary", "overlap"]:
-    value = str(raw or "exact").strip().lower()
+    value = str(raw or "overlap").strip().lower()
     if value not in {"exact", "boundary", "overlap"}:
         raise HTTPException(
             status_code=400,
@@ -2024,6 +2256,7 @@ def _delete_doc_files(doc_id: str, session_id: str = "default") -> bool:
         base / f"{doc_id}.agent.rule.json",
         base / f"{doc_id}.agent.llm.json",
         base / f"{doc_id}.agent.llm.metrics.json",
+        base / f"{doc_id}.agent.last_run.json",
         base / f"{doc_id}.{LLM_RUNS_SIDECAR_KIND}.json",
         base / f"{doc_id}.{LLM_RUNS_METADATA_SIDECAR_KIND}.json",
         base / f"{doc_id}.{METHOD_RUNS_SIDECAR_KIND}.json",
@@ -2125,48 +2358,6 @@ def _resolve_experiment_worker_count(
 ) -> int:
     bounded_total = max(1, total_tasks)
     return max(1, min(int(requested), bounded_total, max_allowed))
-
-
-def _normalize_session_profile(raw: object) -> dict[str, str]:
-    if raw is None:
-        return dict(DEFAULT_SESSION_PROFILE)
-    if not isinstance(raw, dict):
-        raise ValueError("Session profile must be an object")
-
-    def _clean(key: str, max_len: int) -> str:
-        value = raw.get(key, "")
-        if value is None:
-            return ""
-        if not isinstance(value, str):
-            raise ValueError(f"Session profile field '{key}' must be a string")
-        normalized = value.strip()
-        if len(normalized) > max_len:
-            raise ValueError(
-                f"Session profile field '{key}' exceeds max length {max_len}"
-            )
-        return normalized
-
-    return {
-        "project_name": _clean("project_name", 120),
-        "author": _clean("author", 120),
-    }
-
-
-def _load_session_profile() -> dict[str, str]:
-    _ensure_dirs()
-    if not PROFILE_PATH.exists():
-        return dict(DEFAULT_SESSION_PROFILE)
-    try:
-        raw = json.loads(PROFILE_PATH.read_text())
-        return _normalize_session_profile(raw)
-    except Exception:
-        # Keep app usable even with a malformed local profile file.
-        return dict(DEFAULT_SESSION_PROFILE)
-
-
-def _save_session_profile(profile: dict[str, str]):
-    _ensure_dirs()
-    PROFILE_PATH.write_text(json.dumps(profile, indent=2))
 
 
 def _resolve_bundle_version(payload: dict) -> int:
@@ -3026,6 +3217,11 @@ class FolderSampleCreateBody(BaseModel):
     count: int = Field(gt=0)
 
 
+class FolderCreateBody(BaseModel):
+    name: str = Field(min_length=1)
+    parent_folder_id: str | None = None
+
+
 @app.get("/api/documents")
 async def list_documents():
     session_id = "default"
@@ -3053,6 +3249,50 @@ async def get_folder(folder_id: str):
     return _folder_to_detail(folder, session_id)
 
 
+@app.post("/api/folders")
+async def create_folder(body: FolderCreateBody):
+    session_id = "default"
+    folder_name = body.name.strip()
+    if not folder_name:
+        raise HTTPException(status_code=400, detail="Folder name cannot be empty.")
+
+    parent_folder: FolderRecord | None = None
+    parent_folder_id = body.parent_folder_id.strip() if body.parent_folder_id else None
+    if parent_folder_id:
+        parent_folder = _load_folder(parent_folder_id, session_id)
+        if parent_folder is None:
+            raise HTTPException(status_code=404, detail="Parent folder not found")
+
+    folder_id = str(uuid.uuid4())[:8]
+    while _load_folder(folder_id, session_id) is not None:
+        folder_id = str(uuid.uuid4())[:8]
+
+    folder = FolderRecord(
+        id=folder_id,
+        name=folder_name,
+        kind="manual",
+        parent_folder_id=parent_folder.id if parent_folder else None,
+        merged_doc_id=None,
+        doc_ids=[],
+        child_folder_ids=[],
+        source_filename=None,
+        source_folder_id=None,
+        sample_size=None,
+        sample_seed=None,
+        created_at=_now_iso(),
+    )
+    folder_ids = _load_folder_index(session_id)
+    folder_ids.append(folder.id)
+    _save_folder(folder, session_id)
+    if parent_folder is not None:
+        updated_parent = parent_folder.model_copy(
+            update={"child_folder_ids": [*parent_folder.child_folder_ids, folder.id]}
+        )
+        _save_folder(updated_parent, session_id)
+    _save_folder_index(folder_ids, session_id)
+    return _folder_to_detail(folder, session_id)
+
+
 @app.get("/api/documents/{doc_id}")
 async def get_document(doc_id: str):
     session_id = "default"
@@ -3062,11 +3302,7 @@ async def get_document(doc_id: str):
     return _enrich_doc(doc, session_id)
 
 
-@app.post("/api/documents/upload")
-async def upload_file(file: UploadFile = File(...)):
-    session_id = "default"
-    raw = await file.read()
-    filename = file.filename or "unknown"
+def _upload_document_payload(raw: bytes, filename: str, session_id: str = "default") -> CanonicalDocument:
     doc_id = str(uuid.uuid4())[:8]
 
     try:
@@ -3126,6 +3362,13 @@ async def upload_file(file: UploadFile = File(...)):
     raise HTTPException(status_code=400, detail="No documents parsed from file")
 
 
+@app.post("/api/documents/upload")
+async def upload_file(file: UploadFile = File(...)):
+    raw = await file.read()
+    filename = file.filename or "unknown"
+    return _upload_document_payload(raw, filename)
+
+
 @app.delete("/api/documents/{doc_id}")
 async def delete_document(doc_id: str):
     session_id = "default"
@@ -3151,26 +3394,17 @@ async def delete_document(doc_id: str):
 
     return {"deleted": True, "doc_id": doc_id}
 
-
-def _resolve_import_parent_folder(folder: FolderRecord, session_id: str) -> FolderRecord:
-    current = folder
-    seen: set[str] = set()
-    while current.kind != "import" and current.parent_folder_id:
-        if current.id in seen:
-            break
-        seen.add(current.id)
-        parent = _load_folder(current.parent_folder_id, session_id)
-        if parent is None:
-            break
-        current = parent
-    return current
-
-
 def _delete_folder_tree(folder: FolderRecord, session_id: str) -> None:
     for child_folder_id in list(folder.child_folder_ids):
         child = _load_folder(child_folder_id, session_id)
         if child is not None:
             _delete_folder_tree(child, session_id)
+    for source_child in _load_all_folders(session_id):
+        if source_child.source_folder_id != folder.id:
+            continue
+        if source_child.id == folder.id:
+            continue
+        _delete_folder_tree(source_child, session_id)
     if folder.kind == "import":
         for doc_id in folder.doc_ids:
             _delete_doc_files(doc_id, session_id)
@@ -3201,7 +3435,6 @@ async def create_folder_sample(folder_id: str, body: FolderSampleCreateBody):
             status_code=400,
             detail="Sample count cannot exceed the number of direct documents in the folder.",
         )
-    parent_folder = _resolve_import_parent_folder(folder, session_id)
     sample_seed = random.randint(0, 2**31 - 1)
     rng = random.Random(sample_seed)
     sampled_doc_ids = rng.sample(folder.doc_ids, body.count)
@@ -3212,7 +3445,7 @@ async def create_folder_sample(folder_id: str, body: FolderSampleCreateBody):
         id=sample_id,
         name=f"Sample {body.count}",
         kind="sample",
-        parent_folder_id=parent_folder.id,
+        parent_folder_id=None,
         merged_doc_id=None,
         doc_ids=sampled_doc_ids,
         child_folder_ids=[],
@@ -3227,15 +3460,26 @@ async def create_folder_sample(folder_id: str, body: FolderSampleCreateBody):
             if _load_doc(doc_id, session_id) is not None
         },
     )
-    updated_parent = parent_folder.model_copy(
-        update={"child_folder_ids": [*parent_folder.child_folder_ids, sample_folder.id]}
-    )
     folder_ids = _load_folder_index(session_id)
     folder_ids.append(sample_folder.id)
     _save_folder(sample_folder, session_id)
-    _save_folder(updated_parent, session_id)
     _save_folder_index(folder_ids, session_id)
     return _folder_to_detail(sample_folder, session_id)
+
+
+@app.post("/api/folders/{folder_id}/prune-empty-docs")
+async def prune_folder_empty_docs(folder_id: str):
+    session_id = "default"
+    folder = _load_folder(folder_id, session_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    removed_doc_ids, updated_folder_ids = _prune_unannotated_folder_docs(folder, session_id)
+    return {
+        "folder_id": folder_id,
+        "removed_count": len(removed_doc_ids),
+        "removed_doc_ids": removed_doc_ids,
+        "updated_folder_ids": updated_folder_ids,
+    }
 
 
 @app.delete("/api/folders/{folder_id}")
@@ -3293,11 +3537,6 @@ class AgentRunBody(BaseModel):
     method_verify: bool | None = None
 
 
-class SessionProfileBody(BaseModel):
-    project_name: str | None = None
-    author: str | None = None
-
-
 class PromptLabPromptInput(BaseModel):
     id: str | None = None
     label: str
@@ -3321,7 +3560,7 @@ class PromptLabRuntimeInput(BaseModel):
     api_key: str | None = None
     api_base: str | None = None
     temperature: float = 0.0
-    match_mode: Literal["exact", "boundary", "overlap"] = "exact"
+    match_mode: Literal["exact", "boundary", "overlap"] = "overlap"
     reference_source: Literal["manual", "pre"] = "manual"
     fallback_reference_source: Literal["manual", "pre"] = "pre"
     label_profile: Literal["simple", "advanced"] = "simple"
@@ -3351,7 +3590,9 @@ class MethodsLabRuntimeInput(BaseModel):
     api_key: str | None = None
     api_base: str | None = None
     temperature: float = 0.0
-    match_mode: Literal["exact", "boundary", "overlap"] = "exact"
+    match_mode: Literal["exact", "boundary", "overlap"] = "overlap"
+    reference_source: Literal["manual", "pre"] = "manual"
+    fallback_reference_source: Literal["manual", "pre"] = "pre"
     label_profile: Literal["simple", "advanced"] = "simple"
     label_projection: Literal["native", "coarse_simple"] = "native"
     chunk_mode: Literal["auto", "off", "force"] = "off"
@@ -4833,7 +5074,7 @@ async def get_metrics(
     doc_id: str,
     reference: str = Query(...),
     hypothesis: str = Query(...),
-    match_mode: str = Query("exact"),
+    match_mode: str = Query("overlap"),
     label_projection: str = Query("native"),
 ):
     session_id = "default"
@@ -4864,26 +5105,6 @@ async def get_metrics(
     result["match_mode"] = normalized_match_mode
     result["label_projection"] = normalized_projection
     return result
-
-
-@app.get("/api/session/profile")
-async def get_session_profile():
-    return _load_session_profile()
-
-
-@app.put("/api/session/profile")
-async def update_session_profile(body: SessionProfileBody):
-    current = _load_session_profile()
-    merged = {
-        **current,
-        **body.model_dump(exclude_none=True),
-    }
-    try:
-        normalized = _normalize_session_profile(merged)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    _save_session_profile(normalized)
-    return normalized
 
 
 @app.get("/api/session/export")
@@ -4981,7 +5202,6 @@ async def export_session_bundle():
     return {
         "format": BUNDLE_FORMAT,
         "version": BUNDLE_VERSION,
-        "project": _load_session_profile(),
         "compatibility": {
             "tool_version": TOOL_VERSION,
             "import_supported_versions": sorted(SUPPORTED_BUNDLE_VERSIONS),
@@ -5038,34 +5258,72 @@ async def export_ground_truth_only(
     )
 
 
-@app.post("/api/session/import")
-async def import_session_bundle(file: UploadFile = File(...)):
-    session_id = "default"
-    raw = await file.read()
-    if zipfile.is_zipfile(io.BytesIO(raw)):
-        return _import_ground_truth_archive(raw, session_id)
+def _decode_json_object_payload(raw: bytes, *, invalid_detail: str) -> dict[str, object]:
     try:
         payload = json.loads(raw.decode("utf-8"))
     except Exception as exc:
-        raise HTTPException(
-            status_code=400,
-            detail="Import file must be valid UTF-8 JSON or a ground-truth ZIP archive",
-        ) from exc
+        raise HTTPException(status_code=400, detail=invalid_detail) from exc
 
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Import payload must be a JSON object")
+    return cast(dict[str, object], payload)
+
+
+def _looks_like_session_bundle_payload(payload: dict[str, object]) -> bool:
+    if "format" in payload or "documents" in payload:
+        return True
+    return any(
+        key in payload
+        for key in ("folders", "prompt_lab_runs", "methods_lab_runs", "project", "compatibility")
+    )
+
+
+def _resolve_ingest_mode(
+    raw: bytes,
+    filename: str,
+) -> tuple[Literal["upload", "import"], dict[str, object] | None]:
+    if zipfile.is_zipfile(io.BytesIO(raw)):
+        return "import", None
+    if filename.endswith(".jsonl"):
+        return "upload", None
+
+    payload = _decode_json_object_payload(
+        raw,
+        invalid_detail="Ingest file must be valid UTF-8 JSON, JSONL, or a ground-truth ZIP archive",
+    )
+    if _looks_like_ground_truth_payload(payload) or _looks_like_session_bundle_payload(payload):
+        return "import", payload
+    return "upload", payload
+
+
+def _import_session_payload(
+    raw: bytes,
+    upload_filename: str,
+    session_id: str = "default",
+    payload: dict[str, object] | None = None,
+    *,
+    conflict_policy: ImportConflictPolicy = "replace",
+) -> dict[str, object]:
+    if zipfile.is_zipfile(io.BytesIO(raw)):
+        return _import_ground_truth_archive(raw, session_id, conflict_policy=conflict_policy)
+    if payload is None:
+        payload = _decode_json_object_payload(
+            raw,
+            invalid_detail="Import file must be valid UTF-8 JSON or a ground-truth ZIP archive",
+        )
 
     if _looks_like_ground_truth_payload(payload):
         ids = _load_session_index(session_id)
         existing_ids = set(ids)
         try:
-            imported_id = _import_ground_truth_payload(
+            commit_result = _import_ground_truth_payload(
                 payload=payload,
                 raw=raw,
-                upload_filename=file.filename or "ground_truth.json",
+                upload_filename=upload_filename,
                 session_id=session_id,
                 ids=ids,
                 existing_ids=existing_ids,
+                conflict_policy=conflict_policy,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -5073,7 +5331,14 @@ async def import_session_bundle(file: UploadFile = File(...)):
         return {
             "bundle_version": None,
             "imported_count": 1,
-            "imported_ids": [imported_id],
+            "imported_ids": [commit_result.doc_id],
+            "created_count": 1 if commit_result.created else 0,
+            "created_ids": [commit_result.doc_id] if commit_result.created else [],
+            "conflict_policy": conflict_policy,
+            "conflict_count": 1 if commit_result.conflict_action is not None else 0,
+            "replaced_count": 1 if commit_result.conflict_action == "replace" else 0,
+            "kept_current_count": 1 if commit_result.conflict_action == "keep_current" else 0,
+            "added_as_new_count": 1 if commit_result.conflict_action == "add_new" else 0,
             "skipped_count": 0,
             "skipped": [],
             "warnings": [],
@@ -5109,9 +5374,11 @@ async def import_session_bundle(file: UploadFile = File(...)):
     ids = _load_session_index(session_id)
     existing_ids = set(ids)
     imported_ids: list[str] = []
+    created_ids: list[str] = []
     doc_id_remap: dict[str, str] = {}
     skipped: list[dict[str, str | int]] = []
     warnings: list[str] = []
+    conflict_counts = _empty_import_conflict_counts()
     raw_folders = payload.get("folders", [])
     hidden_original_doc_ids: set[str] = set()
     if raw_folders is None:
@@ -5129,14 +5396,6 @@ async def import_session_bundle(file: UploadFile = File(...)):
             hidden_original_doc_ids.update(
                 str(doc_id).strip() for doc_id in folder_doc_ids if str(doc_id).strip()
             )
-
-    incoming_project = payload.get("project")
-    if incoming_project is not None:
-        try:
-            profile = _normalize_session_profile(incoming_project)
-            _save_session_profile(profile)
-        except ValueError as exc:
-            warnings.append(f"Ignored invalid project metadata: {exc}")
 
     for idx, item in enumerate(raw_documents):
         if not isinstance(item, dict):
@@ -5268,7 +5527,7 @@ async def import_session_bundle(file: UploadFile = File(...)):
             skipped.append({"index": idx, "reason": str(exc)})
             continue
 
-        new_id = _commit_imported_document(
+        commit_result = _commit_imported_document(
             doc=doc,
             session_id=session_id,
             ids=ids,
@@ -5284,9 +5543,13 @@ async def import_session_bundle(file: UploadFile = File(...)):
             method_run_metadata=method_run_metadata,
             llm_confidence=llm_confidence,
             imported_label_profile=imported_label_profile,
+            conflict_policy=conflict_policy,
         )
-        imported_ids.append(new_id)
-        doc_id_remap[original_doc_id] = new_id
+        imported_ids.append(commit_result.doc_id)
+        if commit_result.created:
+            created_ids.append(commit_result.doc_id)
+        _record_import_conflict(conflict_counts, commit_result)
+        doc_id_remap[original_doc_id] = commit_result.doc_id
 
     _save_session_index(session_id)
 
@@ -5430,6 +5693,13 @@ async def import_session_bundle(file: UploadFile = File(...)):
         "bundle_version": bundle_version,
         "imported_count": len(imported_ids),
         "imported_ids": imported_ids,
+        "created_count": len(created_ids),
+        "created_ids": created_ids,
+        "conflict_policy": conflict_policy,
+        "conflict_count": sum(conflict_counts.values()),
+        "replaced_count": conflict_counts["replace"],
+        "kept_current_count": conflict_counts["keep_current"],
+        "added_as_new_count": conflict_counts["add_new"],
         "skipped_count": len(skipped),
         "skipped": skipped,
         "warnings": warnings,
@@ -5439,11 +5709,62 @@ async def import_session_bundle(file: UploadFile = File(...)):
     }
 
 
+@app.post("/api/session/ingest")
+async def ingest_session_file(
+    file: Annotated[UploadFile, File(...)],
+    conflict_policy: Annotated[ImportConflictPolicy, Form()] = "replace",
+):
+    session_id = "default"
+    raw = await file.read()
+    filename = file.filename or "unknown"
+    mode, payload = _resolve_ingest_mode(raw, filename)
+    if mode == "import":
+        result = _import_session_payload(
+            raw,
+            filename,
+            session_id,
+            payload,
+            conflict_policy=conflict_policy,
+        )
+        return {
+            "mode": "import",
+            "uploaded_count": 0,
+            **result,
+        }
+
+    doc = _upload_document_payload(raw, filename, session_id)
+    return {
+        "mode": "upload",
+        "created_count": 1,
+        "created_ids": [doc.id],
+        "uploaded_count": 1,
+        "imported_count": 0,
+        "imported_ids": [],
+        "skipped_count": 0,
+        "skipped": [],
+        "warnings": [],
+        "imported_prompt_lab_runs": 0,
+        "imported_methods_lab_runs": 0,
+        "total_in_bundle": 1,
+    }
+
+
+@app.post("/api/session/import")
+async def import_session_bundle(
+    file: Annotated[UploadFile, File(...)],
+    conflict_policy: Annotated[ImportConflictPolicy, Form()] = "replace",
+):
+    session_id = "default"
+    raw = await file.read()
+    filename = file.filename or "ground_truth.json"
+    return _import_session_payload(raw, filename, session_id, conflict_policy=conflict_policy)
+
+
 @app.get("/api/metrics/dashboard")
 async def get_dashboard_metrics(
     reference: str = Query(...),
     hypothesis: str = Query(...),
-    match_mode: str = Query("exact"),
+    match_mode: str = Query("overlap"),
     label_projection: str = Query("native"),
 ):
     session_id = "default"

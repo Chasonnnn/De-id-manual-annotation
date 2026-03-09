@@ -39,7 +39,6 @@ def clean_sessions(tmp_path, monkeypatch):
     monkeypatch.setattr("server.SESSIONS_DIR", test_sessions)
     monkeypatch.setattr("server.BASE_DIR", tmp_path)
     monkeypatch.setattr("server.CONFIG_PATH", tmp_path / "config.json")
-    monkeypatch.setattr("server.PROFILE_PATH", tmp_path / "session_profile.json")
     _session_docs.clear()
     _prompt_lab_runs.clear()
     _prompt_lab_cancel_events.clear()
@@ -105,6 +104,47 @@ def _make_multi_record_jsonl() -> bytes:
     return "\n".join(json.dumps(record) for record in records).encode()
 
 
+def _make_prunable_multi_record_jsonl() -> bytes:
+    records = [
+        {
+            "transcript": [
+                {
+                    "role": "volunteer",
+                    "content": "Hello Liam",
+                    "sequence_id": 0,
+                    "session_id": "session-001",
+                    "annotations": [
+                        {"start": 6, "end": 10, "pii_type": "NAME", "text": "Liam"}
+                    ],
+                }
+            ]
+        },
+        {
+            "transcript": [
+                {
+                    "role": "student",
+                    "content": "Hello Nora",
+                    "sequence_id": 0,
+                    "session_id": "session-002",
+                    "annotations": [],
+                }
+            ]
+        },
+        {
+            "transcript": [
+                {
+                    "role": "student",
+                    "content": "Hello Omar",
+                    "sequence_id": 0,
+                    "session_id": "session-003",
+                    "annotations": [],
+                }
+            ]
+        },
+    ]
+    return "\n".join(json.dumps(record) for record in records).encode()
+
+
 def _upload(client, data=None, filename="test.json"):
     if data is None:
         data = _make_hips_v1()
@@ -117,23 +157,27 @@ def _upload(client, data=None, filename="test.json"):
 
 def _wait_for_prompt_lab_terminal(client: TestClient, run_id: str, attempts: int = 30):
     payload = None
-    for _ in range(attempts):
+    for attempt in range(attempts):
         resp = client.get(f"/api/prompt-lab/runs/{run_id}")
         assert resp.status_code == 200
         payload = resp.json()
         if payload["status"] in ("completed", "completed_with_errors", "failed", "cancelled"):
             return payload
+        if attempt < attempts - 1:
+            time.sleep(0.01)
     raise AssertionError("Prompt Lab run did not reach a terminal status in time")
 
 
 def _wait_for_methods_lab_terminal(client: TestClient, run_id: str, attempts: int = 30):
     payload = None
-    for _ in range(attempts):
+    for attempt in range(attempts):
         resp = client.get(f"/api/methods-lab/runs/{run_id}")
         assert resp.status_code == 200
         payload = resp.json()
         if payload["status"] in ("completed", "completed_with_errors", "failed", "cancelled"):
             return payload
+        if attempt < attempts - 1:
+            time.sleep(0.01)
     raise AssertionError("Methods Lab run did not reach a terminal status in time")
 
 
@@ -276,11 +320,22 @@ def test_sample_folder_creation_and_import_folder_deletion(client):
     assert sample_resp.status_code == 200
     sample = sample_resp.json()
     assert sample["kind"] == "sample"
-    assert sample["parent_folder_id"] == folder_id
+    assert sample["parent_folder_id"] is None
     assert sample["source_folder_id"] == folder_id
     assert sample["sample_size"] == 1
     assert sample["sample_seed"] is not None
     assert len(sample["doc_ids"]) == 1
+
+    folders_after_sample = client.get("/api/folders").json()
+    assert len(folders_after_sample) == 2
+    assert {item["id"] for item in folders_after_sample} == {folder_id, sample["id"]}
+
+    import_detail_after_sample = client.get(f"/api/folders/{folder_id}").json()
+    assert [item["id"] for item in import_detail_after_sample["documents"]] == [
+        item["id"] for item in import_detail["documents"]
+    ]
+    assert import_detail_after_sample["doc_ids"] == import_detail["doc_ids"]
+    assert len(import_detail_after_sample["doc_ids"]) == 2
 
     too_large_resp = client.post(
         f"/api/folders/{folder_id}/samples",
@@ -295,12 +350,112 @@ def test_sample_folder_creation_and_import_folder_deletion(client):
     assert delete_sample_resp.status_code == 200
     assert client.get(f"/api/documents/{hidden_doc_id}").status_code == 200
 
+    sample_resp = client.post(
+        f"/api/folders/{folder_id}/samples",
+        json={"count": 1},
+    )
+    assert sample_resp.status_code == 200
+    sample = sample_resp.json()
+
     delete_import_resp = client.delete(f"/api/folders/{folder_id}")
     assert delete_import_resp.status_code == 200
     assert client.get(f"/api/documents/{hidden_doc_id}").status_code == 404
+    assert client.get(f"/api/folders/{sample['id']}").status_code == 404
     assert client.get(f"/api/documents/{merged_doc_id}").status_code == 200
     assert client.get("/api/folders").json() == []
     assert [item["id"] for item in client.get("/api/documents").json()] == [merged_doc_id]
+
+
+def test_prune_folder_removes_docs_without_pre_or_manual_annotations_and_updates_samples(client):
+    upload_resp = _upload(
+        client,
+        data=_make_prunable_multi_record_jsonl(),
+        filename="sessions.jsonl",
+    )
+    assert upload_resp.status_code == 200
+
+    folder_id = client.get("/api/folders").json()[0]["id"]
+    import_detail = client.get(f"/api/folders/{folder_id}").json()
+    kept_pre_doc_id, kept_manual_doc_id, removed_doc_id = [
+        item["id"] for item in import_detail["documents"]
+    ]
+
+    save_manual_resp = client.put(
+        f"/api/documents/{kept_manual_doc_id}/manual-annotations",
+        json=[{"start": 6, "end": 10, "label": "NAME", "text": "Nora"}],
+    )
+    assert save_manual_resp.status_code == 200
+
+    sample_resp = client.post(
+        f"/api/folders/{folder_id}/samples",
+        json={"count": 3},
+    )
+    assert sample_resp.status_code == 200
+    sample_id = sample_resp.json()["id"]
+
+    prune_resp = client.post(f"/api/folders/{folder_id}/prune-empty-docs")
+    assert prune_resp.status_code == 200
+    assert prune_resp.json() == {
+        "folder_id": folder_id,
+        "removed_count": 1,
+        "removed_doc_ids": [removed_doc_id],
+        "updated_folder_ids": [folder_id, sample_id],
+    }
+
+    folders = {item["id"]: item for item in client.get("/api/folders").json()}
+    assert folders[folder_id]["doc_count"] == 2
+    assert folders[sample_id]["doc_count"] == 2
+
+    refreshed_import = client.get(f"/api/folders/{folder_id}").json()
+    assert refreshed_import["doc_ids"] == [kept_pre_doc_id, kept_manual_doc_id]
+
+    refreshed_sample = client.get(f"/api/folders/{sample_id}").json()
+    assert set(refreshed_sample["doc_ids"]) == {kept_pre_doc_id, kept_manual_doc_id}
+
+    assert client.get(f"/api/documents/{removed_doc_id}").status_code == 404
+    assert client.get(f"/api/documents/{kept_pre_doc_id}").status_code == 200
+    assert client.get(f"/api/documents/{kept_manual_doc_id}").status_code == 200
+
+
+def test_create_manual_folder_and_nested_subfolder(client):
+    create_root_resp = client.post(
+        "/api/folders",
+        json={"name": "Round 1"},
+    )
+    assert create_root_resp.status_code == 200
+    root = create_root_resp.json()
+    assert root["name"] == "Round 1"
+    assert root["kind"] == "manual"
+    assert root["parent_folder_id"] is None
+    assert root["doc_ids"] == []
+    assert root["child_folder_ids"] == []
+
+    create_child_resp = client.post(
+        "/api/folders",
+        json={"name": "Adjudication", "parent_folder_id": root["id"]},
+    )
+    assert create_child_resp.status_code == 200
+    child = create_child_resp.json()
+    assert child["name"] == "Adjudication"
+    assert child["kind"] == "manual"
+    assert child["parent_folder_id"] == root["id"]
+
+    folders_resp = client.get("/api/folders")
+    assert folders_resp.status_code == 200
+    folders = folders_resp.json()
+    assert [item["name"] for item in folders] == ["Round 1", "Adjudication"]
+
+    root_detail_resp = client.get(f"/api/folders/{root['id']}")
+    assert root_detail_resp.status_code == 200
+    root_detail = root_detail_resp.json()
+    assert root_detail["child_folder_ids"] == [child["id"]]
+    assert [item["id"] for item in root_detail["child_folders"]] == [child["id"]]
+
+    delete_root_resp = client.delete(f"/api/folders/{root['id']}")
+    assert delete_root_resp.status_code == 200
+    assert client.get(f"/api/folders/{root['id']}").status_code == 404
+    assert client.get(f"/api/folders/{child['id']}").status_code == 404
+    assert client.get("/api/folders").json() == []
 
 
 def test_prompt_lab_run_accepts_folder_ids(client, monkeypatch):
@@ -469,6 +624,90 @@ def test_methods_lab_run_accepts_folder_ids(client, monkeypatch):
     assert final["matrix"]["cells"][0]["completed_docs"] == 2
 
 
+def test_methods_lab_can_score_against_pre_annotations(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_method_with_metadata(**kwargs):
+        text = str(kwargs["text"])
+        start = text.index("Anna")
+        return SimpleNamespace(
+            spans=[
+                CanonicalSpan(
+                    start=start,
+                    end=start + 4,
+                    label="NAME",
+                    text="Anna",
+                )
+            ],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(),
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    create_resp = client.post(
+        "/api/methods-lab/runs",
+        json={
+            "name": "methods-vs-pre",
+            "doc_ids": [doc_id],
+            "methods": [
+                {
+                    "id": "method_1",
+                    "label": "Default",
+                    "method_id": "default",
+                }
+            ],
+            "models": [
+                {
+                    "id": "model_1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "xhigh",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "reference_source": "pre",
+                "fallback_reference_source": "pre",
+                "label_profile": "simple",
+                "label_projection": "native",
+                "chunk_mode": "off",
+                "chunk_size_chars": 10000,
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+
+    final = _wait_for_methods_lab_terminal(client, run_id)
+    assert final["status"] == "completed"
+    assert final["runtime"]["reference_source"] == "pre"
+    assert final["runtime"]["fallback_reference_source"] == "pre"
+    assert final["matrix"]["cells"][0]["completed_docs"] == 1
+
+    detail_resp = client.get(
+        f"/api/methods-lab/runs/{run_id}/cells/{final['matrix']['cells'][0]['id']}/documents/{doc_id}"
+    )
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert detail["status"] == "completed"
+    assert detail["reference_source_used"] == "pre"
+    assert detail["metrics"]["micro"]["f1"] == pytest.approx(1.0)
+
+
 def test_delete_document(client):
     resp = _upload(client)
     doc_id = resp.json()["id"]
@@ -509,7 +748,7 @@ def test_session_export_import_roundtrip(client):
     bundle = export_resp.json()
     assert bundle["format"] == "annotation_tool_session"
     assert bundle["version"] == 5
-    assert "project" in bundle
+    assert "project" not in bundle
     assert "compatibility" in bundle
     assert len(bundle["documents"]) == 1
     assert bundle["documents"][0]["source"]["id"] == doc_id
@@ -730,7 +969,6 @@ def test_session_import_matches_existing_doc_by_filename_and_transcript_and_pref
     import_payload = {
         "format": "annotation_tool_session",
         "version": 4,
-        "project": {"project_name": "", "author": ""},
         "compatibility": {"tool_version": "2026.03.03", "import_supported_versions": [1, 2, 3, 4]},
         "documents": [
             {
@@ -767,6 +1005,178 @@ def test_session_import_matches_existing_doc_by_filename_and_transcript_and_pref
     assert refreshed.status_code == 200
     refreshed_doc = refreshed.json()
     assert len(refreshed_doc["manual_annotations"]) == 2
+
+
+def test_session_import_keep_current_conflict_preserves_existing_document(client):
+    upload_resp = _upload(
+        client,
+        data=_make_hips_v1_custom(
+            "Hello Anna, call Sue please.",
+            pii_occurrences=[{"start": 6, "end": 10, "text": "Anna", "pii_type": "NAME"}],
+        ),
+        filename="shared.json",
+    )
+    assert upload_resp.status_code == 200
+    existing_doc_id = upload_resp.json()["id"]
+
+    existing_save = client.put(
+        f"/api/documents/{existing_doc_id}/manual-annotations",
+        json=[
+            {"start": 0, "end": 5, "label": "NAME", "text": "Hello"},
+            {"start": 6, "end": 10, "label": "NAME", "text": "Anna"},
+        ],
+    )
+    assert existing_save.status_code == 200
+
+    existing_doc = client.get(f"/api/documents/{existing_doc_id}").json()
+    imported_source = {
+        **existing_doc,
+        "id": "imported-doc-keep",
+        "manual_annotations": [],
+        "agent_annotations": [],
+        "agent_outputs": {
+            "rule": [],
+            "llm": [],
+            "llm_runs": {},
+            "llm_run_metadata": {},
+            "methods": {},
+            "method_run_metadata": {},
+        },
+        "agent_run_warnings": [],
+        "agent_run_metrics": {"llm_confidence": None, "label_profile": None, "chunk_diagnostics": []},
+    }
+    import_payload = {
+        "format": "annotation_tool_session",
+        "version": 4,
+        "compatibility": {"tool_version": "2026.03.03", "import_supported_versions": [1, 2, 3, 4]},
+        "documents": [
+            {
+                "source": imported_source,
+                "manual_annotations": [
+                    {"start": 6, "end": 10, "label": "NAME", "text": "Anna"},
+                ],
+            }
+        ],
+        "prompt_lab_runs": [],
+        "methods_lab_runs": [],
+    }
+
+    import_resp = client.post(
+        "/api/session/import",
+        data={"conflict_policy": "keep_current"},
+        files={
+            "file": (
+                "session_bundle.json",
+                json.dumps(import_payload).encode(),
+                "application/json",
+            )
+        },
+    )
+    assert import_resp.status_code == 200
+    data = import_resp.json()
+    assert data["imported_ids"] == [existing_doc_id]
+    assert data["created_count"] == 0
+    assert data["kept_current_count"] == 1
+
+    docs_resp = client.get("/api/documents")
+    assert docs_resp.status_code == 200
+    assert len(docs_resp.json()) == 1
+
+    refreshed = client.get(f"/api/documents/{existing_doc_id}")
+    assert refreshed.status_code == 200
+    refreshed_doc = refreshed.json()
+    assert refreshed_doc["manual_annotations"] == [
+        {"start": 0, "end": 5, "label": "NAME", "text": "Hello"},
+        {"start": 6, "end": 10, "label": "NAME", "text": "Anna"},
+    ]
+
+
+def test_session_import_add_new_conflict_creates_duplicate_document(client):
+    upload_resp = _upload(
+        client,
+        data=_make_hips_v1_custom(
+            "Hello Anna, call Sue please.",
+            pii_occurrences=[{"start": 6, "end": 10, "text": "Anna", "pii_type": "NAME"}],
+        ),
+        filename="shared.json",
+    )
+    assert upload_resp.status_code == 200
+    existing_doc_id = upload_resp.json()["id"]
+
+    existing_save = client.put(
+        f"/api/documents/{existing_doc_id}/manual-annotations",
+        json=[
+            {"start": 0, "end": 5, "label": "NAME", "text": "Hello"},
+            {"start": 6, "end": 10, "label": "NAME", "text": "Anna"},
+        ],
+    )
+    assert existing_save.status_code == 200
+
+    existing_doc = client.get(f"/api/documents/{existing_doc_id}").json()
+    imported_source = {
+        **existing_doc,
+        "id": existing_doc_id,
+        "manual_annotations": [],
+        "agent_annotations": [],
+        "agent_outputs": {
+            "rule": [],
+            "llm": [],
+            "llm_runs": {},
+            "llm_run_metadata": {},
+            "methods": {},
+            "method_run_metadata": {},
+        },
+        "agent_run_warnings": [],
+        "agent_run_metrics": {"llm_confidence": None, "label_profile": None, "chunk_diagnostics": []},
+    }
+    import_payload = {
+        "format": "annotation_tool_session",
+        "version": 4,
+        "compatibility": {"tool_version": "2026.03.03", "import_supported_versions": [1, 2, 3, 4]},
+        "documents": [
+            {
+                "source": imported_source,
+                "manual_annotations": [
+                    {"start": 6, "end": 10, "label": "NAME", "text": "Anna"},
+                ],
+            }
+        ],
+        "prompt_lab_runs": [],
+        "methods_lab_runs": [],
+    }
+
+    import_resp = client.post(
+        "/api/session/import",
+        data={"conflict_policy": "add_new"},
+        files={
+            "file": (
+                "session_bundle.json",
+                json.dumps(import_payload).encode(),
+                "application/json",
+            )
+        },
+    )
+    assert import_resp.status_code == 200
+    data = import_resp.json()
+    assert data["created_count"] == 1
+    assert data["added_as_new_count"] == 1
+
+    imported_id = data["imported_ids"][0]
+    assert imported_id != existing_doc_id
+
+    docs_resp = client.get("/api/documents")
+    assert docs_resp.status_code == 200
+    assert len(docs_resp.json()) == 2
+
+    existing_doc = client.get(f"/api/documents/{existing_doc_id}").json()
+    imported_doc = client.get(f"/api/documents/{imported_id}").json()
+    assert existing_doc["manual_annotations"] == [
+        {"start": 0, "end": 5, "label": "NAME", "text": "Hello"},
+        {"start": 6, "end": 10, "label": "NAME", "text": "Anna"},
+    ]
+    assert imported_doc["manual_annotations"] == [
+        {"start": 6, "end": 10, "label": "NAME", "text": "Anna"},
+    ]
 
 
 def test_session_export_import_preserves_agent_llm_metrics(client, monkeypatch):
@@ -839,10 +1249,9 @@ def test_session_import_invalid_payload(client):
     assert "valid UTF-8 JSON" in import_resp.json()["detail"]
 
 
-def test_session_profile_get_and_update(client):
+def test_session_profile_routes_are_removed(client):
     get_resp = client.get("/api/session/profile")
-    assert get_resp.status_code == 200
-    assert get_resp.json()["project_name"] == ""
+    assert get_resp.status_code == 404
 
     put_resp = client.put(
         "/api/session/profile",
@@ -851,19 +1260,10 @@ def test_session_profile_get_and_update(client):
             "author": "Chason",
         },
     )
-    assert put_resp.status_code == 200
-    profile = put_resp.json()
-    assert profile["project_name"] == "HIPS QA"
-    assert profile["author"] == "Chason"
-    assert "notes" not in profile
-
-    export_resp = client.get("/api/session/export")
-    assert export_resp.status_code == 200
-    assert export_resp.json()["project"]["project_name"] == "HIPS QA"
-    assert "notes" not in export_resp.json()["project"]
+    assert put_resp.status_code == 404
 
 
-def test_session_import_legacy_project_notes_are_ignored(client):
+def test_session_import_ignores_legacy_project_metadata(client):
     payload = {
         "format": "annotation_tool_session",
         "version": 3,
@@ -879,13 +1279,9 @@ def test_session_import_legacy_project_notes_are_ignored(client):
         files={"file": ("session_bundle.json", json.dumps(payload).encode(), "application/json")},
     )
     assert import_resp.status_code == 200
-
-    profile_resp = client.get("/api/session/profile")
-    assert profile_resp.status_code == 200
-    profile = profile_resp.json()
-    assert profile["project_name"] == "Legacy Bundle"
-    assert profile["author"] == "Teammate"
-    assert "notes" not in profile
+    data = import_resp.json()
+    assert data["imported_count"] == 0
+    assert data["skipped_count"] == 0
 
 
 def test_session_import_rejects_unknown_bundle_version(client):
@@ -975,6 +1371,33 @@ def test_metrics_boundary_mode_ignores_edge_space_and_punctuation(client):
     assert boundary_resp.status_code == 200
     assert boundary_resp.json()["micro"]["f1"] == 1.0
     assert boundary_resp.json()["match_mode"] == "boundary"
+
+
+def test_metrics_endpoint_defaults_to_overlap_matching(client):
+    resp = _upload(
+        client,
+        data=_make_hips_v1_custom(
+            "Hello Anna, call Sue please.",
+            pii_occurrences=[
+                {"start": 6, "end": 10, "text": "Anna", "pii_type": "NAME"},
+            ],
+        ),
+    )
+    doc_id = resp.json()["id"]
+
+    manual_resp = client.put(
+        f"/api/documents/{doc_id}/manual-annotations",
+        json=[{"start": 6, "end": 11, "label": "NAME", "text": "Anna,"}],
+    )
+    assert manual_resp.status_code == 200
+
+    metrics_resp = client.get(
+        f"/api/documents/{doc_id}/metrics",
+        params={"reference": "pre", "hypothesis": "manual"},
+    )
+    assert metrics_resp.status_code == 200
+    assert metrics_resp.json()["match_mode"] == "overlap"
+    assert metrics_resp.json()["micro"]["f1"] == 1.0
 
 
 def test_agent_rule(client):
@@ -3664,7 +4087,9 @@ def test_methods_lab_requires_api_key_only_for_llm_methods(client, monkeypatch):
     assert "API key required for Methods Lab runs" in llm_resp.json()["detail"]
 
 
-def test_methods_lab_marks_docs_without_manual_annotations_unavailable(client, monkeypatch):
+def test_methods_lab_marks_docs_without_selected_reference_annotations_unavailable(
+    client, monkeypatch
+):
     monkeypatch.setattr(
         "server._fetch_gateway_model_ids",
         lambda api_base, api_key: ["openai.gpt-5.3-codex"],
@@ -3712,6 +4137,8 @@ def test_methods_lab_marks_docs_without_manual_annotations_unavailable(client, m
                 "api_base": "https://proxy.example.com/v1",
                 "temperature": 0.0,
                 "match_mode": "exact",
+                "reference_source": "manual",
+                "fallback_reference_source": "manual",
             },
             "concurrency": 1,
         },
@@ -3731,7 +4158,7 @@ def test_methods_lab_marks_docs_without_manual_annotations_unavailable(client, m
     assert missing_detail_resp.status_code == 200
     missing_detail = missing_detail_resp.json()
     assert missing_detail["status"] == "unavailable"
-    assert "manual annotations" in missing_detail["error"].lower()
+    assert "reference annotations" in missing_detail["error"].lower()
 
 
 def test_methods_lab_presidio_style_methods_execute_once_per_doc_and_reuse_across_models(
@@ -4134,10 +4561,10 @@ def test_methods_lab_progress_resets_timeout_window(client, monkeypatch):
         progress_callback = kwargs.get("progress_callback")
         if callable(progress_callback):
             progress_callback(1, "dual:names")
-        time.sleep(0.03)
+        time.sleep(0.1)
         if callable(progress_callback):
             progress_callback(2, "dual:identifiers")
-        time.sleep(0.03)
+        time.sleep(0.1)
         if callable(progress_callback):
             progress_callback(2, "dual:identifiers")
         return SimpleNamespace(
@@ -4176,15 +4603,15 @@ def test_methods_lab_progress_resets_timeout_window(client, monkeypatch):
                     "anthropic_thinking_budget_tokens": None,
                 }
             ],
-            "runtime": {
-                "api_key": "request-key",
-                "api_base": "https://proxy.example.com/v1",
-                "temperature": 0.0,
-                "match_mode": "exact",
-                "task_timeout_seconds": 0.05,
+                "runtime": {
+                    "api_key": "request-key",
+                    "api_base": "https://proxy.example.com/v1",
+                    "temperature": 0.0,
+                    "match_mode": "exact",
+                    "task_timeout_seconds": 0.18,
+                },
+                "concurrency": 1,
             },
-            "concurrency": 1,
-        },
     )
     assert create_resp.status_code == 200
     run_id = create_resp.json()["id"]
@@ -4698,6 +5125,161 @@ def test_session_import_accepts_direct_ground_truth_json_payload(client):
     ]
 
 
+def test_ground_truth_import_replace_conflict_updates_manual_and_preserves_pre_annotations(client):
+    transcript = "Hello Anna, call Sue please."
+    upload_resp = _upload(
+        client,
+        _make_hips_v1_custom(
+            transcript,
+            pii_occurrences=[{"start": 6, "end": 10, "text": "Anna", "pii_type": "NAME"}],
+        ),
+        filename="shared.json",
+    )
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    manual_resp = client.put(
+        f"/api/documents/{doc_id}/manual-annotations",
+        json=[{"start": 0, "end": 5, "label": "NAME", "text": "Hello"}],
+    )
+    assert manual_resp.status_code == 200
+
+    ground_truth_payload = {
+        "id": "gt-doc-1",
+        "filename": "shared.json",
+        "transcript": transcript,
+        "ground_truth_source": "manual",
+        "spans": [{"start": 6, "end": 10, "label": "NAME", "text": "Anna"}],
+        "pii_occurrences": [{"start": 6, "end": 10, "pii_type": "NAME", "text": "Anna"}],
+    }
+
+    import_resp = client.post(
+        "/api/session/import",
+        data={"conflict_policy": "replace"},
+        files={
+            "file": (
+                "shared.ground_truth.json",
+                json.dumps(ground_truth_payload).encode(),
+                "application/json",
+            )
+        },
+    )
+    assert import_resp.status_code == 200
+    imported = import_resp.json()
+    assert imported["imported_ids"] == [doc_id]
+    assert imported["created_count"] == 0
+    assert imported["replaced_count"] == 1
+
+    doc_resp = client.get(f"/api/documents/{doc_id}")
+    assert doc_resp.status_code == 200
+    imported_doc = doc_resp.json()
+    assert imported_doc["pre_annotations"] == [
+        {"start": 6, "end": 10, "label": "NAME", "text": "Anna"}
+    ]
+    assert imported_doc["manual_annotations"] == [
+        {"start": 6, "end": 10, "label": "NAME", "text": "Anna"}
+    ]
+
+
+def test_ground_truth_import_keep_current_conflict_preserves_existing_manual_annotations(client):
+    transcript = "Hello Anna, call Sue please."
+    upload_resp = _upload(client, _make_hips_v1_custom(transcript), filename="shared.json")
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    manual_resp = client.put(
+        f"/api/documents/{doc_id}/manual-annotations",
+        json=[{"start": 0, "end": 5, "label": "NAME", "text": "Hello"}],
+    )
+    assert manual_resp.status_code == 200
+
+    ground_truth_payload = {
+        "id": "gt-doc-1",
+        "filename": "shared.json",
+        "transcript": transcript,
+        "ground_truth_source": "manual",
+        "spans": [{"start": 6, "end": 10, "label": "NAME", "text": "Anna"}],
+        "pii_occurrences": [{"start": 6, "end": 10, "pii_type": "NAME", "text": "Anna"}],
+    }
+
+    import_resp = client.post(
+        "/api/session/import",
+        data={"conflict_policy": "keep_current"},
+        files={
+            "file": (
+                "shared.ground_truth.json",
+                json.dumps(ground_truth_payload).encode(),
+                "application/json",
+            )
+        },
+    )
+    assert import_resp.status_code == 200
+    imported = import_resp.json()
+    assert imported["imported_ids"] == [doc_id]
+    assert imported["created_count"] == 0
+    assert imported["kept_current_count"] == 1
+
+    doc_resp = client.get(f"/api/documents/{doc_id}")
+    assert doc_resp.status_code == 200
+    imported_doc = doc_resp.json()
+    assert imported_doc["manual_annotations"] == [
+        {"start": 0, "end": 5, "label": "NAME", "text": "Hello"}
+    ]
+
+
+def test_ground_truth_import_add_new_conflict_creates_duplicate_document(client):
+    transcript = "Hello Anna, call Sue please."
+    upload_resp = _upload(client, _make_hips_v1_custom(transcript), filename="shared.json")
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    manual_resp = client.put(
+        f"/api/documents/{doc_id}/manual-annotations",
+        json=[{"start": 0, "end": 5, "label": "NAME", "text": "Hello"}],
+    )
+    assert manual_resp.status_code == 200
+
+    ground_truth_payload = {
+        "id": doc_id,
+        "filename": "shared.json",
+        "transcript": transcript,
+        "ground_truth_source": "manual",
+        "spans": [{"start": 6, "end": 10, "label": "NAME", "text": "Anna"}],
+        "pii_occurrences": [{"start": 6, "end": 10, "pii_type": "NAME", "text": "Anna"}],
+    }
+
+    import_resp = client.post(
+        "/api/session/import",
+        data={"conflict_policy": "add_new"},
+        files={
+            "file": (
+                "shared.ground_truth.json",
+                json.dumps(ground_truth_payload).encode(),
+                "application/json",
+            )
+        },
+    )
+    assert import_resp.status_code == 200
+    imported = import_resp.json()
+    assert imported["created_count"] == 1
+    assert imported["added_as_new_count"] == 1
+    imported_id = imported["imported_ids"][0]
+    assert imported_id != doc_id
+
+    docs_resp = client.get("/api/documents")
+    assert docs_resp.status_code == 200
+    assert len(docs_resp.json()) == 2
+
+    original_doc = client.get(f"/api/documents/{doc_id}").json()
+    imported_doc = client.get(f"/api/documents/{imported_id}").json()
+    assert original_doc["manual_annotations"] == [
+        {"start": 0, "end": 5, "label": "NAME", "text": "Hello"}
+    ]
+    assert imported_doc["manual_annotations"] == [
+        {"start": 6, "end": 10, "label": "NAME", "text": "Anna"}
+    ]
+
+
 def test_session_import_accepts_exported_ground_truth_json_member(client):
     transcript = "Hello Anna, call Sue please."
     upload_resp = _upload(client, _make_hips_v1_custom(transcript))
@@ -4742,6 +5324,130 @@ def test_session_import_accepts_exported_ground_truth_json_member(client):
     assert imported_doc["manual_annotations"] == [
         {"start": 6, "end": 10, "label": "NAME", "text": "Anna"}
     ]
+
+
+def test_session_ingest_routes_raw_upload_payloads_to_document_upload(client):
+    ingest_resp = client.post(
+        "/api/session/ingest",
+        files={"file": ("transcript.json", _make_hips_v1(), "application/json")},
+    )
+    assert ingest_resp.status_code == 200
+    payload = ingest_resp.json()
+    assert payload["mode"] == "upload"
+    assert payload["uploaded_count"] == 1
+    assert payload["imported_count"] == 0
+    assert payload["created_count"] == 1
+    assert len(payload["created_ids"]) == 1
+    created_id = payload["created_ids"][0]
+
+    doc_resp = client.get(f"/api/documents/{created_id}")
+    assert doc_resp.status_code == 200
+    assert doc_resp.json()["raw_text"] == "Hello Anna, call Sue please."
+
+
+def test_session_ingest_routes_ground_truth_zip_to_import_processing(client):
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    manual_resp = client.put(
+        f"/api/documents/{doc_id}/manual-annotations",
+        json=[{"start": 6, "end": 10, "label": "NAME", "text": "Anna"}],
+    )
+    assert manual_resp.status_code == 200
+
+    export_resp = client.get(
+        "/api/session/export-ground-truth",
+        params={"source": "manual"},
+    )
+    assert export_resp.status_code == 200
+
+    delete_resp = client.delete(f"/api/documents/{doc_id}")
+    assert delete_resp.status_code == 200
+
+    ingest_resp = client.post(
+        "/api/session/ingest",
+        files={"file": ("ground-truth-manual.zip", export_resp.content, "application/zip")},
+    )
+    assert ingest_resp.status_code == 200
+    payload = ingest_resp.json()
+    assert payload["mode"] == "import"
+    assert payload["uploaded_count"] == 0
+    assert payload["imported_count"] == 1
+
+
+def test_session_ingest_forwards_import_conflict_policy(client):
+    transcript = "Hello Anna, call Sue please."
+    upload_resp = _upload(client, _make_hips_v1_custom(transcript), filename="shared.json")
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    ingest_resp = client.post(
+        "/api/session/ingest",
+        data={"conflict_policy": "add_new"},
+        files={
+            "file": (
+                "shared.ground_truth.json",
+                json.dumps(
+                    {
+                        "id": doc_id,
+                        "filename": "shared.json",
+                        "transcript": transcript,
+                        "ground_truth_source": "manual",
+                        "spans": [
+                            {"start": 6, "end": 10, "label": "NAME", "text": "Anna"},
+                        ],
+                        "pii_occurrences": [
+                            {"start": 6, "end": 10, "pii_type": "NAME", "text": "Anna"},
+                        ],
+                    }
+                ).encode(),
+                "application/json",
+            )
+        },
+    )
+    assert ingest_resp.status_code == 200
+    payload = ingest_resp.json()
+    assert payload["mode"] == "import"
+    assert payload["created_count"] == 1
+    assert payload["added_as_new_count"] == 1
+    assert payload["imported_count"] == 1
+
+    docs_resp = client.get("/api/documents")
+    assert docs_resp.status_code == 200
+    assert len(docs_resp.json()) == 2
+    assert payload["created_count"] == 1
+    assert len(payload["created_ids"]) == 1
+
+
+def test_session_ingest_routes_exported_bundle_to_import_processing(client):
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    original_doc_id = upload_resp.json()["id"]
+
+    export_resp = client.get("/api/session/export")
+    assert export_resp.status_code == 200
+
+    delete_resp = client.delete(f"/api/documents/{original_doc_id}")
+    assert delete_resp.status_code == 200
+
+    ingest_resp = client.post(
+        "/api/session/ingest",
+        files={
+            "file": (
+                "session-bundle.json",
+                json.dumps(export_resp.json()).encode(),
+                "application/json",
+            )
+        },
+    )
+    assert ingest_resp.status_code == 200
+    payload = ingest_resp.json()
+    assert payload["mode"] == "import"
+    assert payload["uploaded_count"] == 0
+    assert payload["imported_count"] == 1
+    assert payload["created_count"] == 1
+    assert len(payload["created_ids"]) == 1
 
 
 def test_session_export_includes_saved_run_metadata(client, monkeypatch):

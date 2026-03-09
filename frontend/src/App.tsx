@@ -13,14 +13,15 @@ import type {
   DocumentSummary,
   FolderDetail,
   FolderSummary,
+  ImportConflictPolicy,
   LabelProjection,
   MatchMode,
   MethodView,
   MetricsResult,
   PaneType,
-  SessionProfile,
 } from "./types";
 import {
+  createFolder,
   createFolderSample,
   deleteFolder,
   deleteDocument,
@@ -32,14 +33,12 @@ import {
   getDocument,
   getMetricsDashboard,
   getMetrics,
-  getSessionProfile,
-  importSession,
+  ingestSessionFile,
   listFolders,
   listDocuments,
+  pruneEmptyFolderDocs,
   runAgent,
-  updateSessionProfile,
   updateManualAnnotations,
-  uploadDocument,
 } from "./api/client";
 import Sidebar from "./components/Sidebar";
 import Toolbar from "./components/Toolbar";
@@ -54,7 +53,7 @@ import DashboardPanel from "./components/DashboardPanel";
 import { computeDiff } from "./components/DiffOverlay";
 import PromptLabTab from "./components/PromptLabTab";
 import MethodsLabTab from "./components/MethodsLabTab";
-import { importSessionFiles } from "./importSessionFiles";
+import { ingestFiles } from "./ingestFiles";
 import { getPromptPresetLabelFromSnapshot } from "./agentPromptPresets";
 
 // ---------------------------------------------------------------------------
@@ -253,16 +252,10 @@ function useAppContentController() {
   const [warning, setWarning] = useState<string | null>(null);
   const [runToasts, setRunToasts] = useState<RunToast[]>([]);
   const [agentRunProgress, setAgentRunProgress] = useState<AgentRunProgress | null>(null);
-  const [uploading, setUploading] = useState(false); // 4.2: upload loading
+  const [ingesting, setIngesting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [folderBusyId, setFolderBusyId] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
-  const [importing, setImporting] = useState(false);
-  const [savingProfile, setSavingProfile] = useState(false);
-  const [sessionProfile, setSessionProfile] = useState<SessionProfile>({
-    project_name: "",
-    author: "",
-  });
 
   const [visiblePanes, setVisiblePanes] = useState<PaneType[]>(() =>
     normalizePaneOrder(["raw", "pre"]),
@@ -270,7 +263,7 @@ function useAppContentController() {
   const [diffMode, setDiffMode] = useState(false);
   const [reference, setReference] = useState<AnnotationSource>("pre");
   const [hypothesis, setHypothesis] = useState<AnnotationSource>("manual");
-  const [matchMode, setMatchMode] = useState<MatchMode>("exact");
+  const [matchMode, setMatchMode] = useState<MatchMode>("overlap");
   const [labelProjection, setLabelProjection] = useState<LabelProjection>("native");
   const [agentView, setAgentView] = useState<AgentView>("combined");
   const [agentLlmRun, setAgentLlmRun] = useState<string>("__latest__");
@@ -330,12 +323,6 @@ function useAppContentController() {
   useEffect(() => {
     refreshDocuments().catch((e: unknown) => setError(String(e)));
   }, [refreshDocuments]);
-
-  useEffect(() => {
-    getSessionProfile()
-      .then(setSessionProfile)
-      .catch((e: unknown) => setError(String(e)));
-  }, []);
 
   useEffect(() => {
     getAgentMethods()
@@ -411,21 +398,73 @@ function useAppContentController() {
     };
   }, [doc, agentRunning, methodRunning]);
 
-  // 4.2: Upload with loading indicator
-  const handleUpload = useCallback(
-    async (file: File) => {
-      setUploading(true);
+  const handleIngestFiles = useCallback(
+    async (files: File[], conflictPolicy: ImportConflictPolicy) => {
+      if (files.length === 0) return;
+      setIngesting(true);
+      setError(null);
+      setWarning(null);
       try {
-        const newDoc = await uploadDocument(file);
-        await refreshDocuments();
-        setSelectedId(newDoc.id);
+        const result = await ingestFiles(files, (file) => ingestSessionFile(file, conflictPolicy));
+        if (result.created_ids.length > 0 || result.imported_file_count > 0) {
+          const refreshed = await refreshDocuments();
+          const firstCreatedId = result.created_ids[0] ?? null;
+          const selectedStillExists =
+            selectedId !== null && refreshed.allDocIds.has(selectedId);
+          if (!selectedStillExists) {
+            setSelectedId(firstCreatedId ?? refreshed.documents[0]?.id ?? null);
+          }
+        }
+
+        const warnings: string[] = [];
+        if (result.uploaded_count > 0) {
+          warnings.push(
+            `Added ${result.uploaded_count} raw document(s) from ${result.uploaded_file_count} file(s).`,
+          );
+        }
+        if (result.imported_count > 0) {
+          warnings.push(
+            `Imported ${result.imported_count} document(s) from ${result.imported_file_count} file(s).`,
+          );
+        }
+        if ((result.replaced_count ?? 0) > 0) {
+          warnings.push(`Replaced ${result.replaced_count} conflicting document(s).`);
+        }
+        if ((result.kept_current_count ?? 0) > 0) {
+          warnings.push(`Kept ${result.kept_current_count} current document(s) on conflict.`);
+        }
+        if ((result.added_as_new_count ?? 0) > 0) {
+          warnings.push(`Added ${result.added_as_new_count} conflicting document(s) as new.`);
+        }
+        if ((result.imported_prompt_lab_runs ?? 0) > 0) {
+          warnings.push(`Imported ${result.imported_prompt_lab_runs} Prompt Lab run(s).`);
+        }
+        if ((result.imported_methods_lab_runs ?? 0) > 0) {
+          warnings.push(`Imported ${result.imported_methods_lab_runs} Methods Lab run(s).`);
+        }
+        if (result.skipped_count > 0) {
+          warnings.push(`Skipped ${result.skipped_count} item(s).`);
+        }
+        const ingestWarnings = result.warnings ?? [];
+        if (ingestWarnings.length > 0) {
+          warnings.push(`Ingest warnings: ${ingestWarnings.join(" | ")}`);
+        }
+        if (warnings.length > 0) {
+          setWarning(warnings.join(" "));
+        }
+        if (result.failed_file_count > 0) {
+          const failureSummary = result.failed_files
+            .map((item) => `${item.file_name}: ${item.message}`)
+            .join(" | ");
+          setError(`Failed to process ${result.failed_file_count} file(s). ${failureSummary}`);
+        }
       } catch (e: unknown) {
         setError(String(e));
       } finally {
-        setUploading(false);
+        setIngesting(false);
       }
     },
-    [refreshDocuments],
+    [refreshDocuments, selectedId],
   );
 
   const handleDeleteDocument = useCallback(
@@ -467,6 +506,21 @@ function useAppContentController() {
     [refreshDocuments],
   );
 
+  const handleCreateFolder = useCallback(
+    async (name: string, parentFolderId: string | null) => {
+      setFolderBusyId(parentFolderId ?? "__new__");
+      try {
+        await createFolder(name, parentFolderId);
+        await refreshDocuments();
+      } catch (e: unknown) {
+        setError(String(e));
+      } finally {
+        setFolderBusyId(null);
+      }
+    },
+    [refreshDocuments],
+  );
+
   const handleDeleteFolder = useCallback(
     async (folderId: string) => {
       if (!window.confirm("Delete this folder and its managed transcript set?")) return;
@@ -491,13 +545,47 @@ function useAppContentController() {
     [refreshDocuments, selectedId],
   );
 
+  const handlePruneFolder = useCallback(
+    async (folderId: string) => {
+      if (
+        !window.confirm(
+          "Remove direct files in this folder that have neither pre-annotations nor manual annotations?",
+        )
+      ) {
+        return;
+      }
+      setFolderBusyId(folderId);
+      try {
+        const result = await pruneEmptyFolderDocs(folderId);
+        const refreshed = await refreshDocuments();
+        if (selectedId && !refreshed.allDocIds.has(selectedId)) {
+          const nextId = refreshed.documents[0]?.id ?? null;
+          setSelectedId(nextId);
+          if (!nextId) {
+            setDoc(null);
+            setMetrics(null);
+          }
+        }
+        setWarning(
+          result.removed_count > 0
+            ? `Removed ${result.removed_count} unannotated file(s) from the folder.`
+            : "No unannotated files were found in the folder.",
+        );
+      } catch (e: unknown) {
+        setError(String(e));
+      } finally {
+        setFolderBusyId(null);
+      }
+    },
+    [refreshDocuments, selectedId],
+  );
+
   const handleExportSession = useCallback(async (
     mode: "full" | "ground_truth",
     source: AnnotationSource,
   ) => {
     setExporting(true);
     try {
-      await updateSessionProfile(sessionProfile);
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       const fullBundle = mode === "full" ? await exportSession() : null;
       const blob =
@@ -522,84 +610,7 @@ function useAppContentController() {
     } finally {
       setExporting(false);
     }
-  }, [sessionProfile]);
-
-  const handleImportSession = useCallback(
-    async (files: File[]) => {
-      if (files.length === 0) return;
-      setImporting(true);
-      setError(null);
-      setWarning(null);
-      try {
-        const result = await importSessionFiles(files, importSession);
-        if (result.imported_ids.length > 0) {
-          const refreshed = await refreshDocuments();
-          const firstImportedId = result.imported_ids[0] ?? null;
-          const selectedStillExists =
-            selectedId !== null && refreshed.allDocIds.has(selectedId);
-          if (!selectedStillExists && firstImportedId) {
-            setSelectedId(firstImportedId);
-          }
-        }
-        if (result.imported_count > 0) {
-          const refreshedProfile = await getSessionProfile();
-          setSessionProfile(refreshedProfile);
-        }
-
-        const warnings: string[] = [];
-        if (result.imported_count > 0) {
-          warnings.push(
-            `Imported ${result.imported_count} document(s) from ${result.succeeded_file_count} file(s).`,
-          );
-        }
-        if ((result.imported_prompt_lab_runs ?? 0) > 0) {
-          warnings.push(
-            `Imported ${result.imported_prompt_lab_runs} Prompt Lab run(s).`,
-          );
-        }
-        if ((result.imported_methods_lab_runs ?? 0) > 0) {
-          warnings.push(
-            `Imported ${result.imported_methods_lab_runs} Methods Lab run(s).`,
-          );
-        }
-        if (result.skipped_count > 0) {
-          warnings.push(`Skipped ${result.skipped_count} item(s).`);
-        }
-        if ((result.warnings ?? []).length > 0) {
-          warnings.push(`Import warnings: ${result.warnings?.join(" | ")}`);
-        }
-        if (warnings.length > 0) {
-          setWarning(warnings.join(" "));
-        }
-        if (result.failed_file_count > 0) {
-          const failureSummary = result.failed_files
-            .map((item) => `${item.file_name}: ${item.message}`)
-            .join(" | ");
-          setError(
-            `Failed to import ${result.failed_file_count} file(s). ${failureSummary}`,
-          );
-        }
-      } catch (e: unknown) {
-        setError(String(e));
-      } finally {
-        setImporting(false);
-      }
-    },
-    [refreshDocuments, selectedId],
-  );
-
-  const handleSaveSessionProfile = useCallback(async () => {
-    setSavingProfile(true);
-    try {
-      const saved = await updateSessionProfile(sessionProfile);
-      setSessionProfile(saved);
-      setWarning("Bundle info saved.");
-    } catch (e: unknown) {
-      setError(String(e));
-    } finally {
-      setSavingProfile(false);
-    }
-  }, [sessionProfile]);
+  }, []);
 
   const handleTogglePane = useCallback((pane: PaneType) => {
     setVisiblePanes((prev) => {
@@ -1085,14 +1096,10 @@ function useAppContentController() {
     runToasts,
     dismissRunToast,
     agentRunProgress,
-    uploading,
+    ingesting,
     deletingId,
     folderBusyId,
     exporting,
-    importing,
-    savingProfile,
-    sessionProfile,
-    setSessionProfile,
     orderedVisiblePanes,
     diffMode,
     setDiffMode,
@@ -1126,13 +1133,13 @@ function useAppContentController() {
     llmRunOptions,
     agentChunkDiagnostics,
     methodChunkDiagnostics,
-    handleUpload,
+    handleIngestFiles,
     handleDeleteDocument,
+    handleCreateFolder,
     handleCreateFolderSample,
     handleDeleteFolder,
+    handlePruneFolder,
     handleExportSession,
-    handleImportSession,
-    handleSaveSessionProfile,
     handleDashboardRefresh,
     handleTogglePane,
     handleManualChange,
@@ -1165,14 +1172,10 @@ function renderAppContent(controller: AppContentController) {
     runToasts,
     dismissRunToast,
     agentRunProgress,
-    uploading,
+    ingesting,
     deletingId,
     folderBusyId,
     exporting,
-    importing,
-    savingProfile,
-    sessionProfile,
-    setSessionProfile,
     orderedVisiblePanes,
     diffMode,
     setDiffMode,
@@ -1206,13 +1209,13 @@ function renderAppContent(controller: AppContentController) {
     llmRunOptions,
     agentChunkDiagnostics,
     methodChunkDiagnostics,
-    handleUpload,
+    handleIngestFiles,
     handleDeleteDocument,
+    handleCreateFolder,
     handleCreateFolderSample,
     handleDeleteFolder,
+    handlePruneFolder,
     handleExportSession,
-    handleImportSession,
-    handleSaveSessionProfile,
     handleDashboardRefresh,
     handleTogglePane,
     handleManualChange,
@@ -1235,22 +1238,18 @@ function renderAppContent(controller: AppContentController) {
         folderDetailsById={folderDetailsById}
         selectedId={selectedId}
         onSelect={setSelectedId}
-        onUpload={handleUpload}
+        onIngestFiles={handleIngestFiles}
         onDelete={handleDeleteDocument}
+        onCreateFolder={handleCreateFolder}
         onCreateFolderSample={handleCreateFolderSample}
         onDeleteFolder={handleDeleteFolder}
+        onPruneFolder={handlePruneFolder}
         onExportSession={handleExportSession}
-        onImportSession={handleImportSession}
         exportSourceOptions={sourceOptions}
-        sessionProfile={sessionProfile}
-        onSessionProfileChange={setSessionProfile}
-        onSaveSessionProfile={handleSaveSessionProfile}
-        uploading={uploading}
+        ingesting={ingesting}
         deletingId={deletingId}
         folderBusyId={folderBusyId}
         exporting={exporting}
-        importing={importing}
-        savingProfile={savingProfile}
       />
       <div className="main-area">
         <div className="main-tabbar">

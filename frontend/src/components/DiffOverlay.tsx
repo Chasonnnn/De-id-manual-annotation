@@ -76,7 +76,7 @@ function isMatch(
 export function computeDiff(
   reference: CanonicalSpan[],
   hypothesis: CanonicalSpan[],
-  matchMode: MatchMode = "exact",
+  matchMode: MatchMode = "overlap",
 ): DiffSpan[] {
   const diffs: DiffSpan[] = [];
 

@@ -108,7 +108,7 @@ class CanonicalDocument(BaseModel):
 class FolderRecord(BaseModel):
     id: str
     name: str
-    kind: Literal["import", "sample"]
+    kind: Literal["import", "sample", "manual"]
     parent_folder_id: str | None = None
     merged_doc_id: str | None = None
     doc_ids: list[str] = Field(default_factory=list)

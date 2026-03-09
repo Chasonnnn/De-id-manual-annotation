@@ -4,7 +4,7 @@ import type {
   DocumentSummary,
   FolderDetail,
   FolderSummary,
-  SessionProfile,
+  ImportConflictPolicy,
 } from "../types";
 
 interface Props {
@@ -13,54 +13,50 @@ interface Props {
   folderDetailsById: Record<string, FolderDetail>;
   selectedId: string | null;
   onSelect: (id: string) => void;
-  onUpload: (file: File) => void;
+  onIngestFiles: (files: File[], conflictPolicy: ImportConflictPolicy) => void;
   onDelete: (id: string) => void;
+  onCreateFolder: (name: string, parentFolderId: string | null) => void;
   onCreateFolderSample: (folderId: string, count: number) => void;
   onDeleteFolder: (folderId: string) => void;
+  onPruneFolder: (folderId: string) => void;
   onExportSession: (mode: "full" | "ground_truth", source: AnnotationSource) => void;
-  onImportSession: (files: File[]) => void;
   exportSourceOptions: Array<{ value: AnnotationSource; label: string }>;
-  sessionProfile: SessionProfile;
-  onSessionProfileChange: (profile: SessionProfile) => void;
-  onSaveSessionProfile: () => void;
-  uploading?: boolean;
+  ingesting?: boolean;
   deletingId?: string | null;
   folderBusyId?: string | null;
   exporting?: boolean;
-  importing?: boolean;
-  savingProfile?: boolean;
 }
 
 type ExportMode = "full" | "ground_truth";
 
 interface SidebarState {
   search: string;
-  dragOver: boolean;
-  importDragOver: boolean;
+  ingestDragOver: boolean;
   expandedFolders: Record<string, boolean>;
   exportMode: ExportMode;
   exportSource: AnnotationSource;
+  importConflictPolicy: ImportConflictPolicy;
 }
 
 type SidebarAction =
   | { type: "set_search"; value: string }
-  | { type: "set_drag_over"; value: boolean }
-  | { type: "set_import_drag_over"; value: boolean }
+  | { type: "set_ingest_drag_over"; value: boolean }
   | { type: "toggle_folder"; folderId: string }
   | { type: "sync_folders"; folders: FolderSummary[] }
   | { type: "set_export_mode"; value: ExportMode }
-  | { type: "set_export_source"; value: AnnotationSource };
+  | { type: "set_export_source"; value: AnnotationSource }
+  | { type: "set_import_conflict_policy"; value: ImportConflictPolicy };
 
 function createInitialSidebarState(
   exportSourceOptions: Props["exportSourceOptions"],
 ): SidebarState {
   return {
     search: "",
-    dragOver: false,
-    importDragOver: false,
+    ingestDragOver: false,
     expandedFolders: {},
     exportMode: "full",
     exportSource: exportSourceOptions[0]?.value ?? "manual",
+    importConflictPolicy: "replace",
   };
 }
 
@@ -68,12 +64,10 @@ function sidebarReducer(state: SidebarState, action: SidebarAction): SidebarStat
   switch (action.type) {
     case "set_search":
       return state.search === action.value ? state : { ...state, search: action.value };
-    case "set_drag_over":
-      return state.dragOver === action.value ? state : { ...state, dragOver: action.value };
-    case "set_import_drag_over":
-      return state.importDragOver === action.value
+    case "set_ingest_drag_over":
+      return state.ingestDragOver === action.value
         ? state
-        : { ...state, importDragOver: action.value };
+        : { ...state, ingestDragOver: action.value };
     case "toggle_folder":
       return {
         ...state,
@@ -98,12 +92,6 @@ function sidebarReducer(state: SidebarState, action: SidebarAction): SidebarStat
           changed = true;
         }
       }
-      for (const folder of action.folders) {
-        if (folder.parent_folder_id === null && nextExpanded[folder.id] === undefined) {
-          nextExpanded[folder.id] = true;
-          changed = true;
-        }
-      }
       return changed ? { ...state, expandedFolders: nextExpanded } : state;
     }
     case "set_export_mode":
@@ -112,6 +100,10 @@ function sidebarReducer(state: SidebarState, action: SidebarAction): SidebarStat
       return state.exportSource === action.value
         ? state
         : { ...state, exportSource: action.value };
+    case "set_import_conflict_policy":
+      return state.importConflictPolicy === action.value
+        ? state
+        : { ...state, importConflictPolicy: action.value };
     default:
       return state;
   }
@@ -230,8 +222,10 @@ function SidebarFolderBranch({
   selectedId,
   onToggleFolder,
   onSelect,
+  onCreateFolder,
   onRequestSample,
   onDeleteFolder,
+  onPruneFolder,
 }: {
   folder: FolderSummary;
   detail: FolderDetail;
@@ -243,8 +237,10 @@ function SidebarFolderBranch({
   selectedId: string | null;
   onToggleFolder: (folderId: string) => void;
   onSelect: (id: string) => void;
+  onCreateFolder: (name: string, parentFolderId: string | null) => void;
   onRequestSample: (folder: FolderSummary) => void;
   onDeleteFolder: (folderId: string) => void;
+  onPruneFolder: (folderId: string) => void;
 }) {
   const isExpanded = expandedFolders[folder.id] ?? false;
   const busy = folderBusyId === folder.id;
@@ -275,10 +271,31 @@ function SidebarFolderBranch({
           <button
             type="button"
             className="doc-delete-btn"
+            onClick={() => {
+              const rawValue = window.prompt("New subfolder name", `${folder.name} subfolder`);
+              const name = rawValue?.trim() ?? "";
+              if (!name) return;
+              onCreateFolder(name, folder.id);
+            }}
+            disabled={Boolean(folderBusyId)}
+          >
+            New
+          </button>
+          <button
+            type="button"
+            className="doc-delete-btn"
             onClick={() => onRequestSample(folder)}
-            disabled={busy || folder.doc_count === 0}
+            disabled={Boolean(folderBusyId) || folder.doc_count === 0}
           >
             {busy ? "..." : "Sample"}
+          </button>
+          <button
+            type="button"
+            className="doc-delete-btn"
+            onClick={() => onPruneFolder(folder.id)}
+            disabled={Boolean(folderBusyId) || folder.doc_count === 0}
+          >
+            {busy ? "..." : "Prune Empty"}
           </button>
           <button
             type="button"
@@ -336,8 +353,10 @@ function SidebarFolderBranch({
               selectedId={selectedId}
               onToggleFolder={onToggleFolder}
               onSelect={onSelect}
+              onCreateFolder={onCreateFolder}
               onRequestSample={onRequestSample}
               onDeleteFolder={onDeleteFolder}
+              onPruneFolder={onPruneFolder}
             />
           );
         })}
@@ -359,6 +378,8 @@ function SidebarDocumentTree({
   onToggleFolder,
   onRequestSample,
   onDeleteFolder,
+  onPruneFolder,
+  onCreateFolder,
 }: {
   filteredDocuments: DocumentSummary[];
   visibleTopLevelFolders: FolderSummary[];
@@ -373,6 +394,8 @@ function SidebarDocumentTree({
   onToggleFolder: (folderId: string) => void;
   onRequestSample: (folder: FolderSummary) => void;
   onDeleteFolder: (folderId: string) => void;
+  onPruneFolder: (folderId: string) => void;
+  onCreateFolder: (name: string, parentFolderId: string | null) => void;
 }) {
   return (
     <ul className="doc-list">
@@ -407,8 +430,10 @@ function SidebarDocumentTree({
             selectedId={selectedId}
             onToggleFolder={onToggleFolder}
             onSelect={onSelect}
+            onCreateFolder={onCreateFolder}
             onRequestSample={onRequestSample}
             onDeleteFolder={onDeleteFolder}
+            onPruneFolder={onPruneFolder}
           />
         );
       })}
@@ -480,127 +505,101 @@ function SidebarDropZone({
 }
 
 function SidebarActionsPanel({
-  sessionProfile,
-  onSessionProfileChange,
-  onSaveSessionProfile,
-  savingProfile,
-  uploading,
+  ingesting,
   exporting,
-  importing,
   exportMode,
   exportSource,
   exportSourceOptions,
+  importConflictPolicy,
+  onImportConflictPolicyChange,
   onExportModeChange,
   onExportSourceChange,
   onExportSession,
-  dragOver,
-  importDragOver,
-  fileRef,
-  importRef,
-  onUploadOpenPicker,
-  onImportOpenPicker,
-  onUploadDragOver,
-  onUploadDragLeave,
-  onUploadDrop,
-  onUploadChange,
-  onImportDragOver,
-  onImportDragLeave,
-  onImportDrop,
-  onImportChange,
+  onCreateFolder,
+  ingestDragOver,
+  ingestRef,
+  onIngestOpenPicker,
+  onIngestDragOver,
+  onIngestDragLeave,
+  onIngestDrop,
+  onIngestChange,
 }: {
-  sessionProfile: SessionProfile;
-  onSessionProfileChange: (profile: SessionProfile) => void;
-  onSaveSessionProfile: () => void;
-  savingProfile: boolean;
-  uploading: boolean;
+  ingesting: boolean;
   exporting: boolean;
-  importing: boolean;
   exportMode: ExportMode;
   exportSource: AnnotationSource;
   exportSourceOptions: Props["exportSourceOptions"];
+  importConflictPolicy: ImportConflictPolicy;
+  onImportConflictPolicyChange: (value: ImportConflictPolicy) => void;
   onExportModeChange: (value: ExportMode) => void;
   onExportSourceChange: (value: AnnotationSource) => void;
   onExportSession: (mode: ExportMode, source: AnnotationSource) => void;
-  dragOver: boolean;
-  importDragOver: boolean;
-  fileRef: React.RefObject<HTMLInputElement | null>;
-  importRef: React.RefObject<HTMLInputElement | null>;
-  onUploadOpenPicker: () => void;
-  onImportOpenPicker: () => void;
-  onUploadDragOver: (e: React.DragEvent<HTMLDivElement>) => void;
-  onUploadDragLeave: () => void;
-  onUploadDrop: (e: React.DragEvent<HTMLDivElement>) => void;
-  onUploadChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  onImportDragOver: (e: React.DragEvent<HTMLDivElement>) => void;
-  onImportDragLeave: () => void;
-  onImportDrop: (e: React.DragEvent<HTMLDivElement>) => void;
-  onImportChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onCreateFolder: (name: string, parentFolderId: string | null) => void;
+  ingestDragOver: boolean;
+  ingestRef: React.RefObject<HTMLInputElement | null>;
+  onIngestOpenPicker: () => void;
+  onIngestDragOver: (e: React.DragEvent<HTMLDivElement>) => void;
+  onIngestDragLeave: () => void;
+  onIngestDrop: (e: React.DragEvent<HTMLDivElement>) => void;
+  onIngestChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
 }) {
   return (
     <div className="upload-area">
       <SidebarDropZone
         className="drop-zone"
-        active={dragOver}
-        disabled={uploading}
-        label={uploading ? "Uploading..." : "Drop file here or click to upload"}
-        inputRef={fileRef}
-        inputId="sidebar-upload-file"
-        inputName="upload_file"
-        accept=".json,.jsonl"
-        onOpenPicker={onUploadOpenPicker}
-        onDragOver={onUploadDragOver}
-        onDragLeave={onUploadDragLeave}
-        onDrop={onUploadDrop}
-        onChange={onUploadChange}
+        active={ingestDragOver}
+        disabled={ingesting || exporting}
+        label={
+          ingesting
+            ? "Processing..."
+            : "Drop transcript/session bundle/ground truth here or click to add"
+        }
+        inputRef={ingestRef}
+        inputId="sidebar-ingest-file"
+        inputName="ingest_file"
+        accept=".json,.jsonl,.zip"
+        multiple
+        onOpenPicker={onIngestOpenPicker}
+        onDragOver={onIngestDragOver}
+        onDragLeave={onIngestDragLeave}
+        onDrop={onIngestDrop}
+        onChange={onIngestChange}
       />
 
       <div className="sidebar-actions">
         <div className="bundle-meta">
-          <label htmlFor="bundle-project-name">Project Name</label>
-          <input
-            id="bundle-project-name"
-            type="text"
-            value={sessionProfile.project_name}
-            onChange={(e) =>
-              onSessionProfileChange({
-                ...sessionProfile,
-                project_name: e.target.value,
-              })
-            }
-            placeholder="HIPS Annotation Round 1"
-            disabled={savingProfile}
-          />
-
-          <label htmlFor="bundle-author">Author</label>
-          <input
-            id="bundle-author"
-            type="text"
-            value={sessionProfile.author}
-            onChange={(e) =>
-              onSessionProfileChange({
-                ...sessionProfile,
-                author: e.target.value,
-              })
-            }
-            placeholder="Your name"
-            disabled={savingProfile}
-          />
-
-          <button
-            type="button"
-            className="sidebar-action-btn"
-            onClick={onSaveSessionProfile}
-            disabled={savingProfile || importing || exporting || uploading}
+          <label htmlFor="bundle-import-conflict">Import Conflicts</label>
+          <select
+            id="bundle-import-conflict"
+            value={importConflictPolicy}
+            onChange={(e) => onImportConflictPolicyChange(e.target.value as ImportConflictPolicy)}
+            disabled={exporting || ingesting}
           >
-            {savingProfile ? "Saving..." : "Save Bundle Info"}
-          </button>
+            <option value="replace">Replace Current</option>
+            <option value="add_new">Add as New</option>
+            <option value="keep_current">Keep Current</option>
+          </select>
         </div>
 
         <button
           type="button"
           className="sidebar-action-btn"
+          onClick={() => {
+            const rawValue = window.prompt("New folder name", "New Folder");
+            const name = rawValue?.trim() ?? "";
+            if (!name) return;
+            onCreateFolder(name, null);
+          }}
+          disabled={Boolean(ingesting || exporting)}
+        >
+          New Folder
+        </button>
+
+        <button
+          type="button"
+          className="sidebar-action-btn"
           onClick={() => onExportSession(exportMode, exportSource)}
-          disabled={exporting || importing || uploading || savingProfile}
+          disabled={exporting || ingesting}
         >
           {exporting
             ? "Exporting..."
@@ -615,7 +614,7 @@ function SidebarActionsPanel({
             id="bundle-export-mode"
             value={exportMode}
             onChange={(e) => onExportModeChange(e.target.value as ExportMode)}
-            disabled={exporting || importing || uploading || savingProfile}
+            disabled={exporting || ingesting}
           >
             <option value="full">Full Session Bundle</option>
             <option value="ground_truth">Ground Truth JSONs (ZIP)</option>
@@ -628,7 +627,7 @@ function SidebarActionsPanel({
                 id="bundle-export-source"
                 value={exportSource}
                 onChange={(e) => onExportSourceChange(e.target.value as AnnotationSource)}
-                disabled={exporting || importing || uploading || savingProfile}
+                disabled={exporting || ingesting}
               >
                 {exportSourceOptions.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -639,27 +638,6 @@ function SidebarActionsPanel({
             </>
           )}
         </div>
-
-        <SidebarDropZone
-          className="drop-zone import-drop-zone"
-          active={importDragOver}
-          disabled={importing || exporting || uploading}
-          label={
-            importing
-              ? "Importing..."
-              : "Drop session bundle/ground truth here or click to import"
-          }
-          inputRef={importRef}
-          inputId="sidebar-import-file"
-          inputName="import_file"
-          accept=".json,.zip"
-          multiple
-          onOpenPicker={onImportOpenPicker}
-          onDragOver={onImportDragOver}
-          onDragLeave={onImportDragLeave}
-          onDrop={onImportDrop}
-          onChange={onImportChange}
-        />
       </div>
     </div>
   );
@@ -671,30 +649,25 @@ export default function Sidebar({
   folderDetailsById,
   selectedId,
   onSelect,
-  onUpload,
+  onIngestFiles,
   onDelete,
+  onCreateFolder,
   onCreateFolderSample,
   onDeleteFolder,
+  onPruneFolder,
   onExportSession,
-  onImportSession,
   exportSourceOptions,
-  sessionProfile,
-  onSessionProfileChange,
-  onSaveSessionProfile,
-  uploading = false,
+  ingesting = false,
   deletingId = null,
   folderBusyId = null,
   exporting = false,
-  importing = false,
-  savingProfile = false,
 }: Props) {
   const [state, dispatch] = useReducer(
     sidebarReducer,
     exportSourceOptions,
     createInitialSidebarState,
   );
-  const fileRef = useRef<HTMLInputElement>(null);
-  const importRef = useRef<HTMLInputElement>(null);
+  const ingestRef = useRef<HTMLInputElement>(null);
 
   const folderById = useMemo(
     () => new Map(folders.map((folder) => [folder.id, folder])),
@@ -739,53 +712,29 @@ export default function Sidebar({
     [folderDetailsById, folders, state.search],
   );
 
-  const openUploadPicker = useCallback(() => {
-    fileRef.current?.click();
+  const openIngestPicker = useCallback(() => {
+    ingestRef.current?.click();
   }, []);
 
-  const openImportPicker = useCallback(() => {
-    importRef.current?.click();
-  }, []);
-
-  const handleUploadDrop = useCallback(
+  const handleIngestDrop = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
       e.preventDefault();
-      dispatch({ type: "set_drag_over", value: false });
-      if (uploading) return;
-      const file = e.dataTransfer.files[0];
-      if (file) onUpload(file);
-    },
-    [onUpload, uploading],
-  );
-
-  const handleImportDrop = useCallback(
-    (e: React.DragEvent<HTMLDivElement>) => {
-      e.preventDefault();
-      dispatch({ type: "set_import_drag_over", value: false });
-      if (importing || exporting || uploading) return;
+      dispatch({ type: "set_ingest_drag_over", value: false });
+      if (ingesting || exporting) return;
       const files = Array.from(e.dataTransfer.files ?? []);
-      if (files.length > 0) onImportSession(files);
+      if (files.length > 0) onIngestFiles(files, state.importConflictPolicy);
     },
-    [exporting, importing, onImportSession, uploading],
+    [exporting, ingesting, onIngestFiles, state.importConflictPolicy],
   );
 
-  const handleUploadChange = useCallback(
+  const handleIngestChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      if (uploading) return;
-      const file = e.target.files?.[0];
-      if (file) onUpload(file);
-      e.target.value = "";
-    },
-    [onUpload, uploading],
-  );
-
-  const handleImportChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (ingesting || exporting) return;
       const files = Array.from(e.target.files ?? []);
-      if (files.length > 0) onImportSession(files);
+      if (files.length > 0) onIngestFiles(files, state.importConflictPolicy);
       e.target.value = "";
     },
-    [onImportSession],
+    [exporting, ingesting, onIngestFiles, state.importConflictPolicy],
   );
 
   const handleRequestSample = useCallback(
@@ -834,48 +783,38 @@ export default function Sidebar({
         onSelect={onSelect}
         onDelete={onDelete}
         onToggleFolder={(folderId) => dispatch({ type: "toggle_folder", folderId })}
+        onCreateFolder={onCreateFolder}
         onRequestSample={handleRequestSample}
         onDeleteFolder={onDeleteFolder}
+        onPruneFolder={onPruneFolder}
       />
 
       <SidebarActionsPanel
-        sessionProfile={sessionProfile}
-        onSessionProfileChange={onSessionProfileChange}
-        onSaveSessionProfile={onSaveSessionProfile}
-        savingProfile={savingProfile}
-        uploading={uploading}
+        ingesting={ingesting}
         exporting={exporting}
-        importing={importing}
         exportMode={state.exportMode}
         exportSource={state.exportSource}
         exportSourceOptions={exportSourceOptions}
+        importConflictPolicy={state.importConflictPolicy}
+        onImportConflictPolicyChange={(value) =>
+          dispatch({ type: "set_import_conflict_policy", value })
+        }
         onExportModeChange={(value) => dispatch({ type: "set_export_mode", value })}
         onExportSourceChange={(value) => dispatch({ type: "set_export_source", value })}
         onExportSession={onExportSession}
-        dragOver={state.dragOver}
-        importDragOver={state.importDragOver}
-        fileRef={fileRef}
-        importRef={importRef}
-        onUploadOpenPicker={openUploadPicker}
-        onImportOpenPicker={openImportPicker}
-        onUploadDragOver={(e) => {
+        onCreateFolder={onCreateFolder}
+        ingestDragOver={state.ingestDragOver}
+        ingestRef={ingestRef}
+        onIngestOpenPicker={openIngestPicker}
+        onIngestDragOver={(e) => {
           e.preventDefault();
-          if (!uploading) {
-            dispatch({ type: "set_drag_over", value: true });
+          if (!ingesting && !exporting) {
+            dispatch({ type: "set_ingest_drag_over", value: true });
           }
         }}
-        onUploadDragLeave={() => dispatch({ type: "set_drag_over", value: false })}
-        onUploadDrop={handleUploadDrop}
-        onUploadChange={handleUploadChange}
-        onImportDragOver={(e) => {
-          e.preventDefault();
-          if (!importing && !exporting && !uploading) {
-            dispatch({ type: "set_import_drag_over", value: true });
-          }
-        }}
-        onImportDragLeave={() => dispatch({ type: "set_import_drag_over", value: false })}
-        onImportDrop={handleImportDrop}
-        onImportChange={handleImportChange}
+        onIngestDragLeave={() => dispatch({ type: "set_ingest_drag_over", value: false })}
+        onIngestDrop={handleIngestDrop}
+        onIngestChange={handleIngestChange}
       />
     </aside>
   );

@@ -23,7 +23,6 @@ def clean_sessions(tmp_path, monkeypatch):
     monkeypatch.setattr("server.SESSIONS_DIR", test_sessions)
     monkeypatch.setattr("server.BASE_DIR", tmp_path)
     monkeypatch.setattr("server.CONFIG_PATH", tmp_path / "config.json")
-    monkeypatch.setattr("server.PROFILE_PATH", tmp_path / "session_profile.json")
     _session_docs.clear()
     _prompt_lab_runs.clear()
     _methods_lab_runs.clear()

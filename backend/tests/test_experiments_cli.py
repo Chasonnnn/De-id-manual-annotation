@@ -28,7 +28,6 @@ def clean_sessions(tmp_path, monkeypatch):
     monkeypatch.setattr("server.SESSIONS_DIR", test_sessions)
     monkeypatch.setattr("server.BASE_DIR", tmp_path)
     monkeypatch.setattr("server.CONFIG_PATH", tmp_path / "config.json")
-    monkeypatch.setattr("server.PROFILE_PATH", tmp_path / "session_profile.json")
     _session_docs.clear()
     _prompt_lab_runs.clear()
     _methods_lab_runs.clear()
@@ -281,6 +280,53 @@ def test_manifest_methods_run_persists_artifacts(client, monkeypatch, tmp_path, 
     assert saved is not None
     assert saved["status"] == "completed"
     assert saved["doc_ids"] == [doc_id]
+
+
+def test_methods_cli_run_accepts_pre_reference_source(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_method_with_metadata(**kwargs):
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(model="openai.gpt-5.3-codex"),
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    doc_id = _upload(client)
+
+    exit_code = main(
+        [
+            "methods",
+            "--doc-id",
+            doc_id,
+            "--method",
+            "Default=default",
+            "--model",
+            "Codex=openai.gpt-5.3-codex",
+            "--api-key",
+            "request-key",
+            "--api-base",
+            "https://proxy.example.com/v1",
+            "--reference-source",
+            "pre",
+            "--fallback-reference-source",
+            "pre",
+        ]
+    )
+
+    assert exit_code == 0
+    run_ids = _load_methods_lab_index()
+    assert len(run_ids) == 1
+    saved = _load_methods_lab_run(run_ids[0])
+    assert saved is not None
+    assert saved["status"] == "completed"
+    assert saved["runtime"]["reference_source"] == "pre"
+    assert saved["runtime"]["fallback_reference_source"] == "pre"
 
 
 def test_manifest_prompt_run_accepts_folder_ids(client, monkeypatch, tmp_path):
@@ -918,7 +964,7 @@ def test_default_doc_selection_matches_run_kind(client, monkeypatch):
     assert methods_exit == 0
     methods_run = _load_methods_lab_run(_load_methods_lab_index()[0])
     assert methods_run is not None
-    assert methods_run["doc_ids"] == [manual_doc_id]
+    assert set(methods_run["doc_ids"]) == {manual_doc_id, no_manual_doc_id}
 
 
 def test_manifest_doc_ids_are_normalized_to_strings(tmp_path):

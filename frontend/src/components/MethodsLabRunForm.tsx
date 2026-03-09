@@ -33,6 +33,7 @@ type MethodsLabFormState = {
 type MethodsLabRuntimeState = {
   temperature: number;
   matchMode: MatchMode;
+  referenceSource: "manual" | "pre";
   apiKey: string;
   apiBase: string;
   concurrency: number;
@@ -199,6 +200,20 @@ function MethodsLabConfigGrid({
       </div>
 
       <div className="prompt-lab-field prompt-lab-inline">
+        <label htmlFor="methods-lab-reference">Reference</label>
+        <select
+          id="methods-lab-reference"
+          value={runtime.referenceSource}
+          onChange={(e) =>
+            onRuntimeChange({ referenceSource: e.target.value as "manual" | "pre" })
+          }
+        >
+          <option value="manual">Manual annotations</option>
+          <option value="pre">Pre-annotations</option>
+        </select>
+      </div>
+
+      <div className="prompt-lab-field prompt-lab-inline">
         <label htmlFor="methods-lab-concurrency">Concurrency</label>
         <input
           id="methods-lab-concurrency"
@@ -328,8 +343,8 @@ function MethodsLabDocumentsSection({
         <small>{selectedDocIds.length} docs • {selectedFolderIds.length} folders</small>
       </div>
       <div className="prompt-lab-config-note">
-        Methods Lab scores against manual annotations only. Documents without manual annotations are
-        marked unavailable.
+        Methods Lab scores against the selected reference source. Documents without a matching
+        reference are marked unavailable.
       </div>
       <div className="prompt-lab-doc-grid">
         {documents.map((doc) => (
@@ -619,7 +634,8 @@ function useMethodsLabRunFormController({
   });
   const [runtimeState, setRuntimeState] = useState<MethodsLabRuntimeState>({
     temperature: 0,
-    matchMode: "exact",
+    matchMode: "overlap",
+    referenceSource: "manual",
     apiKey: readSessionValue("methods_lab_api_key"),
     apiBase: readSessionValue("methods_lab_api_base"),
     concurrency: 10,
@@ -888,6 +904,8 @@ function useMethodsLabRunFormController({
         api_base: runtimeState.apiBase || undefined,
         temperature: runtimeState.temperature,
         match_mode: runtimeState.matchMode,
+        reference_source: runtimeState.referenceSource,
+        fallback_reference_source: runtimeState.referenceSource,
         label_profile: runtimeState.labelProfile,
         label_projection: runtimeState.labelProjection,
         chunk_mode: runtimeState.chunkMode,

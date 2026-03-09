@@ -119,6 +119,8 @@ def _build_methods_body_from_args(args: argparse.Namespace) -> MethodsLabRunCrea
         api_base=args.api_base,
         temperature=args.temperature,
         match_mode=args.match_mode,
+        reference_source=args.reference_source,
+        fallback_reference_source=args.fallback_reference_source,
         label_profile=args.label_profile,
         label_projection=args.label_projection,
         chunk_mode=args.chunk_mode,
@@ -425,6 +427,16 @@ def _add_runtime_args(parser: argparse.ArgumentParser, *, prompt_mode: bool) -> 
         default="exact",
     )
     parser.add_argument(
+        "--reference-source",
+        choices=["manual", "pre"],
+        default="manual",
+    )
+    parser.add_argument(
+        "--fallback-reference-source",
+        choices=["manual", "pre"],
+        default="pre",
+    )
+    parser.add_argument(
         "--label-profile",
         choices=["simple", "advanced"],
         default="simple",
@@ -452,16 +464,6 @@ def _add_runtime_args(parser: argparse.ArgumentParser, *, prompt_mode: bool) -> 
         parser.add_argument("--prompt", action="append", default=[])
         parser.add_argument("--prompt-file", action="append", default=[])
         parser.add_argument("--preset", action="append", default=[])
-        parser.add_argument(
-            "--reference-source",
-            choices=["manual", "pre"],
-            default="manual",
-        )
-        parser.add_argument(
-            "--fallback-reference-source",
-            choices=["manual", "pre"],
-            default="pre",
-        )
     else:
         parser.add_argument("--method", action="append", default=[])
     _add_output_args(parser)

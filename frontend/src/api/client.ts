@@ -10,12 +10,14 @@ import type {
   CanonicalDocument,
   CanonicalSpan,
   DashboardMetricsResult,
+  ImportConflictPolicy,
   LLMConfidenceBand,
   LLMConfidenceMetric,
   MatchMode,
   DocumentSummary,
   ExperimentLimits,
   FolderDetail,
+  FolderPruneResult,
   FolderSummary,
   MetricsResult,
   MethodsLabDocResult,
@@ -23,8 +25,8 @@ import type {
   MethodsLabRunDetail,
   MethodsLabRunSummary,
   SessionExportBundle,
+  SessionIngestResult,
   SessionImportResult,
-  SessionProfile,
   PromptLabDocResult,
   PromptLabRunCreateRequest,
   PromptLabRunDetail,
@@ -69,6 +71,21 @@ export async function getFolder(folderId: string): Promise<FolderDetail> {
   return normalizeFolderDetail(raw);
 }
 
+export async function createFolder(
+  name: string,
+  parentFolderId: string | null = null,
+): Promise<FolderDetail> {
+  const raw = await request<Record<string, unknown>>("/folders", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name,
+      parent_folder_id: parentFolderId,
+    }),
+  });
+  return normalizeFolderDetail(raw);
+}
+
 export async function createFolderSample(
   folderId: string,
   count: number,
@@ -85,6 +102,10 @@ export async function deleteFolder(
   folderId: string,
 ): Promise<{ deleted: boolean; folder_id: string }> {
   return request(`/folders/${folderId}`, { method: "DELETE" });
+}
+
+export async function pruneEmptyFolderDocs(folderId: string): Promise<FolderPruneResult> {
+  return request(`/folders/${folderId}/prune-empty-docs`, { method: "POST" });
 }
 
 export async function getDocument(id: string): Promise<CanonicalDocument> {
@@ -124,24 +145,24 @@ export async function exportGroundTruth(source: AnnotationSource): Promise<Blob>
   return res.blob();
 }
 
-export async function importSession(file: File): Promise<SessionImportResult> {
+export async function importSession(
+  file: File,
+  conflictPolicy: ImportConflictPolicy = "replace",
+): Promise<SessionImportResult> {
   const form = new FormData();
   form.append("file", file);
+  form.append("conflict_policy", conflictPolicy);
   return request("/session/import", { method: "POST", body: form });
 }
 
-export async function getSessionProfile(): Promise<SessionProfile> {
-  return request("/session/profile");
-}
-
-export async function updateSessionProfile(
-  profile: Partial<SessionProfile>,
-): Promise<SessionProfile> {
-  return request("/session/profile", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(profile),
-  });
+export async function ingestSessionFile(
+  file: File,
+  conflictPolicy: ImportConflictPolicy = "replace",
+): Promise<SessionIngestResult> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("conflict_policy", conflictPolicy);
+  return request("/session/ingest", { method: "POST", body: form });
 }
 
 export async function updateManualAnnotations(
@@ -311,7 +332,10 @@ export async function getMethodsLabDocResult(
     warnings: Array.isArray(raw.warnings)
       ? raw.warnings.filter((x): x is string => typeof x === "string")
       : [],
-    reference_source_used: raw.reference_source_used === "manual" ? "manual" : undefined,
+    reference_source_used:
+      raw.reference_source_used === "manual" || raw.reference_source_used === "pre"
+        ? raw.reference_source_used
+        : undefined,
     reference_spans: Array.isArray(raw.reference_spans)
       ? (raw.reference_spans as CanonicalSpan[])
       : [],
@@ -557,7 +581,7 @@ function normalizePromptLabRunDetail(raw: Record<string, unknown>): PromptLabRun
           ? "overlap"
           : runtimeRaw.match_mode === "boundary"
             ? "boundary"
-          : "exact",
+            : "overlap",
       reference_source:
         runtimeRaw.reference_source === "pre"
           ? "pre"
@@ -655,7 +679,15 @@ function normalizeMethodsLabRunDetail(raw: Record<string, unknown>): MethodsLabR
           ? "overlap"
           : runtimeRaw.match_mode === "boundary"
             ? "boundary"
-            : "exact",
+            : "overlap",
+      reference_source:
+        runtimeRaw.reference_source === "pre"
+          ? "pre"
+          : "manual",
+      fallback_reference_source:
+        runtimeRaw.fallback_reference_source === "manual"
+          ? "manual"
+          : "pre",
       label_profile: runtimeRaw.label_profile === "advanced" ? "advanced" : "simple",
       label_projection:
         runtimeRaw.label_projection === "coarse_simple" ? "coarse_simple" : "native",
@@ -1129,10 +1161,14 @@ function normalizeDocumentSummary(raw: Record<string, unknown>): DocumentSummary
 }
 
 function normalizeFolderSummary(raw: Record<string, unknown>): FolderSummary {
+  const kind =
+    raw.kind === "sample" || raw.kind === "manual" || raw.kind === "import"
+      ? raw.kind
+      : "import";
   return {
     id: String(raw.id ?? ""),
     name: String(raw.name ?? ""),
-    kind: raw.kind === "sample" ? "sample" : "import",
+    kind,
     parent_folder_id: typeof raw.parent_folder_id === "string" ? raw.parent_folder_id : null,
     merged_doc_id: typeof raw.merged_doc_id === "string" ? raw.merged_doc_id : null,
     doc_count: toNumber(raw.doc_count, 0),

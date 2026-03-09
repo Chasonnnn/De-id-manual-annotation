@@ -163,7 +163,7 @@ export default function MethodsLabCellDetail({
         <>
           <div className="prompt-lab-detail-summary">
             <span>Status: {detail.status}</span>
-            <span>Reference used: {detail.reference_source_used ?? "manual"}</span>
+            <span>Reference used: {detail.reference_source_used ?? "n/a"}</span>
             {primary && (
               <span>{getPrimaryMetricLabel("Micro F1", usingOverlap)}: {fmtPct(primary.micro.f1)}</span>
             )}
@@ -205,7 +205,9 @@ export default function MethodsLabCellDetail({
             <div className="prompt-lab-detail-pane-container">
               <PaneContainer>
                 <div className="pane">
-                  <div className="pane-header">Reference (manual)</div>
+                  <div className="pane-header">
+                    Reference ({detail.reference_source_used ?? "n/a"})
+                  </div>
                   <div
                     className="pane-body"
                     ref={registerPane(0)}
