@@ -137,11 +137,11 @@ export default function PromptLabMatrix({ run, selectedCellId, onSelectCell }: P
                       const cell = cellsById.get(cellId);
                       const active = selectedCellId === cellId;
                       const score = getMetricScore(cell, metricKey, metricMeasure);
-                      const { usingNameTolerant, exactMicro } = getPrimaryMatrixMetrics(cell);
+                      const { usingOverlap, exactMicro } = getPrimaryMatrixMetrics(cell);
                       const selectedMetricLabel =
                         metricKey === OVERALL_METRIC_KEY
-                          ? getPrimaryMetricLabel(`Overall ${getMeasureLabel(metricMeasure)}`, usingNameTolerant)
-                          : getPrimaryMetricLabel(`${metricKey} ${getMeasureLabel(metricMeasure)}`, usingNameTolerant);
+                          ? getPrimaryMetricLabel(`Overall ${getMeasureLabel(metricMeasure)}`, usingOverlap)
+                          : getPrimaryMetricLabel(`${metricKey} ${getMeasureLabel(metricMeasure)}`, usingOverlap);
                       return (
                         <td key={cellId}>
                           <button
@@ -157,7 +157,7 @@ export default function PromptLabMatrix({ run, selectedCellId, onSelectCell }: P
                               Docs {cell?.completed_docs ?? 0}/{cell?.total_docs ?? run.doc_count}
                             </div>
                             <div className="prompt-lab-cell-meta">
-                              {usingNameTolerant
+                              {usingOverlap
                                 ? `Exact F1 ${fmtPct(exactMicro.f1 ?? 0)} · Exact R ${fmtPct(exactMicro.recall ?? 0)}`
                                 : `F1 ${fmtPct(cell?.micro.f1 ?? 0)} · R ${fmtPct(cell?.micro.recall ?? 0)}`}
                             </div>

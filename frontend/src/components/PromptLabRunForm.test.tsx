@@ -24,7 +24,7 @@ describe("PromptLabRunForm", () => {
     );
 
     await waitFor(() => {
-      expect((screen.getByLabelText("doc-1.txt") as HTMLInputElement).checked).toBe(true);
+      expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
     });
 
     const concurrencyInput = screen.getByLabelText("Concurrency") as HTMLInputElement;
@@ -36,5 +36,24 @@ describe("PromptLabRunForm", () => {
 
     expect(await screen.findByText("Concurrency must be 1 to 12")).toBeTruthy();
     expect(onRun).not.toHaveBeenCalled();
+  });
+
+  it("defaults prompt lab chunk mode to off", async () => {
+    render(
+      <PromptLabRunForm
+        documents={documents}
+        selectedDocumentId="doc-1"
+        methods={[]}
+        onRun={vi.fn()}
+        running={false}
+        concurrencyMax={12}
+      />,
+    );
+
+    await waitFor(() => {
+      expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
+    });
+
+    expect((screen.getByLabelText("Chunk Mode") as HTMLSelectElement).value).toBe("off");
   });
 });

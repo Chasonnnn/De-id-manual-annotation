@@ -438,6 +438,7 @@ export interface MethodsLabRuntimeInput {
   label_projection?: LabelProjection;
   chunk_mode?: "auto" | "off" | "force";
   chunk_size_chars?: number;
+  task_timeout_seconds?: number | null;
 }
 
 export interface MethodsLabRunCreateRequest {

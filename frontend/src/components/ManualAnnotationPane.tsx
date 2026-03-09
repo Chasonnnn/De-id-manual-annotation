@@ -2,6 +2,11 @@ import { forwardRef, useCallback, useEffect, useRef, useState } from "react";
 import type { CanonicalSpan } from "../types";
 import AnnotatedText from "./AnnotatedText";
 import AnnotationPopup from "./AnnotationPopup";
+import {
+  codeUnitOffsetToCodePointOffset,
+  getCodePointLength,
+  sliceByCodePointOffsets,
+} from "../textOffsets";
 
 interface Props {
   text: string;
@@ -69,10 +74,14 @@ function resolveCharOffset(node: Node, domOffset: number): number | null {
       ) {
         continue;
       }
-      charsBefore += child.textContent?.length ?? 0;
+      charsBefore += getCodePointLength(child.textContent ?? "");
     }
 
-    return baseOffset + charsBefore + domOffset;
+    return (
+      baseOffset +
+      charsBefore +
+      codeUnitOffsetToCodePointOffset(node.textContent ?? "", domOffset)
+    );
   }
 
   // If the node is an element node, the offset is the child index
@@ -98,19 +107,23 @@ function trimBoundarySelection(
 ): { start: number; end: number; text: string } {
   let nextStart = start;
   let nextEnd = end;
-  while (nextStart < nextEnd && BOUNDARY_IGNORABLE_RE.test(rawText[nextStart] ?? "")) {
+  while (nextStart < nextEnd) {
+    const char = sliceByCodePointOffsets(rawText, nextStart, nextStart + 1);
+    if (!BOUNDARY_IGNORABLE_RE.test(char)) break;
     nextStart += 1;
   }
-  while (nextEnd > nextStart && BOUNDARY_IGNORABLE_RE.test(rawText[nextEnd - 1] ?? "")) {
+  while (nextEnd > nextStart) {
+    const char = sliceByCodePointOffsets(rawText, nextEnd - 1, nextEnd);
+    if (!BOUNDARY_IGNORABLE_RE.test(char)) break;
     nextEnd -= 1;
   }
   if (nextStart >= nextEnd) {
-    return { start, end, text: rawText.slice(start, end) };
+    return { start, end, text: sliceByCodePointOffsets(rawText, start, end) };
   }
   return {
     start: nextStart,
     end: nextEnd,
-    text: rawText.slice(nextStart, nextEnd),
+    text: sliceByCodePointOffsets(rawText, nextStart, nextEnd),
   };
 }
 
@@ -171,8 +184,8 @@ const ManualAnnotationPane = forwardRef<HTMLDivElement, Props>(
       if (start === null || end === null || start >= end) return;
 
       // Verify the offset is within bounds and the text matches
-      if (start < 0 || end > text.length) return;
-      const verifiedText = text.slice(start, end);
+      if (start < 0 || end > getCodePointLength(text)) return;
+      const verifiedText = sliceByCodePointOffsets(text, start, end);
       // Allow minor whitespace differences from selection vs raw text
       if (
         verifiedText.replace(/\s+/g, " ").trim() !==

@@ -1,5 +1,7 @@
 import json
+import os
 import threading
+import time
 import zipfile
 from io import BytesIO
 from types import SimpleNamespace
@@ -11,6 +13,9 @@ from fastapi.testclient import TestClient
 from server import (
     app,
     _enrich_doc,
+    _load_repo_env_file,
+    _resolve_env_api_base,
+    _resolve_env_api_key,
     _load_doc,
     _methods_lab_cancel_events,
     _methods_lab_runs,
@@ -21,6 +26,7 @@ from server import (
     _session_dir,
     _session_docs,
     _methods_lab_run_path,
+    ROOT_ENV_PATH,
 )
 from models import CanonicalSpan, LLMConfidenceMetric, ResolutionEvent
 
@@ -1122,6 +1128,43 @@ def test_agent_llm_chunk_mode_auto_chunks_long_text(client, monkeypatch):
     assert any("Chunked LLM run used" in warning for warning in payload["agent_run_warnings"])
 
 
+def test_agent_llm_default_chunk_mode_stays_single_pass_for_long_text(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.2-chat"],
+    )
+    call_count = {"count": 0}
+
+    def fake_run_llm_with_metadata(**kwargs):
+        call_count["count"] += 1
+        return SimpleNamespace(
+            spans=[],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(confidence=0.8, band="medium"),
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+    long_text = "Hello Anna.\n" * 1500
+    resp = _upload(client, _make_hips_v1_custom(long_text))
+    doc_id = resp.json()["id"]
+
+    run_resp = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "llm",
+            "model": "openai.gpt-5.2-chat",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com/v1",
+        },
+    )
+    assert run_resp.status_code == 200
+    payload = run_resp.json()
+    assert call_count["count"] == 1
+    assert all(
+        "Chunked LLM run used" not in warning for warning in payload["agent_run_warnings"]
+    )
+
+
 def test_agent_llm_chunk_mode_off_stays_single_pass(client, monkeypatch):
     monkeypatch.setattr(
         "server._fetch_gateway_model_ids",
@@ -1406,9 +1449,9 @@ def test_metrics_exact_includes_name_tolerant_co_primary_metric(client, monkeypa
     assert metrics_resp.status_code == 200
     payload = metrics_resp.json()
     assert payload["micro"]["f1"] == pytest.approx(0.0)
-    tolerant = payload["co_primary_metrics"]["exact_name_affix_tolerant"]
-    assert tolerant["micro"]["f1"] == pytest.approx(1.0)
-    assert tolerant["per_label"]["NAME"]["tp"] == 1
+    overlap = payload["co_primary_metrics"]["overlap"]
+    assert overlap["micro"]["f1"] == pytest.approx(1.0)
+    assert overlap["per_label"]["NAME"]["tp"] == 1
 
 
 def test_metrics_unknown_source(client):
@@ -1463,7 +1506,7 @@ def test_metrics_dashboard(client):
     assert data["documents_compared"] == 2
     assert "micro" in data and "f1" in data["micro"]
     assert "co_primary_metrics" in data
-    assert "exact_name_affix_tolerant" in data["co_primary_metrics"]
+    assert "overlap" in data["co_primary_metrics"]
     assert "avg_document_micro" in data
     assert "avg_document_macro" in data
     assert "llm_confidence_summary" in data
@@ -1474,7 +1517,7 @@ def test_metrics_dashboard(client):
     assert "micro" in first_doc and "f1" in first_doc["micro"]
     assert "macro" in first_doc and "precision" in first_doc["macro"]
     assert "co_primary_metrics" in first_doc
-    assert "exact_name_affix_tolerant" in first_doc["co_primary_metrics"]
+    assert "overlap" in first_doc["co_primary_metrics"]
     assert "cohens_kappa" in first_doc
     assert "mean_iou" in first_doc
     assert "llm_confidence" in first_doc
@@ -1613,6 +1656,84 @@ def test_agent_credentials_status(client, monkeypatch):
     assert "LITELLM_BASE_URL" in data["api_base_sources"]
 
 
+def test_load_repo_env_file_reads_root_env_without_overwriting_process_env(
+    monkeypatch, tmp_path
+):
+    env_path = tmp_path / ".env.local"
+    env_path.write_text(
+        "\n".join(
+            [
+                "LITELLM_API_KEY=file-key",
+                "LITELLM_BASE_URL=https://file.example.com/v1",
+                "OPENAI_API_KEY=file-openai-key",
+            ]
+        )
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "process-openai-key")
+    monkeypatch.delenv("LITELLM_API_KEY", raising=False)
+    monkeypatch.delenv("LITELLM_BASE_URL", raising=False)
+
+    loaded = _load_repo_env_file(env_path)
+
+    assert loaded == {
+        "LITELLM_API_KEY": "file-key",
+        "LITELLM_BASE_URL": "https://file.example.com/v1",
+    }
+    assert ROOT_ENV_PATH != env_path
+
+
+def test_resolve_env_runtime_credentials_ignore_root_env_file(monkeypatch, tmp_path):
+    env_path = tmp_path / ".env.local"
+    env_path.write_text(
+        "\n".join(
+            [
+                "LITELLM_API_KEY=file-key",
+                "LITELLM_BASE_URL=https://file.example.com/v1",
+            ]
+        )
+    )
+    monkeypatch.delenv("LITELLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("LITELLM_BASE_URL", raising=False)
+    monkeypatch.setattr("server.ROOT_ENV_PATH", env_path)
+
+    assert _resolve_env_api_key() == ""
+    assert _resolve_env_api_base() == ""
+    assert "LITELLM_API_KEY" not in os.environ
+    assert "LITELLM_BASE_URL" not in os.environ
+
+
+def test_agent_credentials_status_loads_root_env_file(client, monkeypatch, tmp_path):
+    env_path = tmp_path / ".env.local"
+    env_path.write_text(
+        "\n".join(
+            [
+                "LITELLM_API_KEY=file-key",
+                "LITELLM_BASE_URL=https://file.example.com/v1",
+            ]
+        )
+    )
+    monkeypatch.delenv("LITELLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("LITELLM_BASE_URL", raising=False)
+    monkeypatch.setattr("server.ROOT_ENV_PATH", env_path)
+
+    resp = client.get("/api/agent/credentials/status")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["has_api_key"] is True
+    assert data["api_key_sources"] == ["LITELLM_API_KEY"]
+    assert data["has_api_base"] is True
+    assert data["api_base_sources"] == ["LITELLM_BASE_URL"]
+
+
 def test_prompt_lab_run_completes_and_falls_back_to_pre(client, monkeypatch):
     monkeypatch.setattr(
         "server._fetch_gateway_model_ids",
@@ -1747,7 +1868,7 @@ def test_prompt_lab_run_handles_mismatch_metrics_without_crashing(client, monkey
     assert cell["micro"]["f1"] == pytest.approx(0.0)
 
 
-def test_prompt_lab_cell_summary_includes_name_tolerant_metrics_and_error_families(
+def test_prompt_lab_cell_summary_includes_overlap_metrics_and_error_families(
     client, monkeypatch
 ):
     monkeypatch.setattr(
@@ -1813,7 +1934,7 @@ def test_prompt_lab_cell_summary_includes_name_tolerant_metrics_and_error_famili
     create_resp = client.post(
         "/api/prompt-lab/runs",
         json={
-            "name": "name-tolerant-prompt-run",
+            "name": "overlap-prompt-run",
             "doc_ids": [first_doc_id, second_doc_id],
             "prompts": [
                 {
@@ -1852,8 +1973,8 @@ def test_prompt_lab_cell_summary_includes_name_tolerant_metrics_and_error_famili
     assert cell["failed_docs"] == 1
     assert cell["pending_docs"] == 0
     assert cell["micro"]["f1"] == pytest.approx(0.0)
-    tolerant = cell["co_primary_metrics"]["exact_name_affix_tolerant"]
-    assert tolerant["micro"]["f1"] == pytest.approx(1.0)
+    overlap = cell["co_primary_metrics"]["overlap"]
+    assert overlap["micro"]["f1"] == pytest.approx(1.0)
     assert cell["error_families"]["empty_output_finish_reason_length"] == 1
 
     detail_resp = client.get(
@@ -2814,7 +2935,7 @@ def test_methods_lab_accepts_eight_method_variants_and_repeated_method_ids(clien
     assert final["methods"][3]["method_verify_override"] is False
 
 
-def test_methods_lab_cell_summary_includes_name_tolerant_metrics_and_error_families(
+def test_methods_lab_cell_summary_includes_overlap_metrics_and_error_families(
     client, monkeypatch
 ):
     monkeypatch.setattr(
@@ -2880,7 +3001,7 @@ def test_methods_lab_cell_summary_includes_name_tolerant_metrics_and_error_famil
     create_resp = client.post(
         "/api/methods-lab/runs",
         json={
-            "name": "name-tolerant-method-run",
+            "name": "overlap-method-run",
             "doc_ids": [first_doc_id, second_doc_id],
             "methods": [{"id": "m1", "label": "Default", "method_id": "default"}],
             "models": [
@@ -2911,8 +3032,8 @@ def test_methods_lab_cell_summary_includes_name_tolerant_metrics_and_error_famil
     assert cell["failed_docs"] == 1
     assert cell["pending_docs"] == 0
     assert cell["micro"]["f1"] == pytest.approx(0.0)
-    tolerant = cell["co_primary_metrics"]["exact_name_affix_tolerant"]
-    assert tolerant["micro"]["f1"] == pytest.approx(1.0)
+    overlap = cell["co_primary_metrics"]["overlap"]
+    assert overlap["micro"]["f1"] == pytest.approx(1.0)
     assert cell["error_families"]["empty_output_finish_reason_length"] == 1
 
     detail_resp = client.get(
@@ -3587,6 +3708,89 @@ def test_methods_lab_timeout_persists_runtime_diagnostics(client, monkeypatch):
     assert diagnostics["last_progress_at"] is not None
 
 
+def test_methods_lab_progress_resets_timeout_window(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["google.gemini-3.1-pro-preview"],
+    )
+
+    def fake_run_method_with_metadata(**kwargs):
+        progress_callback = kwargs.get("progress_callback")
+        if callable(progress_callback):
+            progress_callback(1, "dual:names")
+        time.sleep(0.03)
+        if callable(progress_callback):
+            progress_callback(2, "dual:identifiers")
+        time.sleep(0.03)
+        if callable(progress_callback):
+            progress_callback(2, "dual:identifiers")
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(
+                provider="gemini",
+                model="google.gemini-3.1-pro-preview",
+            ),
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+    manual_resp = client.put(
+        f"/api/documents/{doc_id}/manual-annotations",
+        json=[{"start": 6, "end": 10, "label": "NAME", "text": "Anna"}],
+    )
+    assert manual_resp.status_code == 200
+
+    create_resp = client.post(
+        "/api/methods-lab/runs",
+        json={
+            "name": "timeout-progress-window",
+            "doc_ids": [doc_id],
+            "methods": [{"id": "dual_method", "label": "Dual", "method_id": "dual"}],
+            "models": [
+                {
+                    "id": "gemini_pro",
+                    "label": "Gemini Pro",
+                    "model": "google.gemini-3.1-pro-preview",
+                    "reasoning_effort": "none",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "task_timeout_seconds": 0.05,
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+
+    final = _wait_for_methods_lab_terminal(client, run_id, attempts=200)
+
+    assert final["status"] == "completed"
+    cell = final["matrix"]["cells"][0]
+    assert cell["failed_docs"] == 0
+    assert cell["completed_docs"] == 1
+
+    detail_resp = client.get(
+        f"/api/methods-lab/runs/{run_id}/cells/{cell['id']}/documents/{doc_id}"
+    )
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert detail["status"] == "completed"
+    diagnostics = detail["runtime_diagnostics"]
+    assert diagnostics["current_pass_label"] == "dual:identifiers"
+    assert diagnostics["last_progress_at"] is not None
+
+
 def test_agent_llm_persists_outputs_per_model(client, monkeypatch):
     supported_models = {"openai.gpt-5.2-chat", "openai.gpt-5.3-codex"}
     monkeypatch.setattr(
@@ -3934,6 +4138,44 @@ def test_method_persists_outputs_per_method_model(client, monkeypatch):
     assert len(method_prompt_snapshot["passes"]) >= 1
 
 
+def test_agent_method_default_chunk_mode_stays_single_pass_for_long_text(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.2-chat"],
+    )
+    call_count = {"count": 0}
+
+    def fake_run_method_with_metadata(**kwargs):
+        call_count["count"] += 1
+        return SimpleNamespace(
+            spans=[],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(confidence=0.8, band="medium"),
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+    long_text = "Hello Anna.\n" * 1500
+    resp = _upload(client, _make_hips_v1_custom(long_text))
+    doc_id = resp.json()["id"]
+
+    run_resp = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "method",
+            "method_id": "dual",
+            "model": "openai.gpt-5.2-chat",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com/v1",
+        },
+    )
+    assert run_resp.status_code == 200
+    payload = run_resp.json()
+    assert call_count["count"] == 1
+    assert all(
+        "Chunked method run used" not in warning for warning in payload["agent_run_warnings"]
+    )
+
+
 def test_export_ground_truth_zip_for_selected_source(client):
     upload_resp = _upload(client)
     assert upload_resp.status_code == 200
@@ -3987,6 +4229,89 @@ def test_session_import_accepts_ground_truth_zip_without_existing_source(client)
     import_resp = client.post(
         "/api/session/import",
         files={"file": ("ground-truth-manual.zip", export_resp.content, "application/zip")},
+    )
+    assert import_resp.status_code == 200
+    imported = import_resp.json()
+    assert imported["imported_count"] == 1
+    assert imported["skipped_count"] == 0
+
+    imported_id = imported["imported_ids"][0]
+    doc_resp = client.get(f"/api/documents/{imported_id}")
+    assert doc_resp.status_code == 200
+    imported_doc = doc_resp.json()
+    assert imported_doc["raw_text"] == transcript
+    assert imported_doc["manual_annotations"] == [
+        {"start": 6, "end": 10, "label": "NAME", "text": "Anna"}
+    ]
+
+
+def test_session_import_accepts_direct_ground_truth_json_payload(client):
+    transcript = "Hello Anna, call Sue please."
+    ground_truth_payload = {
+        "id": "gt-doc-1",
+        "filename": "shared.ground_truth.json",
+        "transcript": transcript,
+        "ground_truth_source": "manual",
+        "spans": [{"start": 6, "end": 10, "label": "NAME", "text": "Anna"}],
+        "pii_occurrences": [{"start": 6, "end": 10, "pii_type": "NAME", "text": "Anna"}],
+    }
+
+    import_resp = client.post(
+        "/api/session/import",
+        files={
+            "file": (
+                "shared.ground_truth.json",
+                json.dumps(ground_truth_payload).encode(),
+                "application/json",
+            )
+        },
+    )
+    assert import_resp.status_code == 200
+    imported = import_resp.json()
+    assert imported["bundle_version"] is None
+    assert imported["imported_count"] == 1
+    assert imported["skipped_count"] == 0
+
+    imported_id = imported["imported_ids"][0]
+    doc_resp = client.get(f"/api/documents/{imported_id}")
+    assert doc_resp.status_code == 200
+    imported_doc = doc_resp.json()
+    assert imported_doc["raw_text"] == transcript
+    assert imported_doc["manual_annotations"] == [
+        {"start": 6, "end": 10, "label": "NAME", "text": "Anna"}
+    ]
+
+
+def test_session_import_accepts_exported_ground_truth_json_member(client):
+    transcript = "Hello Anna, call Sue please."
+    upload_resp = _upload(client, _make_hips_v1_custom(transcript))
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    manual_resp = client.put(
+        f"/api/documents/{doc_id}/manual-annotations",
+        json=[{"start": 6, "end": 10, "label": "NAME", "text": "Anna"}],
+    )
+    assert manual_resp.status_code == 200
+
+    export_resp = client.get(
+        "/api/session/export-ground-truth",
+        params={"source": "manual"},
+    )
+    assert export_resp.status_code == 200
+
+    with zipfile.ZipFile(BytesIO(export_resp.content), mode="r") as archive:
+        names = archive.namelist()
+        assert len(names) == 1
+        member_name = names[0]
+        member_raw = archive.read(member_name)
+
+    delete_resp = client.delete(f"/api/documents/{doc_id}")
+    assert delete_resp.status_code == 200
+
+    import_resp = client.post(
+        "/api/session/import",
+        files={"file": (member_name, member_raw, "application/json")},
     )
     assert import_resp.status_code == 200
     imported = import_resp.json()

@@ -16,6 +16,9 @@ interface Props {
   onSelectDoc: (docId: string) => void;
   detail: PromptLabDocResult | null;
   loading: boolean;
+  canRerunErrorDocs: boolean;
+  rerunningErrorDocs: boolean;
+  onRerunErrorDocs: () => void | Promise<void>;
 }
 
 function fmtPct(value: number): string {
@@ -35,6 +38,9 @@ export default function PromptLabCellDetail({
   onSelectDoc,
   detail,
   loading,
+  canRerunErrorDocs,
+  rerunningErrorDocs,
+  onRerunErrorDocs,
 }: Props) {
   const { registerPane, handleScroll } = useSyncScroll();
 
@@ -74,18 +80,41 @@ export default function PromptLabCellDetail({
   const chunkWarnings = allWarnings.filter(isChunkWarning);
   const nonChunkWarnings = allWarnings.filter((message) => !isChunkWarning(message));
   const processedWithChunking = chunkWarnings.length > 0;
-  const { primary, exact, usingNameTolerant } = getPrimaryMetrics(detail?.metrics ?? null, run.runtime.match_mode);
+  const { primary, exact, usingOverlap } = getPrimaryMetrics(detail?.metrics ?? null, run.runtime.match_mode);
+  const rerunErrorDocsDisabled =
+    rerunningErrorDocs || cell.error_count === 0 || !canRerunErrorDocs;
+  const rerunErrorDocsLabel =
+    cell.error_count === 1 ? "Re-run 1 error doc" : `Re-run ${cell.error_count} error docs`;
+  const rerunErrorDocsTitle =
+    cell.error_count === 0
+      ? "No error docs in this cell."
+      : !canRerunErrorDocs
+        ? "Wait for the run to finish before rerunning error docs."
+        : undefined;
 
   return (
     <section className="prompt-lab-detail">
       <div className="prompt-lab-detail-header">
-        <h3>
-          Cell Detail: {cell.model_label} × {cell.prompt_label}
-        </h3>
-        <div className="prompt-lab-detail-meta">
-          {getPrimaryMetricLabel("F1", usingNameTolerant)} {fmtPct((cell.co_primary_metrics?.exact_name_affix_tolerant?.micro.f1 ?? cell.micro.f1))} ·{" "}
-          {getPrimaryMetricLabel("Recall", usingNameTolerant)} {fmtPct((cell.co_primary_metrics?.exact_name_affix_tolerant?.micro.recall ?? cell.micro.recall))} · Completed{" "}
-          {cell.completed_docs}/{cell.total_docs} · Errors {cell.error_count}
+        <div className="prompt-lab-detail-heading">
+          <h3>
+            Cell Detail: {cell.model_label} × {cell.prompt_label}
+          </h3>
+          <div className="prompt-lab-detail-meta">
+            {getPrimaryMetricLabel("F1", usingOverlap)} {fmtPct((cell.co_primary_metrics?.overlap?.micro.f1 ?? cell.micro.f1))} ·{" "}
+            {getPrimaryMetricLabel("Recall", usingOverlap)} {fmtPct((cell.co_primary_metrics?.overlap?.micro.recall ?? cell.micro.recall))} · Completed{" "}
+            {cell.completed_docs}/{cell.total_docs} · Errors {cell.error_count}
+          </div>
+        </div>
+        <div className="prompt-lab-detail-actions">
+          <button
+            type="button"
+            className="prompt-lab-detail-action-btn"
+            disabled={rerunErrorDocsDisabled}
+            onClick={() => void onRerunErrorDocs()}
+            title={rerunErrorDocsTitle}
+          >
+            {rerunningErrorDocs ? "Re-running..." : rerunErrorDocsLabel}
+          </button>
         </div>
       </div>
 
@@ -136,12 +165,12 @@ export default function PromptLabCellDetail({
             <span>Status: {detail.status}</span>
             <span>Reference used: {detail.reference_source_used ?? "n/a"}</span>
             {primary && (
-              <span>{getPrimaryMetricLabel("Micro F1", usingNameTolerant)}: {fmtPct(primary.micro.f1)}</span>
+              <span>{getPrimaryMetricLabel("Micro F1", usingOverlap)}: {fmtPct(primary.micro.f1)}</span>
             )}
             {primary && (
-              <span>{getPrimaryMetricLabel("Micro Recall", usingNameTolerant)}: {fmtPct(primary.micro.recall)}</span>
+              <span>{getPrimaryMetricLabel("Micro Recall", usingOverlap)}: {fmtPct(primary.micro.recall)}</span>
             )}
-            {usingNameTolerant && exact && <span>Exact F1: {fmtPct(exact.micro.f1)}</span>}
+            {usingOverlap && exact && <span>Exact F1: {fmtPct(exact.micro.f1)}</span>}
             {processedWithChunking && <span className="chunk-badge">Processed with chunking</span>}
           </div>
 
@@ -154,19 +183,19 @@ export default function PromptLabCellDetail({
           {primary && (
             <div className="metric-cards">
               <div className="metric-card">
-                <div className="card-label">{getPrimaryMetricLabel("Micro P", usingNameTolerant)}</div>
+                <div className="card-label">{getPrimaryMetricLabel("Micro P", usingOverlap)}</div>
                 <div className="card-value">{fmtPct(primary.micro.precision)}</div>
               </div>
               <div className="metric-card">
-                <div className="card-label">{getPrimaryMetricLabel("Micro R", usingNameTolerant)}</div>
+                <div className="card-label">{getPrimaryMetricLabel("Micro R", usingOverlap)}</div>
                 <div className="card-value">{fmtPct(primary.micro.recall)}</div>
               </div>
               <div className="metric-card">
-                <div className="card-label">{getPrimaryMetricLabel("Micro F1", usingNameTolerant)}</div>
+                <div className="card-label">{getPrimaryMetricLabel("Micro F1", usingOverlap)}</div>
                 <div className="card-value">{fmtPct(primary.micro.f1)}</div>
               </div>
               <div className="metric-card">
-                <div className="card-label">{getPrimaryMetricLabel("Macro F1", usingNameTolerant)}</div>
+                <div className="card-label">{getPrimaryMetricLabel("Macro F1", usingOverlap)}</div>
                 <div className="card-value">{fmtPct(primary.macro.f1)}</div>
               </div>
             </div>

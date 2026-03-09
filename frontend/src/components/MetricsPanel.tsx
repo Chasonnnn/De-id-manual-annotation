@@ -33,7 +33,7 @@ export default function MetricsPanel({
   const fmt = (v: number) => (v * 100).toFixed(1) + "%";
   const confusion = metrics?.confusion_matrix;
   const confidence = metrics?.llm_confidence ?? null;
-  const { primary, exact, usingNameTolerant } = getPrimaryMetrics(metrics, matchMode);
+  const { primary, exact, usingOverlap } = getPrimaryMetrics(metrics, matchMode);
   const confidencePct =
     confidence?.confidence != null ? `${(confidence.confidence * 100).toFixed(1)}%` : "N/A";
   const confidenceBand = confidence?.band.toUpperCase() ?? "N/A";
@@ -148,7 +148,7 @@ export default function MetricsPanel({
                   <span style={{ marginLeft: 8 }}>perplexity={perplexity}</span>
                 </div>
               )}
-              {usingNameTolerant && exact && (
+              {usingOverlap && exact && (
                 <div className="metrics-diagnostic-note">
                   Exact diagnostic: P {fmt(exact.micro.precision)} · R {fmt(exact.micro.recall)} · F1{" "}
                   {fmt(exact.micro.f1)}
@@ -157,37 +157,37 @@ export default function MetricsPanel({
               <div className="metric-cards">
                 <div className="metric-card">
                   <div className="card-label">
-                    {getPrimaryMetricLabel("Micro P", usingNameTolerant)}
+                    {getPrimaryMetricLabel("Micro P", usingOverlap)}
                   </div>
                   <div className="card-value">{fmt(primary?.micro.precision ?? 0)}</div>
                 </div>
                 <div className="metric-card">
                   <div className="card-label">
-                    {getPrimaryMetricLabel("Micro R", usingNameTolerant)}
+                    {getPrimaryMetricLabel("Micro R", usingOverlap)}
                   </div>
                   <div className="card-value">{fmt(primary?.micro.recall ?? 0)}</div>
                 </div>
                 <div className="metric-card">
                   <div className="card-label">
-                    {getPrimaryMetricLabel("Micro F1", usingNameTolerant)}
+                    {getPrimaryMetricLabel("Micro F1", usingOverlap)}
                   </div>
                   <div className="card-value">{fmt(primary?.micro.f1 ?? 0)}</div>
                 </div>
                 <div className="metric-card">
                   <div className="card-label">
-                    {getPrimaryMetricLabel("Macro P", usingNameTolerant)}
+                    {getPrimaryMetricLabel("Macro P", usingOverlap)}
                   </div>
                   <div className="card-value">{fmt(primary?.macro.precision ?? 0)}</div>
                 </div>
                 <div className="metric-card">
                   <div className="card-label">
-                    {getPrimaryMetricLabel("Macro R", usingNameTolerant)}
+                    {getPrimaryMetricLabel("Macro R", usingOverlap)}
                   </div>
                   <div className="card-value">{fmt(primary?.macro.recall ?? 0)}</div>
                 </div>
                 <div className="metric-card">
                   <div className="card-label">
-                    {getPrimaryMetricLabel("Macro F1", usingNameTolerant)}
+                    {getPrimaryMetricLabel("Macro F1", usingOverlap)}
                   </div>
                   <div className="card-value">{fmt(primary?.macro.f1 ?? 0)}</div>
                 </div>

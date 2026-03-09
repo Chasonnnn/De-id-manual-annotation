@@ -7,7 +7,7 @@ import type {
   PromptLabMatrixCellSummary,
 } from "./types";
 
-export const NAME_TOLERANT_METRIC_KEY = "exact_name_affix_tolerant";
+export const OVERLAP_COMPANION_METRIC_KEY = "overlap";
 
 type MetricLabelValue = {
   precision: number;
@@ -31,17 +31,17 @@ export function getPrimaryMetrics(
 ): {
   primary: MetricLike | null;
   exact: MetricLike | null;
-  usingNameTolerant: boolean;
+  usingOverlap: boolean;
 } {
   if (!metrics) {
-    return { primary: null, exact: null, usingNameTolerant: false };
+    return { primary: null, exact: null, usingOverlap: false };
   }
   const tolerant =
-    matchMode === "exact" ? metrics.co_primary_metrics?.[NAME_TOLERANT_METRIC_KEY] ?? null : null;
+    matchMode === "exact" ? metrics.co_primary_metrics?.[OVERLAP_COMPANION_METRIC_KEY] ?? null : null;
   return {
     primary: tolerant ?? metrics,
     exact: metrics,
-    usingNameTolerant: tolerant != null,
+    usingOverlap: tolerant != null,
   };
 }
 
@@ -51,22 +51,22 @@ export function getPrimaryMatrixMetrics(
   primaryMicro: PromptLabMatrixCellSummary["micro"];
   primaryPerLabel: PromptLabMatrixCellSummary["per_label"];
   exactMicro: PromptLabMatrixCellSummary["micro"];
-  usingNameTolerant: boolean;
+  usingOverlap: boolean;
 } {
   if (!cell) {
     return {
       primaryMicro: { precision: 0, recall: 0, f1: 0, tp: 0, fp: 0, fn: 0 },
       primaryPerLabel: {},
       exactMicro: { precision: 0, recall: 0, f1: 0, tp: 0, fp: 0, fn: 0 },
-      usingNameTolerant: false,
+      usingOverlap: false,
     };
   }
-  const tolerant = cell.co_primary_metrics?.[NAME_TOLERANT_METRIC_KEY];
+  const tolerant = cell.co_primary_metrics?.[OVERLAP_COMPANION_METRIC_KEY];
   return {
     primaryMicro: tolerant?.micro ?? cell.micro,
     primaryPerLabel: tolerant?.per_label ?? cell.per_label,
     exactMicro: cell.micro,
-    usingNameTolerant: tolerant != null,
+    usingOverlap: tolerant != null,
   };
 }
 
@@ -75,12 +75,12 @@ export function getPrimaryDashboardMetrics(
 ): {
   primaryMicro: DashboardMetricsResult["micro"] | null;
   exactMicro: DashboardMetricsResult["micro"] | null;
-  usingNameTolerant: boolean;
+  usingOverlap: boolean;
 } {
   if (!dashboard) {
-    return { primaryMicro: null, exactMicro: null, usingNameTolerant: false };
+    return { primaryMicro: null, exactMicro: null, usingOverlap: false };
   }
-  const tolerant = dashboard.co_primary_metrics?.[NAME_TOLERANT_METRIC_KEY]?.micro ?? null;
+  const tolerant = dashboard.co_primary_metrics?.[OVERLAP_COMPANION_METRIC_KEY]?.micro ?? null;
   return {
     primaryMicro:
       tolerant != null
@@ -94,7 +94,7 @@ export function getPrimaryDashboardMetrics(
           }
         : dashboard.micro,
     exactMicro: dashboard.micro,
-    usingNameTolerant: tolerant != null,
+    usingOverlap: tolerant != null,
   };
 }
 
@@ -103,9 +103,9 @@ export function getPrimaryDashboardDocumentMetrics(
 ): {
   primaryMicro: DashboardDocumentMetrics["micro"];
   exactMicro: DashboardDocumentMetrics["micro"];
-  usingNameTolerant: boolean;
+  usingOverlap: boolean;
 } {
-  const tolerant = row.co_primary_metrics?.[NAME_TOLERANT_METRIC_KEY]?.micro ?? null;
+  const tolerant = row.co_primary_metrics?.[OVERLAP_COMPANION_METRIC_KEY]?.micro ?? null;
   return {
     primaryMicro:
       tolerant != null
@@ -119,10 +119,10 @@ export function getPrimaryDashboardDocumentMetrics(
           }
         : row.micro,
     exactMicro: row.micro,
-    usingNameTolerant: tolerant != null,
+    usingOverlap: tolerant != null,
   };
 }
 
-export function getPrimaryMetricLabel(baseLabel: string, usingNameTolerant: boolean): string {
-  return usingNameTolerant ? `NAME-Tolerant ${baseLabel}` : baseLabel;
+export function getPrimaryMetricLabel(baseLabel: string, usingOverlap: boolean): string {
+  return usingOverlap ? `Overlap ${baseLabel}` : baseLabel;
 }

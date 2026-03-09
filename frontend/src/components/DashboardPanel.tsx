@@ -31,7 +31,7 @@ export default function DashboardPanel({
     value == null ? "N/A" : `${(value * 100).toFixed(1)}%`;
   const fmtMatchMode = (value: DashboardMetricsResult["match_mode"]) =>
     value === "boundary" ? "trim space/punct" : value;
-  const { primaryMicro, exactMicro, usingNameTolerant } = getPrimaryDashboardMetrics(dashboard);
+  const { primaryMicro, exactMicro, usingOverlap } = getPrimaryDashboardMetrics(dashboard);
 
   return (
     <div className={`dashboard-panel ${collapsed ? "collapsed" : ""}`}>
@@ -67,7 +67,7 @@ export default function DashboardPanel({
                 Comparing <strong>{dashboard.reference}</strong> vs{" "}
                 <strong>{dashboard.hypothesis}</strong> ({fmtMatchMode(dashboard.match_mode)})
               </div>
-              {usingNameTolerant && exactMicro && (
+              {usingOverlap && exactMicro && (
                 <div className="metrics-diagnostic-note">
                   Exact diagnostic: P {fmtPct(exactMicro.precision)} · R {fmtPct(exactMicro.recall)} ·
                   F1 {fmtPct(exactMicro.f1)}
@@ -84,19 +84,19 @@ export default function DashboardPanel({
                 </div>
                 <div className="metric-card">
                   <div className="card-label">
-                    {getPrimaryMetricLabel("Global Precision", usingNameTolerant)}
+                    {getPrimaryMetricLabel("Global Precision", usingOverlap)}
                   </div>
                   <div className="card-value">{fmtPct(primaryMicro?.precision ?? dashboard.micro.precision)}</div>
                 </div>
                 <div className="metric-card">
                   <div className="card-label">
-                    {getPrimaryMetricLabel("Global Recall", usingNameTolerant)}
+                    {getPrimaryMetricLabel("Global Recall", usingOverlap)}
                   </div>
                   <div className="card-value">{fmtPct(primaryMicro?.recall ?? dashboard.micro.recall)}</div>
                 </div>
                 <div className="metric-card">
                   <div className="card-label">
-                    {getPrimaryMetricLabel("Global F1", usingNameTolerant)}
+                    {getPrimaryMetricLabel("Global F1", usingOverlap)}
                   </div>
                   <div className="card-value">{fmtPct(primaryMicro?.f1 ?? dashboard.micro.f1)}</div>
                   <div className="card-sub">
@@ -128,9 +128,9 @@ export default function DashboardPanel({
                 <thead>
                   <tr>
                     <th>Document</th>
-                    <th>{getPrimaryMetricLabel("Micro P", usingNameTolerant)}</th>
-                    <th>{getPrimaryMetricLabel("Micro R", usingNameTolerant)}</th>
-                    <th>{getPrimaryMetricLabel("Micro F1", usingNameTolerant)}</th>
+                    <th>{getPrimaryMetricLabel("Micro P", usingOverlap)}</th>
+                    <th>{getPrimaryMetricLabel("Micro R", usingOverlap)}</th>
+                    <th>{getPrimaryMetricLabel("Micro F1", usingOverlap)}</th>
                     <th>Exact F1</th>
                     <th>Macro F1</th>
                     <th>Kappa</th>

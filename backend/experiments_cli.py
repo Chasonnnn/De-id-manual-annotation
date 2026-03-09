@@ -205,16 +205,16 @@ def _matrix_rows(kind: str, detail: dict[str, Any]) -> list[dict[str, Any]]:
             "raw_precision": cell.get("raw_micro", {}).get("precision"),
             "raw_recall": cell.get("raw_micro", {}).get("recall"),
             "raw_f1": cell.get("raw_micro", {}).get("f1"),
-            "exact_name_affix_tolerant_f1": cell.get("co_primary_metrics", {})
-            .get("exact_name_affix_tolerant", {})
+            "overlap_f1": cell.get("co_primary_metrics", {})
+            .get("overlap", {})
             .get("micro", {})
             .get("f1"),
-            "raw_exact_name_affix_tolerant_f1": cell.get("raw_co_primary_metrics", {})
-            .get("exact_name_affix_tolerant", {})
+            "raw_overlap_f1": cell.get("raw_co_primary_metrics", {})
+            .get("overlap", {})
             .get("micro", {})
             .get("f1"),
-            "exact_name_affix_gap_f1": cell.get("exact_name_affix_gap_f1"),
-            "raw_exact_name_affix_gap_f1": cell.get("raw_exact_name_affix_gap_f1"),
+            "overlap_gap_f1": cell.get("overlap_gap_f1"),
+            "raw_overlap_gap_f1": cell.get("raw_overlap_gap_f1"),
             "boundary_fix_count": cell.get("resolution_summary", {}).get("boundary_fix_count"),
             "augmentation_count": cell.get("resolution_summary", {}).get("augmentation_count"),
             "mean_confidence": cell.get("mean_confidence"),
@@ -251,10 +251,10 @@ def _write_output_csv(path_value: str | None, *, kind: str, detail: dict[str, An
             "raw_precision",
             "raw_recall",
             "raw_f1",
-            "exact_name_affix_tolerant_f1",
-            "raw_exact_name_affix_tolerant_f1",
-            "exact_name_affix_gap_f1",
-            "raw_exact_name_affix_gap_f1",
+            "overlap_f1",
+            "raw_overlap_f1",
+            "overlap_gap_f1",
+            "raw_overlap_gap_f1",
             "boundary_fix_count",
             "augmentation_count",
             "mean_confidence",
@@ -277,10 +277,10 @@ def _write_output_csv(path_value: str | None, *, kind: str, detail: dict[str, An
             "raw_precision",
             "raw_recall",
             "raw_f1",
-            "exact_name_affix_tolerant_f1",
-            "raw_exact_name_affix_tolerant_f1",
-            "exact_name_affix_gap_f1",
-            "raw_exact_name_affix_gap_f1",
+            "overlap_f1",
+            "raw_overlap_f1",
+            "overlap_gap_f1",
+            "raw_overlap_gap_f1",
             "boundary_fix_count",
             "augmentation_count",
             "mean_confidence",

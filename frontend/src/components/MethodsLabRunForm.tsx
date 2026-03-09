@@ -113,7 +113,7 @@ export default function MethodsLabRunForm({
   const [labelProjection, setLabelProjection] = useState<"native" | "coarse_simple">(
     "native",
   );
-  const [chunkMode, setChunkMode] = useState<"auto" | "off" | "force">("auto");
+  const [chunkMode, setChunkMode] = useState<"auto" | "off" | "force">("off");
   const [chunkSizeChars, setChunkSizeChars] = useState(10000);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);

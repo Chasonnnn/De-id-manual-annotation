@@ -21,6 +21,7 @@ dependencies = [
     "presidio-analyzer>=2.2.361",
     "spacy>=3.8.11",
     "en-core-web-lg",
+    "python-dotenv>=1.2.2",
 ]
 
 [project.scripts]

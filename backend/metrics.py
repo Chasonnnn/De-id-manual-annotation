@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import re
 import unicodedata
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 from models import CanonicalSpan
-from span_resolution import canonicalize_name_affix_text
 
-
-_NAME_HONORIFIC_RE = re.compile(r"^(mr|mrs|ms|miss)\.?\s+", re.IGNORECASE)
-_TRAILING_POSSESSIVE_RE = re.compile(r"(?:'s|’s)$", re.IGNORECASE)
+EXACT_COMPANION_METRIC_KEY = "overlap"
 
 
 def _overlap(a: CanonicalSpan, b: CanonicalSpan) -> int:
@@ -57,18 +53,6 @@ def _boundary_match(a: CanonicalSpan, b: CanonicalSpan) -> bool:
     return a_start == b_start and a_end == b_end
 
 
-def _exact_name_affix_tolerant_match(a: CanonicalSpan, b: CanonicalSpan) -> bool:
-    if a.label != b.label:
-        return False
-    if a.label != "NAME":
-        return a.start == b.start and a.end == b.end
-    if _overlap(a, b) == 0:
-        return False
-    left = canonicalize_name_affix_text(a.text)
-    right = canonicalize_name_affix_text(b.text)
-    return bool(left) and left == right
-
-
 def match_spans(
     gold: list[CanonicalSpan],
     pred: list[CanonicalSpan],
@@ -96,9 +80,6 @@ def match_spans(
             if mode == "exact":
                 if g.start == p.start and g.end == p.end and g.label == p.label:
                     cost[i, j] = 0.0  # perfect match
-            elif mode == "exact_name_affix_tolerant":
-                if _exact_name_affix_tolerant_match(g, p):
-                    cost[i, j] = 0.0
             elif mode == "boundary":
                 if _boundary_match(g, p):
                     cost[i, j] = 0.0
@@ -223,10 +204,10 @@ def compute_metrics(
     result = _compute_metrics_base(gold, pred, mode, overlap_threshold)
     if mode == "exact":
         result["co_primary_metrics"] = {
-            "exact_name_affix_tolerant": _compute_metrics_base(
+            EXACT_COMPANION_METRIC_KEY: _compute_metrics_base(
                 gold,
                 pred,
-                "exact_name_affix_tolerant",
+                "overlap",
                 overlap_threshold,
             )
         }

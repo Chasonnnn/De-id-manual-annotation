@@ -1,4 +1,5 @@
 import type { CanonicalSpan, MatchMode } from "../types";
+import { getCodePointLength, sliceByCodePointOffsets } from "../textOffsets";
 
 export interface DiffSpan {
   start: number;
@@ -30,16 +31,23 @@ function trimBoundaryOffsets(span: CanonicalSpan): { start: number; end: number 
   }
 
   let left = 0;
-  let right = text.length;
-  while (left < right && isBoundaryIgnorable(text[left] ?? "")) {
+  const totalCodePoints = getCodePointLength(text);
+  let right = totalCodePoints;
+  while (
+    left < right &&
+    isBoundaryIgnorable(sliceByCodePointOffsets(text, left, left + 1))
+  ) {
     left += 1;
   }
-  while (right > left && isBoundaryIgnorable(text[right - 1] ?? "")) {
+  while (
+    right > left &&
+    isBoundaryIgnorable(sliceByCodePointOffsets(text, right - 1, right))
+  ) {
     right -= 1;
   }
 
   const start = span.start + left;
-  const end = span.end - (text.length - right);
+  const end = span.end - (totalCodePoints - right);
   if (start >= end) {
     return { start: span.start, end: span.end };
   }

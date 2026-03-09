@@ -5,7 +5,7 @@ import MethodsLabMatrix from "./MethodsLabMatrix";
 import type { MethodsLabRunDetail } from "../types";
 
 describe("MethodsLabMatrix", () => {
-  it("defaults to NAME-tolerant metrics when available and keeps exact as a diagnostic", () => {
+  it("defaults to overlap metrics when available and keeps exact as a diagnostic", () => {
     const run: MethodsLabRunDetail = {
       id: "run_1",
       name: "methods_run",
@@ -62,7 +62,7 @@ describe("MethodsLabMatrix", () => {
             micro: { precision: 0.5, recall: 0.3, f1: 0.4, tp: 2, fp: 2, fn: 4 },
             per_label: {},
             co_primary_metrics: {
-              exact_name_affix_tolerant: {
+              overlap: {
                 micro: { precision: 1, recall: 0.8, f1: 0.9, tp: 6, fp: 0, fn: 1 },
                 macro: { precision: 1, recall: 0.8, f1: 0.9 },
                 per_label: {},
@@ -83,7 +83,7 @@ describe("MethodsLabMatrix", () => {
       <MethodsLabMatrix run={run} selectedCellId={null} onSelectCell={vi.fn()} />,
     );
 
-    expect(screen.getByText("NAME-Tolerant Overall F1")).not.toBeNull();
+    expect(screen.getByText("Overlap Overall F1")).not.toBeNull();
     expect(screen.getByText("90.0%")).not.toBeNull();
     expect(screen.getByText("Exact F1 40.0% · Exact R 30.0%")).not.toBeNull();
   });

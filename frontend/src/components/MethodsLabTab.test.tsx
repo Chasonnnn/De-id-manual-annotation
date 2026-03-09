@@ -36,14 +36,29 @@ vi.mock("./MethodsLabMatrix", () => ({
 
 vi.mock("./MethodsLabCellDetail", () => ({
   default: ({
+    cell,
     detail,
     loading,
+    onRerunErrorDocs,
+    rerunningErrorDocs,
   }: {
+    cell: { error_count: number } | null;
     detail: MethodsLabDocResult | null;
     loading: boolean;
+    onRerunErrorDocs?: () => void | Promise<void>;
+    rerunningErrorDocs?: boolean;
   }) => (
     <div data-testid="methods-lab-cell-detail">
       {loading ? "loading" : detail ? `${detail.run_id}:${detail.cell_id}:${detail.doc_id}` : "no-detail"}
+      {cell ? (
+        <button
+          type="button"
+          disabled={cell.error_count === 0 || rerunningErrorDocs}
+          onClick={() => void onRerunErrorDocs?.()}
+        >
+          Re-run error docs
+        </button>
+      ) : null}
     </div>
   ),
 }));
@@ -485,5 +500,97 @@ describe("MethodsLabTab", () => {
     await waitFor(() => {
       expect(screen.getByText("5bcf6ed4:model_1__method_1:doc-1")).toBeTruthy();
     });
+  });
+
+  it("re-runs only the error docs for the selected method cell", async () => {
+    const errorRunDetail: MethodsLabRunDetail = {
+      ...codexDetail,
+      status: "completed_with_errors",
+      doc_count: 2,
+      total_tasks: 2,
+      completed_tasks: 2,
+      failed_tasks: 1,
+      doc_ids: ["doc-1", "doc-2"],
+      matrix: {
+        ...codexDetail.matrix,
+        cells: [
+          {
+            ...codexDetail.matrix.cells[0]!,
+            status: "completed_with_errors",
+            total_docs: 2,
+            completed_docs: 1,
+            failed_docs: 1,
+            error_count: 1,
+          },
+        ],
+      },
+      progress: {
+        total_tasks: 2,
+        completed_tasks: 2,
+        failed_tasks: 1,
+      },
+    };
+    const rerunSummary = makeRunSummary("rerun-ml", "Methods error rerun");
+    const rerunDetail: MethodsLabRunDetail = {
+      ...makeRunDetail(rerunSummary, {
+        docId: "doc-2",
+        cellId: errorRunDetail.matrix.cells[0]!.id,
+        modelId: errorRunDetail.models[0]!.id!,
+        modelLabel: errorRunDetail.models[0]!.label,
+        methodId: errorRunDetail.methods[0]!.id!,
+        methodLabel: errorRunDetail.methods[0]!.label,
+      }),
+      name: "Methods error rerun",
+    };
+
+    clientMocks.listMethodsLabRuns
+      .mockResolvedValueOnce([codexSummary])
+      .mockResolvedValueOnce([codexSummary, rerunSummary]);
+    clientMocks.getMethodsLabRun.mockImplementation(async (runId: string) => {
+      if (runId === codexSummary.id) return cloneValue(errorRunDetail);
+      if (runId === rerunSummary.id) return cloneValue(rerunDetail);
+      throw new Error(`Unknown run ${runId}`);
+    });
+    clientMocks.getMethodsLabDocResult.mockImplementation(
+      async (runId: string, cellId: string, docId: string) => {
+        if (runId === errorRunDetail.id && cellId === errorRunDetail.matrix.cells[0]!.id) {
+          return {
+            ...makeDocResult(errorRunDetail, { cellId, docId }),
+            status: docId === "doc-2" ? "failed" : "completed",
+            error: docId === "doc-2" ? "timeout" : null,
+          };
+        }
+        if (runId === rerunDetail.id && cellId === rerunDetail.matrix.cells[0]!.id && docId === "doc-2") {
+          return makeDocResult(rerunDetail, { cellId, docId });
+        }
+        throw new Error("404: Methods Lab cell not found");
+      },
+    );
+    clientMocks.createMethodsLabRun.mockResolvedValue(rerunDetail);
+
+    render(
+      <MethodsLabTab
+        documents={documents}
+        selectedDocumentId={null}
+        onSelectDocument={vi.fn()}
+      />,
+    );
+
+    await screen.findByText("5bcf6ed4:model_1__method_1:doc-1");
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-run error docs" }));
+
+    await waitFor(() => {
+      expect(clientMocks.createMethodsLabRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          doc_ids: ["doc-2"],
+          methods: [errorRunDetail.methods[0]],
+          models: [errorRunDetail.models[0]],
+          runtime: expect.objectContaining(errorRunDetail.runtime),
+          concurrency: errorRunDetail.concurrency,
+        }),
+      );
+    });
+    await screen.findByText("rerun-ml:model_1__method_1:doc-2");
   });
 });

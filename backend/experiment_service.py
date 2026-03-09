@@ -3,6 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import copy
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -623,13 +624,13 @@ def _build_prompt_lab_cell_summary(cell: dict, total_docs: int, run_status: str)
     else:
         status = "completed"
     tolerant_micro = (
-        co_primary_summary.get("exact_name_affix_tolerant", {}).get("micro", {})
-        if isinstance(co_primary_summary.get("exact_name_affix_tolerant"), dict)
+        co_primary_summary.get("overlap", {}).get("micro", {})
+        if isinstance(co_primary_summary.get("overlap"), dict)
         else {}
     )
     raw_tolerant_micro = (
-        raw_co_primary_summary.get("exact_name_affix_tolerant", {}).get("micro", {})
-        if isinstance(raw_co_primary_summary.get("exact_name_affix_tolerant"), dict)
+        raw_co_primary_summary.get("overlap", {}).get("micro", {})
+        if isinstance(raw_co_primary_summary.get("overlap"), dict)
         else {}
     )
 
@@ -652,8 +653,8 @@ def _build_prompt_lab_cell_summary(cell: dict, total_docs: int, run_status: str)
         "raw_co_primary_metrics": raw_co_primary_summary,
         "per_label": per_label_summary,
         "raw_per_label": raw_per_label_summary,
-        "exact_name_affix_gap_f1": float(tolerant_micro.get("f1", 0.0)) - float(micro.get("f1", 0.0)),
-        "raw_exact_name_affix_gap_f1": float(raw_tolerant_micro.get("f1", 0.0))
+        "overlap_gap_f1": float(tolerant_micro.get("f1", 0.0)) - float(micro.get("f1", 0.0)),
+        "raw_overlap_gap_f1": float(raw_tolerant_micro.get("f1", 0.0))
         - float(raw_micro.get("f1", 0.0)),
         "resolution_summary": {
             "boundary_fix_count": resolution_totals["boundary_fix_count"],
@@ -770,7 +771,7 @@ def build_prompt_lab_run_detail(run: dict) -> dict:
             "label_profile": runtime.get("label_profile", "simple"),
             "label_projection": runtime.get("label_projection", "native"),
             "api_base": runtime.get("api_base", ""),
-            "chunk_mode": runtime.get("chunk_mode", "auto"),
+            "chunk_mode": runtime.get("chunk_mode", "off"),
             "chunk_size_chars": runtime.get("chunk_size_chars", srv.DEFAULT_CHUNK_SIZE_CHARS),
         },
         "concurrency": run.get("concurrency", srv.PROMPT_LAB_DEFAULT_CONCURRENCY),
@@ -1416,13 +1417,13 @@ def _build_methods_lab_cell_summary(cell: dict, total_docs: int, run_status: str
     else:
         status = "completed"
     tolerant_micro = (
-        co_primary_summary.get("exact_name_affix_tolerant", {}).get("micro", {})
-        if isinstance(co_primary_summary.get("exact_name_affix_tolerant"), dict)
+        co_primary_summary.get("overlap", {}).get("micro", {})
+        if isinstance(co_primary_summary.get("overlap"), dict)
         else {}
     )
     raw_tolerant_micro = (
-        raw_co_primary_summary.get("exact_name_affix_tolerant", {}).get("micro", {})
-        if isinstance(raw_co_primary_summary.get("exact_name_affix_tolerant"), dict)
+        raw_co_primary_summary.get("overlap", {}).get("micro", {})
+        if isinstance(raw_co_primary_summary.get("overlap"), dict)
         else {}
     )
 
@@ -1445,8 +1446,8 @@ def _build_methods_lab_cell_summary(cell: dict, total_docs: int, run_status: str
         "raw_co_primary_metrics": raw_co_primary_summary,
         "per_label": per_label_summary,
         "raw_per_label": raw_per_label_summary,
-        "exact_name_affix_gap_f1": float(tolerant_micro.get("f1", 0.0)) - float(micro.get("f1", 0.0)),
-        "raw_exact_name_affix_gap_f1": float(raw_tolerant_micro.get("f1", 0.0))
+        "overlap_gap_f1": float(tolerant_micro.get("f1", 0.0)) - float(micro.get("f1", 0.0)),
+        "raw_overlap_gap_f1": float(raw_tolerant_micro.get("f1", 0.0))
         - float(raw_micro.get("f1", 0.0)),
         "resolution_summary": {
             "boundary_fix_count": resolution_totals["boundary_fix_count"],
@@ -1561,7 +1562,7 @@ def build_methods_lab_run_detail(run: dict) -> dict:
             "label_profile": runtime.get("label_profile", "simple"),
             "label_projection": runtime.get("label_projection", "native"),
             "api_base": runtime.get("api_base", ""),
-            "chunk_mode": runtime.get("chunk_mode", "auto"),
+            "chunk_mode": runtime.get("chunk_mode", "off"),
             "chunk_size_chars": runtime.get("chunk_size_chars", srv.DEFAULT_CHUNK_SIZE_CHARS),
             "task_timeout_seconds": runtime.get("task_timeout_seconds"),
         },
@@ -1839,21 +1840,41 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                 task_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                 task_future = task_executor.submit(_run_document)
                 timed_out = False
+                last_progress_marker = str(_runtime_snapshot().get("last_progress_at") or "")
+                last_progress_monotonic = time.monotonic()
+                poll_timeout = min(0.2, max(0.01, task_timeout_seconds / 4.0))
                 try:
-                    (
-                        hypothesis_spans,
-                        warnings,
-                        llm_confidence,
-                        _chunk_diagnostics,
-                        raw_hypothesis_spans,
-                        resolution_events,
-                        resolution_policy_version,
-                    ) = task_future.result(timeout=task_timeout_seconds)
+                    while True:
+                        try:
+                            (
+                                hypothesis_spans,
+                                warnings,
+                                llm_confidence,
+                                _chunk_diagnostics,
+                                raw_hypothesis_spans,
+                                resolution_events,
+                                resolution_policy_version,
+                            ) = task_future.result(timeout=poll_timeout)
+                            break
+                        except concurrent.futures.TimeoutError:
+                            snapshot = _runtime_snapshot()
+                            current_progress_marker = str(
+                                snapshot.get("last_progress_at") or ""
+                            )
+                            now = time.monotonic()
+                            if current_progress_marker != last_progress_marker:
+                                last_progress_marker = current_progress_marker
+                                last_progress_monotonic = now
+                                continue
+                            if now - last_progress_monotonic < task_timeout_seconds:
+                                continue
+                            raise
                 except concurrent.futures.TimeoutError as exc:
                     timed_out = True
                     task_future.cancel()
                     message = (
-                        f"Methods Lab task timed out after {task_timeout_seconds:g} seconds."
+                        "Methods Lab task timed out after "
+                        f"{task_timeout_seconds:g} seconds without progress."
                     )
                     return (
                         method_variant_id,

@@ -56,7 +56,7 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
     const [customModel, setCustomModel] = useState("");
     const [temperature, setTemperature] = useState(0);
     const [labelProfile, setLabelProfile] = useState<LabelProfile>("simple");
-    const [chunkMode, setChunkMode] = useState<"auto" | "off" | "force">("auto");
+    const [chunkMode, setChunkMode] = useState<"auto" | "off" | "force">("off");
     const [chunkSizeChars, setChunkSizeChars] = useState(10000);
     const [reasoningEffort, setReasoningEffort] = useState<
       "none" | "low" | "medium" | "high" | "xhigh"
@@ -81,8 +81,8 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
     const [credentialStatus, setCredentialStatus] = useState<AgentCredentialStatus | null>(
       null,
     );
-    const [showApiKeyInput, setShowApiKeyInput] = useState(() => Boolean(apiKey));
-    const [showApiBaseInput, setShowApiBaseInput] = useState(() => Boolean(apiBase));
+    const [showApiKeyInput, setShowApiKeyInput] = useState(false);
+    const [showApiBaseInput, setShowApiBaseInput] = useState(false);
 
     useEffect(() => {
       getAgentCredentialStatus()
@@ -116,6 +116,8 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
     const methodUsesLlm = selectedMethod?.uses_llm ?? true;
     const supportsVerifyOverride = selectedMethod?.supports_verify_override ?? false;
     const promptTemplates = selectedMethod?.prompt_templates ?? [];
+    const hasLocalApiKeyOverride = Boolean(apiKey.trim());
+    const hasLocalApiBaseOverride = Boolean(apiBase.trim());
 
     const effectiveModel = model === "__custom__" ? customModel.trim() : model;
     const selectedPreset =
@@ -433,11 +435,15 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
                 </div>
               )}
               <div className="field">
-                {credentialStatus?.has_api_key && !showApiKeyInput && !apiKey ? (
+                {!showApiKeyInput ? (
                   <>
                     <div className="field-label">API Key</div>
                     <div style={{ fontSize: 12, color: "#666", lineHeight: 1.4 }}>
-                      Server env key detected ({credentialStatus.api_key_sources.join(", ")}).
+                      {hasLocalApiKeyOverride
+                        ? "Local override saved in this browser session."
+                        : credentialStatus?.has_api_key
+                          ? `Server env key detected (${credentialStatus.api_key_sources.join(", ")}).`
+                          : "No server env API key detected."}
                       <button
                         type="button"
                         onClick={() => setShowApiKeyInput(true)}
@@ -450,7 +456,11 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
                           padding: 0,
                         }}
                       >
-                        Override key
+                        {hasLocalApiKeyOverride
+                          ? "Edit key"
+                          : credentialStatus?.has_api_key
+                            ? "Override key"
+                            : "Add key"}
                       </button>
                     </div>
                   </>
@@ -472,11 +482,15 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
                 )}
               </div>
               <div className="field">
-                {credentialStatus?.has_api_base && !showApiBaseInput && !apiBase ? (
+                {!showApiBaseInput ? (
                   <>
                     <div className="field-label">LiteLLM Base URL (optional)</div>
                     <div style={{ fontSize: 12, color: "#666", lineHeight: 1.4 }}>
-                      Server env base URL detected ({credentialStatus.api_base_sources.join(", ")}).
+                      {hasLocalApiBaseOverride
+                        ? "Local override saved in this browser session."
+                        : credentialStatus?.has_api_base
+                          ? `Server env base URL detected (${credentialStatus.api_base_sources.join(", ")}).`
+                          : "No server env base URL detected."}
                       <button
                         type="button"
                         onClick={() => setShowApiBaseInput(true)}
@@ -489,7 +503,11 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
                           padding: 0,
                         }}
                       >
-                        Override base URL
+                        {hasLocalApiBaseOverride
+                          ? "Edit base URL"
+                          : credentialStatus?.has_api_base
+                            ? "Override base URL"
+                            : "Add base URL"}
                       </button>
                     </div>
                   </>

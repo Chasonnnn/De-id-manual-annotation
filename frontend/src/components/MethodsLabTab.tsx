@@ -41,6 +41,19 @@ function isActiveStatus(status: string): boolean {
   return status === "queued" || status === "running" || status === "cancelling";
 }
 
+function isErrorDocStatus(status: MethodsLabDocResult["status"]): boolean {
+  return status === "failed" || status === "unavailable";
+}
+
+function readSessionStorageValue(key: string): string | undefined {
+  try {
+    const value = sessionStorage.getItem(key)?.trim() ?? "";
+    return value || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export default function MethodsLabTab({
   documents,
   selectedDocumentId,
@@ -54,6 +67,7 @@ export default function MethodsLabTab({
   const [runDetail, setRunDetail] = useState<MethodsLabRunDetail | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [creatingRun, setCreatingRun] = useState(false);
+  const [rerunningErrorCellId, setRerunningErrorCellId] = useState<string | null>(null);
 
   const [selectedCellId, setSelectedCellId] = useState<string | null>(null);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
@@ -311,21 +325,93 @@ export default function MethodsLabTab({
     };
   }, [onSelectDocument, pushToast, runDetail, selectedCellId, selectedDocId]);
 
+  const selectedCell = useMemo(
+    () => runDetail?.matrix.cells.find((cell) => cell.id === selectedCellId) ?? null,
+    [runDetail, selectedCellId],
+  );
+
+  const createAndSelectRun = useCallback(async (payload: MethodsLabRunCreateRequest) => {
+    const created = await createMethodsLabRun(payload);
+    setSelectedRunId(created.id);
+    setRunDetail(created);
+    setSelectedCellId(created.matrix.cells[0]?.id ?? null);
+    setSelectedDocId(created.doc_ids[0] ?? null);
+    setRunError(null);
+    const list = await listMethodsLabRuns();
+    setRuns(list);
+    return created;
+  }, []);
+
   const handleCreateRun = async (payload: MethodsLabRunCreateRequest) => {
     setCreatingRun(true);
     try {
-      const created = await createMethodsLabRun(payload);
-      setSelectedRunId(created.id);
-      setRunDetail(created);
-      setSelectedCellId(created.matrix.cells[0]?.id ?? null);
-      setSelectedDocId(created.doc_ids[0] ?? null);
-      setRunError(null);
-      const list = await listMethodsLabRuns();
-      setRuns(list);
+      await createAndSelectRun(payload);
     } finally {
       setCreatingRun(false);
     }
   };
+
+  const handleRerunErrorDocs = useCallback(async () => {
+    if (!runDetail || !selectedCell || isActiveStatus(runDetail.status)) {
+      return;
+    }
+    if (selectedCell.error_count === 0) {
+      pushToast(
+        "info",
+        `No error docs to re-run for ${selectedCell.model_label} × ${selectedCell.method_label}.`,
+      );
+      return;
+    }
+
+    const selectedMethod = runDetail.methods.find((method) => method.id === selectedCell.method_id);
+    const selectedModel = runDetail.models.find((model) => model.id === selectedCell.model_id);
+    if (!selectedMethod || !selectedModel) {
+      const message = `Could not resolve the selected Methods Lab cell configuration for ${selectedCell.model_label} × ${selectedCell.method_label}.`;
+      setRunError(message);
+      pushToast("error", message);
+      return;
+    }
+
+    setRerunningErrorCellId(selectedCell.id);
+    try {
+      const docResults = await Promise.all(
+        runDetail.doc_ids.map((docId) => getMethodsLabDocResult(runDetail.id, selectedCell.id, docId)),
+      );
+      const errorDocIds = docResults
+        .filter((result) => isErrorDocStatus(result.status))
+        .map((result) => result.doc_id);
+      if (errorDocIds.length === 0) {
+        pushToast(
+          "info",
+          `No error docs remain for ${selectedCell.model_label} × ${selectedCell.method_label}.`,
+        );
+        return;
+      }
+      const created = await createAndSelectRun({
+        name: `${runDetail.name} · ${selectedCell.model_label} × ${selectedCell.method_label} · error docs`,
+        doc_ids: errorDocIds,
+        methods: [selectedMethod],
+        models: [selectedModel],
+        runtime: {
+          ...runDetail.runtime,
+          api_key: readSessionStorageValue("methods_lab_api_key"),
+          api_base:
+            readSessionStorageValue("methods_lab_api_base") ?? runDetail.runtime.api_base,
+        },
+        concurrency: runDetail.concurrency,
+      });
+      pushToast("success", `Created Methods Lab error-doc rerun: ${created.name}.`);
+    } catch (e: unknown) {
+      const message = String(e);
+      setRunError(message);
+      pushToast(
+        "error",
+        `Failed to re-run Methods Lab error docs for ${selectedCell.model_label} × ${selectedCell.method_label}.`,
+      );
+    } finally {
+      setRerunningErrorCellId(null);
+    }
+  }, [createAndSelectRun, pushToast, runDetail, selectedCell]);
 
   const handleDeleteRun = useCallback(
     async (run: MethodsLabRunSummary) => {
@@ -382,11 +468,6 @@ export default function MethodsLabTab({
       }
     },
     [pushToast, refreshRunDetail, refreshRuns, selectedRunId],
-  );
-
-  const selectedCell = useMemo(
-    () => runDetail?.matrix.cells.find((cell) => cell.id === selectedCellId) ?? null,
-    [runDetail, selectedCellId],
   );
 
   return (
@@ -471,6 +552,9 @@ export default function MethodsLabTab({
                 onSelectDoc={setSelectedDocId}
                 detail={docDetail}
                 loading={docLoading}
+                canRerunErrorDocs={!isActiveStatus(runDetail.status)}
+                rerunningErrorDocs={rerunningErrorCellId === selectedCell?.id}
+                onRerunErrorDocs={handleRerunErrorDocs}
               />
             </>
           ) : (
@@ -481,14 +565,15 @@ export default function MethodsLabTab({
       {toasts.length > 0 && (
         <div className="prompt-lab-toast-stack" aria-live="polite" aria-atomic="false">
           {toasts.map((toast) => (
-            <div
+            <button
               key={toast.id}
+              type="button"
               className={`prompt-lab-toast ${toast.kind}`}
               onClick={() => dismissToast(toast.id)}
-              role="status"
+              aria-label={`Dismiss notification: ${toast.message}`}
             >
               {toast.message}
-            </div>
+            </button>
           ))}
         </div>
       )}

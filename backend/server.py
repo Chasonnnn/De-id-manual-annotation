@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import shutil
 import threading
 import uuid
 import zipfile
@@ -18,6 +19,7 @@ from typing import Any, Callable, Literal, cast
 from urllib.parse import urlparse
 
 import httpx
+from dotenv import dotenv_values
 from fastapi import FastAPI, HTTPException, UploadFile, File, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -59,7 +61,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-BASE_DIR = Path(".annotation_tool")
+BACKEND_DIR = Path(__file__).resolve().parent
+REPO_ROOT = BACKEND_DIR.parent
+ROOT_ENV_PATH = REPO_ROOT / ".env.local"
+BASE_DIR = BACKEND_DIR / ".annotation_tool"
+LEGACY_BASE_DIR = REPO_ROOT / ".annotation_tool"
 SESSIONS_DIR = BASE_DIR / "sessions"
 CONFIG_PATH = BASE_DIR / "config.json"
 PROFILE_PATH = BASE_DIR / "session_profile.json"
@@ -137,10 +143,35 @@ METHOD_RUNS_METADATA_SIDECAR_KIND = "agent.method.runs.meta"
 
 
 def _ensure_dirs():
+    _migrate_legacy_storage_if_needed()
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _migrate_legacy_storage_if_needed():
+    if LEGACY_BASE_DIR == BASE_DIR:
+        return
+    if not LEGACY_BASE_DIR.is_dir():
+        return
+    if BASE_DIR.exists() and any(BASE_DIR.iterdir()):
+        return
+
+    BASE_DIR.parent.mkdir(parents=True, exist_ok=True)
+    if not BASE_DIR.exists():
+        shutil.copytree(LEGACY_BASE_DIR, BASE_DIR)
+        return
+
+    for legacy_child in LEGACY_BASE_DIR.iterdir():
+        target = BASE_DIR / legacy_child.name
+        if target.exists():
+            continue
+        if legacy_child.is_dir():
+            shutil.copytree(legacy_child, target)
+        else:
+            shutil.copy2(legacy_child, target)
+
+
 def _session_dir(session_id: str = "default") -> Path:
+    _migrate_legacy_storage_if_needed()
     return SESSIONS_DIR / session_id
 
 
@@ -1410,6 +1441,61 @@ def _spans_to_pii_occurrences(spans: list[CanonicalSpan]) -> list[dict[str, obje
     ]
 
 
+def _import_ground_truth_payload(
+    *,
+    payload: dict[str, object],
+    raw: bytes,
+    upload_filename: str,
+    session_id: str,
+    ids: list[str],
+    existing_ids: set[str],
+) -> str:
+    doc_id_raw = payload.get("id")
+    doc_id = (
+        doc_id_raw.strip()
+        if isinstance(doc_id_raw, str) and doc_id_raw.strip()
+        else str(uuid.uuid4())[:8]
+    )
+    filename_raw = payload.get("filename")
+    filename = (
+        filename_raw.strip()
+        if isinstance(filename_raw, str) and filename_raw.strip()
+        else upload_filename
+    )
+
+    docs = parse_file(raw, filename, doc_id)
+    if len(docs) != 1:
+        raise ValueError("expected exactly one document")
+
+    parsed_doc = docs[0]
+    spans_raw = payload.get("spans")
+    manual_spans = (
+        _normalize_optional_spans(spans_raw, parsed_doc.raw_text)
+        if spans_raw is not None
+        else parsed_doc.pre_annotations
+    )
+
+    imported_doc = parsed_doc.model_copy(update={"pre_annotations": []})
+    return _commit_imported_document(
+        doc=imported_doc,
+        session_id=session_id,
+        ids=ids,
+        existing_ids=existing_ids,
+        manual_spans=manual_spans,
+    )
+
+
+def _looks_like_ground_truth_payload(payload: dict[str, object]) -> bool:
+    if "format" in payload:
+        return False
+    return (
+        isinstance(payload.get("id"), str)
+        and isinstance(payload.get("filename"), str)
+        and isinstance(payload.get("transcript"), str)
+        and ("spans" in payload or "ground_truth_source" in payload)
+    )
+
+
 def _import_ground_truth_archive(raw: bytes, session_id: str = "default") -> dict[str, object]:
     archive_buffer = io.BytesIO(raw)
     try:
@@ -1448,51 +1534,23 @@ def _import_ground_truth_archive(raw: bytes, session_id: str = "default") -> dic
                     skipped.append({"index": idx, "reason": f"{member_name} is not a JSON object"})
                     continue
 
-                doc_id_raw = member_payload.get("id")
-                doc_id = (
-                    doc_id_raw.strip()
-                    if isinstance(doc_id_raw, str) and doc_id_raw.strip()
-                    else str(uuid.uuid4())[:8]
-                )
-                filename_raw = member_payload.get("filename")
-                filename = (
-                    filename_raw.strip()
-                    if isinstance(filename_raw, str) and filename_raw.strip()
-                    else Path(member_name).name
-                )
-
                 try:
-                    docs = parse_file(member_raw, filename, doc_id)
-                except Exception as exc:
-                    skipped.append({"index": idx, "reason": f"{member_name}: {exc}"})
-                    continue
-
-                if len(docs) != 1:
-                    skipped.append(
-                        {"index": idx, "reason": f"{member_name}: expected exactly one document"}
-                    )
-                    continue
-
-                parsed_doc = docs[0]
-                spans_raw = member_payload.get("spans")
-                try:
-                    manual_spans = (
-                        _normalize_optional_spans(spans_raw, parsed_doc.raw_text)
-                        if spans_raw is not None
-                        else parsed_doc.pre_annotations
+                    new_id = _import_ground_truth_payload(
+                        payload=member_payload,
+                        raw=member_raw,
+                        upload_filename=Path(member_name).name,
+                        session_id=session_id,
+                        ids=ids,
+                        existing_ids=existing_ids,
                     )
                 except ValueError as exc:
                     skipped.append({"index": idx, "reason": f"{member_name}: {exc}"})
                     continue
-
-                imported_doc = parsed_doc.model_copy(update={"pre_annotations": []})
-                new_id = _commit_imported_document(
-                    doc=imported_doc,
-                    session_id=session_id,
-                    ids=ids,
-                    existing_ids=existing_ids,
-                    manual_spans=manual_spans,
-                )
+                except Exception as exc:
+                    skipped.append(
+                        {"index": idx, "reason": f"{member_name}: {exc}"}
+                    )
+                    continue
                 imported_ids.append(new_id)
     except zipfile.BadZipFile as exc:
         raise HTTPException(
@@ -1662,7 +1720,7 @@ def _apply_label_projection(
 
 
 def _normalize_chunk_mode(raw: object) -> Literal["auto", "off", "force"]:
-    value = str(raw or "auto").strip().lower()
+    value = str(raw or "off").strip().lower()
     if value not in {"auto", "off", "force"}:
         raise HTTPException(status_code=400, detail="chunk_mode must be one of: auto, off, force")
     return value  # type: ignore[return-value]
@@ -2041,24 +2099,47 @@ ENV_API_KEY_VARS = [
 ENV_API_BASE_VARS = ["LITELLM_BASE_URL"]
 
 
+def _load_repo_env_file(env_path: Path | None = None) -> dict[str, str]:
+    resolved_env_path = ROOT_ENV_PATH if env_path is None else env_path
+    if not resolved_env_path.is_file():
+        return {}
+    loaded: dict[str, str] = {}
+    for key, value in dotenv_values(resolved_env_path).items():
+        if not key or value is None or key in os.environ:
+            continue
+        loaded[key] = value
+    return loaded
+
+
 def _present_env_vars(names: list[str]) -> list[str]:
-    return [name for name in names if bool(os.environ.get(name))]
+    repo_env = _load_repo_env_file()
+    return [name for name in names if bool(os.environ.get(name) or repo_env.get(name))]
+
+
+def _resolve_env_api_key() -> str:
+    return (
+        os.environ.get("LITELLM_API_KEY", "")
+        or os.environ.get("OPENAI_API_KEY", "")
+        or os.environ.get("ANTHROPIC_API_KEY", "")
+        or os.environ.get("GEMINI_API_KEY", "")
+        or os.environ.get("GOOGLE_API_KEY", "")
+    )
+
+
+def _resolve_env_api_base() -> str:
+    return os.environ.get("LITELLM_BASE_URL", "")
 
 
 def _resolve_llm_runtime_config(body: "AgentRunBody") -> dict[str, object]:
     cfg = _load_config()
     api_key = (
         body.api_key
-        or os.environ.get("LITELLM_API_KEY", "")
-        or os.environ.get("OPENAI_API_KEY", "")
-        or os.environ.get("ANTHROPIC_API_KEY", "")
-        or os.environ.get("GEMINI_API_KEY", "")
-        or os.environ.get("GOOGLE_API_KEY", "")
+        or _resolve_env_api_key()
     )
     api_base = (
         body.api_base
         or str(cfg.get("api_base", "") or "")
-        or os.environ.get("LITELLM_BASE_URL", "")
+        or _resolve_env_api_base()
     )
     model = body.model or cfg.get("model", DEFAULT_CONFIG["model"])
     requested_system_prompt = body.system_prompt or cfg.get(
@@ -2087,7 +2168,7 @@ def _resolve_llm_runtime_config(body: "AgentRunBody") -> dict[str, object]:
         if body.anthropic_thinking_budget_tokens is not None
         else cfg.get("anthropic_thinking_budget_tokens")
     )
-    chunk_mode = _normalize_chunk_mode(body.chunk_mode or "auto")
+    chunk_mode = _normalize_chunk_mode(body.chunk_mode or "off")
     chunk_size_chars = _normalize_chunk_size(body.chunk_size_chars)
     label_profile = _normalize_label_profile(body.label_profile or "simple")
     return {
@@ -2933,7 +3014,7 @@ class PromptLabRuntimeInput(BaseModel):
     fallback_reference_source: Literal["manual", "pre"] = "pre"
     label_profile: Literal["simple", "advanced"] = "simple"
     label_projection: Literal["native", "coarse_simple"] = "native"
-    chunk_mode: Literal["auto", "off", "force"] = "auto"
+    chunk_mode: Literal["auto", "off", "force"] = "off"
     chunk_size_chars: int = DEFAULT_CHUNK_SIZE_CHARS
 
 
@@ -2960,7 +3041,7 @@ class MethodsLabRuntimeInput(BaseModel):
     match_mode: Literal["exact", "boundary", "overlap"] = "exact"
     label_profile: Literal["simple", "advanced"] = "simple"
     label_projection: Literal["native", "coarse_simple"] = "native"
-    chunk_mode: Literal["auto", "off", "force"] = "auto"
+    chunk_mode: Literal["auto", "off", "force"] = "off"
     chunk_size_chars: int = DEFAULT_CHUNK_SIZE_CHARS
     task_timeout_seconds: float | None = None
 
@@ -2985,16 +3066,12 @@ def _resolve_prompt_lab_runtime(runtime: PromptLabRuntimeInput) -> dict[str, obj
     cfg = _load_config()
     api_key = (
         runtime.api_key
-        or os.environ.get("LITELLM_API_KEY", "")
-        or os.environ.get("OPENAI_API_KEY", "")
-        or os.environ.get("ANTHROPIC_API_KEY", "")
-        or os.environ.get("GEMINI_API_KEY", "")
-        or os.environ.get("GOOGLE_API_KEY", "")
+        or _resolve_env_api_key()
     )
     api_base = (
         runtime.api_base
         or str(cfg.get("api_base", "") or "")
-        or os.environ.get("LITELLM_BASE_URL", "")
+        or _resolve_env_api_base()
     )
     match_mode = _normalize_match_mode(runtime.match_mode)
     chunk_mode = _normalize_chunk_mode(runtime.chunk_mode)
@@ -3417,16 +3494,12 @@ def _resolve_methods_lab_runtime(runtime: MethodsLabRuntimeInput) -> dict[str, o
     cfg = _load_config()
     api_key = (
         runtime.api_key
-        or os.environ.get("LITELLM_API_KEY", "")
-        or os.environ.get("OPENAI_API_KEY", "")
-        or os.environ.get("ANTHROPIC_API_KEY", "")
-        or os.environ.get("GEMINI_API_KEY", "")
-        or os.environ.get("GOOGLE_API_KEY", "")
+        or _resolve_env_api_key()
     )
     api_base = (
         runtime.api_base
         or str(cfg.get("api_base", "") or "")
-        or os.environ.get("LITELLM_BASE_URL", "")
+        or _resolve_env_api_base()
     )
     match_mode = _normalize_match_mode(runtime.match_mode)
     chunk_mode = _normalize_chunk_mode(runtime.chunk_mode)
@@ -4647,6 +4720,33 @@ async def import_session_bundle(file: UploadFile = File(...)):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Import payload must be a JSON object")
 
+    if _looks_like_ground_truth_payload(payload):
+        ids = _load_session_index(session_id)
+        existing_ids = set(ids)
+        try:
+            imported_id = _import_ground_truth_payload(
+                payload=payload,
+                raw=raw,
+                upload_filename=file.filename or "ground_truth.json",
+                session_id=session_id,
+                ids=ids,
+                existing_ids=existing_ids,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _save_session_index(session_id)
+        return {
+            "bundle_version": None,
+            "imported_count": 1,
+            "imported_ids": [imported_id],
+            "skipped_count": 0,
+            "skipped": [],
+            "warnings": [],
+            "imported_prompt_lab_runs": 0,
+            "imported_methods_lab_runs": 0,
+            "total_in_bundle": 1,
+        }
+
     bundle_version = _resolve_bundle_version(payload)
     if bundle_version not in SUPPORTED_BUNDLE_VERSIONS:
         raise HTTPException(
@@ -5077,7 +5177,7 @@ async def get_dashboard_metrics(
 
     documents.sort(
         key=lambda item: item.get("co_primary_metrics", {})
-        .get("exact_name_affix_tolerant", {})
+        .get("overlap", {})
         .get("micro", {})
         .get("f1", item["micro"]["f1"])
     )

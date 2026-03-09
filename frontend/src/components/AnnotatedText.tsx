@@ -1,6 +1,11 @@
 import type { CSSProperties } from "react";
 import type { CanonicalSpan } from "../types";
 import { getLabelColor } from "../types";
+import {
+  buildCodePointOffsetTable,
+  type CodePointOffsetTable,
+  sliceByCodePointOffsets,
+} from "../textOffsets";
 
 export interface DiffSpanInfo {
   start: number;
@@ -16,6 +21,13 @@ interface Props {
   diffSpans?: DiffSpanInfo[];
 }
 
+interface RenderSegment {
+  start: number;
+  end: number;
+  activeSpanIndices: number[];
+  diffClass: string;
+}
+
 export default function AnnotatedText({
   text,
   spans,
@@ -24,130 +36,140 @@ export default function AnnotatedText({
   diffSpans = [],
 }: Props) {
   const sorted = [...spans].sort((a, b) => a.start - b.start);
-
-  const segments: React.ReactNode[] = [];
-  let pos = 0;
-
-  for (let i = 0; i < sorted.length; i++) {
-    const span = sorted[i]!;
-    if (span.start > pos) {
-      segments.push(
-        renderText(text.slice(pos, span.start), pos, diffSpans, `text-${pos}`),
-      );
-    }
-    const spanText = text.slice(span.start, span.end);
-    const color = getLabelColor(span.label);
-    const diffClass = getDiffClass(span.start, span.end, diffSpans);
-    segments.push(
-      <span
-        key={`span-${i}`}
-        className={`ann-span ${clickable ? "clickable" : ""} ${diffClass}`}
-        style={{ "--ann-color": color } as CSSProperties}
-        data-offset={span.start}
-        data-offset-end={span.end}
-        onClick={
-          clickable && onSpanClick
-            ? (e) => onSpanClick(i, e)
-            : undefined
-        }
-      >
-        {spanText}
-        <span
-          className="ann-span-label"
-          data-annotation-label="true"
-          aria-hidden="true"
-        >
-          {span.label}
-        </span>
-      </span>,
-    );
-    pos = span.end;
-  }
-
-  if (pos < text.length) {
-    segments.push(
-      renderText(text.slice(pos), pos, diffSpans, `text-${pos}`),
-    );
-  }
-
-  return <>{segments}</>;
-}
-
-/**
- * Render a plain text chunk, splitting it to insert diff highlight spans
- * for "removed" regions that fall within this text range.
- */
-function renderText(
-  chunk: string,
-  offset: number,
-  diffSpans: DiffSpanInfo[],
-  keyPrefix: string,
-): React.ReactNode {
-  // Find diff spans that overlap with this text region [offset, offset+chunk.length)
-  const chunkEnd = offset + chunk.length;
-  const relevant = diffSpans.filter(
-    (d) => d.start < chunkEnd && d.end > offset,
+  const offsetTable = buildCodePointOffsetTable(text, [
+    0,
+    ...sorted.flatMap((span) => [span.start, span.end]),
+    ...diffSpans.flatMap((span) => [span.start, span.end]),
+  ]);
+  const segments = buildRenderSegments(
+    offsetTable.totalCodePoints,
+    sorted,
+    diffSpans,
   );
 
-  if (relevant.length === 0) {
-    // No diff spans overlap -- return a simple span with data-offset
+  return (
+    <>
+      {segments.map((segment) =>
+        renderSegment(
+          text,
+          segment,
+          sorted,
+          clickable,
+          onSpanClick,
+          offsetTable,
+        ),
+      )}
+    </>
+  );
+}
+
+function buildRenderSegments(
+  totalCodePoints: number,
+  spans: CanonicalSpan[],
+  diffSpans: DiffSpanInfo[],
+): RenderSegment[] {
+  const boundaries = new Set<number>([0, totalCodePoints]);
+  for (const span of spans) {
+    boundaries.add(Math.max(0, Math.min(span.start, totalCodePoints)));
+    boundaries.add(Math.max(0, Math.min(span.end, totalCodePoints)));
+  }
+  for (const diffSpan of diffSpans) {
+    boundaries.add(Math.max(0, Math.min(diffSpan.start, totalCodePoints)));
+    boundaries.add(Math.max(0, Math.min(diffSpan.end, totalCodePoints)));
+  }
+
+  const sortedBoundaries = Array.from(boundaries).sort((a, b) => a - b);
+  const segments: RenderSegment[] = [];
+
+  for (let i = 0; i < sortedBoundaries.length - 1; i += 1) {
+    const start = sortedBoundaries[i]!;
+    const end = sortedBoundaries[i + 1]!;
+    if (start >= end) continue;
+
+    const activeSpanIndices = spans.flatMap((span, index) =>
+      span.start < end && span.end > start ? [index] : [],
+    );
+    segments.push({
+      start,
+      end,
+      activeSpanIndices,
+      diffClass: getDiffClass(start, end, diffSpans),
+    });
+  }
+
+  return segments;
+}
+
+function renderSegment(
+  text: string,
+  segment: RenderSegment,
+  sortedSpans: CanonicalSpan[],
+  clickable: boolean,
+  onSpanClick: Props["onSpanClick"],
+  offsetTable: CodePointOffsetTable,
+): React.ReactNode {
+  const { start, end, activeSpanIndices, diffClass } = segment;
+  const segmentText = sliceByCodePointOffsets(text, start, end, offsetTable);
+
+  if (activeSpanIndices.length === 0) {
     return (
-      <span key={keyPrefix} data-offset={offset} data-offset-end={chunkEnd}>
-        {chunk}
+      <span
+        key={`segment-${start}-${end}`}
+        className={diffClass || undefined}
+        data-offset={start}
+        data-offset-end={end}
+      >
+        {segmentText}
       </span>
     );
   }
 
-  // Split the chunk into segments: plain text + diff-highlighted regions
-  const parts: React.ReactNode[] = [];
-  let pos = offset;
+  const labels = Array.from(
+    new Set(activeSpanIndices.map((index) => sortedSpans[index]!.label)),
+  );
+  const clickableIndex = pickClickableSpanIndex(activeSpanIndices, sortedSpans);
+  const color = getLabelColor(labels[0] ?? "MISC_ID");
 
-  for (const d of relevant.sort((a, b) => a.start - b.start)) {
-    const dStart = Math.max(d.start, offset);
-    const dEnd = Math.min(d.end, chunkEnd);
-
-    // Plain text before this diff span
-    if (dStart > pos) {
-      parts.push(
-        <span
-          key={`${keyPrefix}-${pos}`}
-          data-offset={pos}
-          data-offset-end={dStart}
-        >
-          {chunk.slice(pos - offset, dStart - offset)}
-        </span>,
-      );
-    }
-
-    // Diff-highlighted region
-    const diffClass = d.type === "added" ? "diff-added" : "diff-removed";
-    parts.push(
+  return (
+    <span
+      key={`segment-${start}-${end}`}
+      className={`ann-span ${clickable && clickableIndex !== null ? "clickable" : ""} ${diffClass}`}
+      style={{ "--ann-color": color } as CSSProperties}
+      data-offset={start}
+      data-offset-end={end}
+      onClick={
+        clickable && onSpanClick && clickableIndex !== null
+          ? (e) => onSpanClick(clickableIndex, e)
+          : undefined
+      }
+    >
+      {segmentText}
       <span
-        key={`${keyPrefix}-diff-${dStart}`}
-        className={diffClass}
-        data-offset={dStart}
-        data-offset-end={dEnd}
+        className="ann-span-label"
+        data-annotation-label="true"
+        aria-hidden="true"
       >
-        {chunk.slice(dStart - offset, dEnd - offset)}
-      </span>,
-    );
-    pos = dEnd;
-  }
+        {labels.join(" · ")}
+      </span>
+    </span>
+  );
+}
 
-  // Trailing plain text after last diff span
-  if (pos < chunkEnd) {
-    parts.push(
-      <span
-        key={`${keyPrefix}-${pos}`}
-        data-offset={pos}
-        data-offset-end={chunkEnd}
-      >
-        {chunk.slice(pos - offset)}
-      </span>,
-    );
-  }
-
-  return parts;
+function pickClickableSpanIndex(
+  indices: number[],
+  spans: CanonicalSpan[],
+): number | null {
+  if (indices.length === 0) return null;
+  return indices.reduce((best, current) => {
+    const bestSpan = spans[best]!;
+    const currentSpan = spans[current]!;
+    const bestLength = bestSpan.end - bestSpan.start;
+    const currentLength = currentSpan.end - currentSpan.start;
+    if (currentLength < bestLength) return current;
+    if (currentLength > bestLength) return best;
+    if (currentSpan.start > bestSpan.start) return current;
+    return best;
+  });
 }
 
 function getDiffClass(

@@ -542,7 +542,7 @@ function normalizePromptLabRunDetail(raw: Record<string, unknown>): PromptLabRun
       chunk_mode:
         runtimeRaw.chunk_mode === "off" || runtimeRaw.chunk_mode === "force"
           ? runtimeRaw.chunk_mode
-          : "auto",
+          : "off",
       chunk_size_chars: toNumber(runtimeRaw.chunk_size_chars, 10000),
     },
     concurrency: toNumber(raw.concurrency, DEFAULT_EXPERIMENT_LIMITS.prompt_lab_default_concurrency),
@@ -623,8 +623,12 @@ function normalizeMethodsLabRunDetail(raw: Record<string, unknown>): MethodsLabR
       chunk_mode:
         runtimeRaw.chunk_mode === "off" || runtimeRaw.chunk_mode === "force"
           ? runtimeRaw.chunk_mode
-          : "auto",
+          : "off",
       chunk_size_chars: toNumber(runtimeRaw.chunk_size_chars, 10000),
+      task_timeout_seconds:
+        typeof runtimeRaw.task_timeout_seconds === "number"
+          ? runtimeRaw.task_timeout_seconds
+          : null,
     },
     concurrency: toNumber(raw.concurrency, DEFAULT_EXPERIMENT_LIMITS.methods_lab_default_concurrency),
     warnings: Array.isArray(raw.warnings)

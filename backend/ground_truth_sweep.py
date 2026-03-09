@@ -31,7 +31,7 @@ DEFAULT_PROMPT_RUNTIME = {
     "fallback_reference_source": "pre",
     "label_profile": "simple",
     "label_projection": "native",
-    "chunk_mode": "auto",
+    "chunk_mode": "off",
     "chunk_size_chars": 10_000,
 }
 DEFAULT_METHODS_RUNTIME = {
@@ -39,7 +39,7 @@ DEFAULT_METHODS_RUNTIME = {
     "match_mode": "exact",
     "label_profile": "simple",
     "label_projection": "native",
-    "chunk_mode": "auto",
+    "chunk_mode": "off",
     "chunk_size_chars": 10_000,
 }
 DEFAULT_CONCURRENCY = 2
@@ -518,11 +518,11 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
-def _name_tolerant_metrics(cell: dict[str, Any]) -> dict[str, Any]:
+def _overlap_metrics(cell: dict[str, Any]) -> dict[str, Any]:
     co_primary = cell.get("co_primary_metrics", {})
     if not isinstance(co_primary, dict):
         return {}
-    metric = co_primary.get("exact_name_affix_tolerant", {})
+    metric = co_primary.get("overlap", {})
     return metric if isinstance(metric, dict) else {}
 
 
@@ -531,9 +531,9 @@ def _matrix_rows(kind: str, detail: dict[str, Any]) -> list[dict[str, Any]]:
     for cell in detail.get("matrix", {}).get("cells", []):
         if not isinstance(cell, dict):
             continue
-        tolerant = _name_tolerant_metrics(cell)
+        tolerant = _overlap_metrics(cell)
         tolerant_micro = tolerant.get("micro", {}) if isinstance(tolerant, dict) else {}
-        raw_tolerant = cell.get("raw_co_primary_metrics", {}).get("exact_name_affix_tolerant", {})
+        raw_tolerant = cell.get("raw_co_primary_metrics", {}).get("overlap", {})
         raw_tolerant_micro = raw_tolerant.get("micro", {}) if isinstance(raw_tolerant, dict) else {}
         error_families = cell.get("error_families", {})
         if not isinstance(error_families, dict):
@@ -556,14 +556,14 @@ def _matrix_rows(kind: str, detail: dict[str, Any]) -> list[dict[str, Any]]:
             "raw_precision": cell.get("raw_micro", {}).get("precision"),
             "raw_recall": cell.get("raw_micro", {}).get("recall"),
             "raw_f1": cell.get("raw_micro", {}).get("f1"),
-            "exact_name_affix_tolerant_precision": tolerant_micro.get("precision"),
-            "exact_name_affix_tolerant_recall": tolerant_micro.get("recall"),
-            "exact_name_affix_tolerant_f1": tolerant_micro.get("f1"),
-            "raw_exact_name_affix_tolerant_precision": raw_tolerant_micro.get("precision"),
-            "raw_exact_name_affix_tolerant_recall": raw_tolerant_micro.get("recall"),
-            "raw_exact_name_affix_tolerant_f1": raw_tolerant_micro.get("f1"),
-            "exact_name_affix_gap_f1": cell.get("exact_name_affix_gap_f1"),
-            "raw_exact_name_affix_gap_f1": cell.get("raw_exact_name_affix_gap_f1"),
+            "overlap_precision": tolerant_micro.get("precision"),
+            "overlap_recall": tolerant_micro.get("recall"),
+            "overlap_f1": tolerant_micro.get("f1"),
+            "raw_overlap_precision": raw_tolerant_micro.get("precision"),
+            "raw_overlap_recall": raw_tolerant_micro.get("recall"),
+            "raw_overlap_f1": raw_tolerant_micro.get("f1"),
+            "overlap_gap_f1": cell.get("overlap_gap_f1"),
+            "raw_overlap_gap_f1": cell.get("raw_overlap_gap_f1"),
             "boundary_fix_count": resolution_summary.get("boundary_fix_count", 0),
             "augmentation_count": resolution_summary.get("augmentation_count", 0),
             "mean_confidence": cell.get("mean_confidence"),
@@ -600,14 +600,14 @@ def _write_run_csv(path: Path, *, kind: str, detail: dict[str, Any]) -> None:
             "raw_precision",
             "raw_recall",
             "raw_f1",
-            "exact_name_affix_tolerant_precision",
-            "exact_name_affix_tolerant_recall",
-            "exact_name_affix_tolerant_f1",
-            "raw_exact_name_affix_tolerant_precision",
-            "raw_exact_name_affix_tolerant_recall",
-            "raw_exact_name_affix_tolerant_f1",
-            "exact_name_affix_gap_f1",
-            "raw_exact_name_affix_gap_f1",
+            "overlap_precision",
+            "overlap_recall",
+            "overlap_f1",
+            "raw_overlap_precision",
+            "raw_overlap_recall",
+            "raw_overlap_f1",
+            "overlap_gap_f1",
+            "raw_overlap_gap_f1",
             "boundary_fix_count",
             "augmentation_count",
             "mean_confidence",
@@ -631,14 +631,14 @@ def _write_run_csv(path: Path, *, kind: str, detail: dict[str, Any]) -> None:
             "raw_precision",
             "raw_recall",
             "raw_f1",
-            "exact_name_affix_tolerant_precision",
-            "exact_name_affix_tolerant_recall",
-            "exact_name_affix_tolerant_f1",
-            "raw_exact_name_affix_tolerant_precision",
-            "raw_exact_name_affix_tolerant_recall",
-            "raw_exact_name_affix_tolerant_f1",
-            "exact_name_affix_gap_f1",
-            "raw_exact_name_affix_gap_f1",
+            "overlap_precision",
+            "overlap_recall",
+            "overlap_f1",
+            "raw_overlap_precision",
+            "raw_overlap_recall",
+            "raw_overlap_f1",
+            "overlap_gap_f1",
+            "raw_overlap_gap_f1",
             "boundary_fix_count",
             "augmentation_count",
             "mean_confidence",
@@ -704,7 +704,7 @@ def _blocked_detail(
                             "fn": 0,
                         },
                         "co_primary_metrics": {
-                            "exact_name_affix_tolerant": {
+                            "overlap": {
                                 "micro": {
                                     "precision": 0.0,
                                     "recall": 0.0,
@@ -767,7 +767,7 @@ def _blocked_detail(
                         "fn": 0,
                     },
                     "co_primary_metrics": {
-                        "exact_name_affix_tolerant": {
+                        "overlap": {
                             "micro": {
                                 "precision": 0.0,
                                 "recall": 0.0,
@@ -894,10 +894,10 @@ def _cell_records(run_details: list[dict[str, Any]]) -> tuple[list[dict[str, Any
             if not isinstance(cell, dict):
                 continue
             model_meta = models_by_id.get(str(cell.get("model_id")), {})
-            tolerant = _name_tolerant_metrics(cell)
+            tolerant = _overlap_metrics(cell)
             tolerant_micro = tolerant.get("micro", {}) if isinstance(tolerant, dict) else {}
             raw_tolerant = cell.get("raw_co_primary_metrics", {}).get(
-                "exact_name_affix_tolerant", {}
+                "overlap", {}
             )
             raw_tolerant_micro = raw_tolerant.get("micro", {}) if isinstance(raw_tolerant, dict) else {}
             error_families = cell.get("error_families", {})
@@ -933,31 +933,31 @@ def _cell_records(run_details: list[dict[str, Any]]) -> tuple[list[dict[str, Any
                 "tp": int(cell.get("micro", {}).get("tp", 0)),
                 "fp": int(cell.get("micro", {}).get("fp", 0)),
                 "fn": int(cell.get("micro", {}).get("fn", 0)),
-                "exact_name_affix_tolerant_precision": (
+                "overlap_precision": (
                     _safe_float(tolerant_micro.get("precision")) or 0.0
                 ),
-                "exact_name_affix_tolerant_recall": (
+                "overlap_recall": (
                     _safe_float(tolerant_micro.get("recall")) or 0.0
                 ),
-                "exact_name_affix_tolerant_f1": (
+                "overlap_f1": (
                     _safe_float(tolerant_micro.get("f1")) or 0.0
                 ),
-                "raw_exact_name_affix_tolerant_precision": (
+                "raw_overlap_precision": (
                     _safe_float(raw_tolerant_micro.get("precision")) or 0.0
                 ),
-                "raw_exact_name_affix_tolerant_recall": (
+                "raw_overlap_recall": (
                     _safe_float(raw_tolerant_micro.get("recall")) or 0.0
                 ),
-                "raw_exact_name_affix_tolerant_f1": (
+                "raw_overlap_f1": (
                     _safe_float(raw_tolerant_micro.get("f1")) or 0.0
                 ),
-                "exact_name_affix_tolerant_tp": int(tolerant_micro.get("tp", 0)),
-                "exact_name_affix_tolerant_fp": int(tolerant_micro.get("fp", 0)),
-                "exact_name_affix_tolerant_fn": int(tolerant_micro.get("fn", 0)),
-                "exact_name_affix_gap_f1": _safe_float(cell.get("exact_name_affix_gap_f1"))
+                "overlap_tp": int(tolerant_micro.get("tp", 0)),
+                "overlap_fp": int(tolerant_micro.get("fp", 0)),
+                "overlap_fn": int(tolerant_micro.get("fn", 0)),
+                "overlap_gap_f1": _safe_float(cell.get("overlap_gap_f1"))
                 or 0.0,
-                "raw_exact_name_affix_gap_f1": _safe_float(
-                    cell.get("raw_exact_name_affix_gap_f1")
+                "raw_overlap_gap_f1": _safe_float(
+                    cell.get("raw_overlap_gap_f1")
                 )
                 or 0.0,
                 "boundary_fix_count": int(resolution_summary.get("boundary_fix_count", 0)),
@@ -995,9 +995,9 @@ def _provider_from_model(model: str) -> str:
 
 def _primary_metric_value(row: dict[str, Any], field: str) -> float:
     tolerant_field = {
-        "precision": "exact_name_affix_tolerant_precision",
-        "recall": "exact_name_affix_tolerant_recall",
-        "f1": "exact_name_affix_tolerant_f1",
+        "precision": "overlap_precision",
+        "recall": "overlap_recall",
+        "f1": "overlap_f1",
     }.get(field)
     if tolerant_field is not None:
         tolerant_value = _safe_float(row.get(tolerant_field))
@@ -1017,9 +1017,9 @@ def _aggregate_variant_rankings(records: list[dict[str, Any]]) -> list[dict[str,
                 "tp": 0,
                 "fp": 0,
                 "fn": 0,
-                "exact_name_affix_tolerant_tp": 0,
-                "exact_name_affix_tolerant_fp": 0,
-                "exact_name_affix_tolerant_fn": 0,
+                "overlap_tp": 0,
+                "overlap_fp": 0,
+                "overlap_fn": 0,
                 "completed_cells": 0,
                 "failed_cells": 0,
             },
@@ -1027,9 +1027,9 @@ def _aggregate_variant_rankings(records: list[dict[str, Any]]) -> list[dict[str,
         bucket["tp"] += int(record["tp"])
         bucket["fp"] += int(record["fp"])
         bucket["fn"] += int(record["fn"])
-        bucket["exact_name_affix_tolerant_tp"] += int(record["exact_name_affix_tolerant_tp"])
-        bucket["exact_name_affix_tolerant_fp"] += int(record["exact_name_affix_tolerant_fp"])
-        bucket["exact_name_affix_tolerant_fn"] += int(record["exact_name_affix_tolerant_fn"])
+        bucket["overlap_tp"] += int(record["overlap_tp"])
+        bucket["overlap_fp"] += int(record["overlap_fp"])
+        bucket["overlap_fn"] += int(record["overlap_fn"])
         if str(record["status"]) in {"completed", "completed_with_errors"}:
             bucket["completed_cells"] += 1
         elif str(record["status"]) not in {"pending", "running"}:
@@ -1038,17 +1038,17 @@ def _aggregate_variant_rankings(records: list[dict[str, Any]]) -> list[dict[str,
     for bucket in buckets.values():
         prf = _prf_from_counts(int(bucket["tp"]), int(bucket["fp"]), int(bucket["fn"]))
         tolerant_prf = _prf_from_counts(
-            int(bucket["exact_name_affix_tolerant_tp"]),
-            int(bucket["exact_name_affix_tolerant_fp"]),
-            int(bucket["exact_name_affix_tolerant_fn"]),
+            int(bucket["overlap_tp"]),
+            int(bucket["overlap_fp"]),
+            int(bucket["overlap_fn"]),
         )
         ranking.append(
             {
                 **bucket,
                 **prf,
-                "exact_name_affix_tolerant_precision": tolerant_prf["precision"],
-                "exact_name_affix_tolerant_recall": tolerant_prf["recall"],
-                "exact_name_affix_tolerant_f1": tolerant_prf["f1"],
+                "overlap_precision": tolerant_prf["precision"],
+                "overlap_recall": tolerant_prf["recall"],
+                "overlap_f1": tolerant_prf["f1"],
             }
         )
     ranking.sort(
@@ -1068,34 +1068,34 @@ def _aggregate_by_group(records: list[dict[str, Any]], *, field: str) -> list[di
                 "tp": 0,
                 "fp": 0,
                 "fn": 0,
-                "exact_name_affix_tolerant_tp": 0,
-                "exact_name_affix_tolerant_fp": 0,
-                "exact_name_affix_tolerant_fn": 0,
+                "overlap_tp": 0,
+                "overlap_fp": 0,
+                "overlap_fn": 0,
                 "cell_count": 0,
             },
         )
         bucket["tp"] += int(record["tp"])
         bucket["fp"] += int(record["fp"])
         bucket["fn"] += int(record["fn"])
-        bucket["exact_name_affix_tolerant_tp"] += int(record["exact_name_affix_tolerant_tp"])
-        bucket["exact_name_affix_tolerant_fp"] += int(record["exact_name_affix_tolerant_fp"])
-        bucket["exact_name_affix_tolerant_fn"] += int(record["exact_name_affix_tolerant_fn"])
+        bucket["overlap_tp"] += int(record["overlap_tp"])
+        bucket["overlap_fp"] += int(record["overlap_fp"])
+        bucket["overlap_fn"] += int(record["overlap_fn"])
         bucket["cell_count"] += 1
     rows: list[dict[str, Any]] = []
     for bucket in buckets.values():
         prf = _prf_from_counts(bucket["tp"], bucket["fp"], bucket["fn"])
         tolerant_prf = _prf_from_counts(
-            bucket["exact_name_affix_tolerant_tp"],
-            bucket["exact_name_affix_tolerant_fp"],
-            bucket["exact_name_affix_tolerant_fn"],
+            bucket["overlap_tp"],
+            bucket["overlap_fp"],
+            bucket["overlap_fn"],
         )
         rows.append(
             {
                 **bucket,
                 **prf,
-                "exact_name_affix_tolerant_precision": tolerant_prf["precision"],
-                "exact_name_affix_tolerant_recall": tolerant_prf["recall"],
-                "exact_name_affix_tolerant_f1": tolerant_prf["f1"],
+                "overlap_precision": tolerant_prf["precision"],
+                "overlap_recall": tolerant_prf["recall"],
+                "overlap_f1": tolerant_prf["f1"],
             }
         )
     rows.sort(key=lambda item: (-_primary_metric_value(item, "f1"), -float(item["f1"]), item["label"]))
@@ -1188,7 +1188,7 @@ def _top_bottom_configurations(
             "variant_label": record["variant_label"],
             "model_variant_label": record["model_variant_label"],
             "f1": float(record["f1"]),
-            "exact_name_affix_tolerant_f1": float(record["exact_name_affix_tolerant_f1"]),
+            "overlap_f1": float(record["overlap_f1"]),
             "precision": float(record["precision"]),
             "recall": float(record["recall"]),
             "status": record["status"],
@@ -1265,14 +1265,14 @@ def _write_aggregate_csv(path: Path, *, kind: str, rows: list[dict[str, Any]]) -
             "raw_precision",
             "raw_recall",
             "raw_f1",
-            "exact_name_affix_tolerant_precision",
-            "exact_name_affix_tolerant_recall",
-            "exact_name_affix_tolerant_f1",
-            "raw_exact_name_affix_tolerant_precision",
-            "raw_exact_name_affix_tolerant_recall",
-            "raw_exact_name_affix_tolerant_f1",
-            "exact_name_affix_gap_f1",
-            "raw_exact_name_affix_gap_f1",
+            "overlap_precision",
+            "overlap_recall",
+            "overlap_f1",
+            "raw_overlap_precision",
+            "raw_overlap_recall",
+            "raw_overlap_f1",
+            "overlap_gap_f1",
+            "raw_overlap_gap_f1",
             "tp",
             "fp",
             "fn",
@@ -1307,14 +1307,14 @@ def _write_aggregate_csv(path: Path, *, kind: str, rows: list[dict[str, Any]]) -
             "raw_precision",
             "raw_recall",
             "raw_f1",
-            "exact_name_affix_tolerant_precision",
-            "exact_name_affix_tolerant_recall",
-            "exact_name_affix_tolerant_f1",
-            "raw_exact_name_affix_tolerant_precision",
-            "raw_exact_name_affix_tolerant_recall",
-            "raw_exact_name_affix_tolerant_f1",
-            "exact_name_affix_gap_f1",
-            "raw_exact_name_affix_gap_f1",
+            "overlap_precision",
+            "overlap_recall",
+            "overlap_f1",
+            "raw_overlap_precision",
+            "raw_overlap_recall",
+            "raw_overlap_f1",
+            "overlap_gap_f1",
+            "raw_overlap_gap_f1",
             "tp",
             "fp",
             "fn",
@@ -1338,14 +1338,14 @@ def _format_ranking_table(rows: list[dict[str, Any]], *, variant_key: str = "var
     if not rows:
         return "_No completed cells._"
     header = (
-        "| Variant | NAME-Tolerant F1 | Exact F1 | NAME-Tolerant Precision | NAME-Tolerant Recall | TP | FP | FN |\n"
+        "| Variant | Overlap F1 | Exact F1 | Overlap Precision | Overlap Recall | TP | FP | FN |\n"
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
     )
     body = [
-        f"| {row[variant_key]} | {float(row.get('exact_name_affix_tolerant_f1', row['f1'])):.4f} | "
+        f"| {row[variant_key]} | {float(row.get('overlap_f1', row['f1'])):.4f} | "
         f"{float(row['f1']):.4f} | "
-        f"{float(row.get('exact_name_affix_tolerant_precision', row['precision'])):.4f} | "
-        f"{float(row.get('exact_name_affix_tolerant_recall', row['recall'])):.4f} | "
+        f"{float(row.get('overlap_precision', row['precision'])):.4f} | "
+        f"{float(row.get('overlap_recall', row['recall'])):.4f} | "
         f"{int(row['tp'])} | {int(row['fp'])} | {int(row['fn'])} |"
         for row in rows
     ]
@@ -1356,15 +1356,15 @@ def _format_cell_table(rows: list[dict[str, Any]], *, label_key: str = "variant_
     if not rows:
         return "_No completed cells._"
     header = (
-        "| Model | Variant | NAME-Tolerant F1 | Exact F1 | NAME-Tolerant Precision | NAME-Tolerant Recall |\n"
+        "| Model | Variant | Overlap F1 | Exact F1 | Overlap Precision | Overlap Recall |\n"
         "| --- | --- | ---: | ---: | ---: | ---: |"
     )
     body = [
         f"| {row['model_variant_label']} | {row[label_key]} "
-        f"| {float(row.get('exact_name_affix_tolerant_f1', row['f1'])):.4f} "
+        f"| {float(row.get('overlap_f1', row['f1'])):.4f} "
         f"| {float(row['f1']):.4f} "
-        f"| {float(row.get('exact_name_affix_tolerant_precision', row['precision'])):.4f} "
-        f"| {float(row.get('exact_name_affix_tolerant_recall', row['recall'])):.4f} |"
+        f"| {float(row.get('overlap_precision', row['precision'])):.4f} "
+        f"| {float(row.get('overlap_recall', row['recall'])):.4f} |"
         for row in rows
     ]
     return "\n".join([header, *body])
@@ -1386,7 +1386,7 @@ def _format_comparison_rows(rows: list[dict[str, Any]], *, label_field: str) -> 
     if not rows:
         return "_No comparisons available._"
     header = (
-        f"| {label_field} | Off NAME-Tolerant F1 | On NAME-Tolerant F1 | Delta | "
+        f"| {label_field} | Off Overlap F1 | On Overlap F1 | Delta | "
         "Off Exact F1 | On Exact F1 |\n| --- | ---: | ---: | ---: | ---: | ---: |"
     )
     body = [
@@ -1401,7 +1401,7 @@ def _format_family_comparisons(rows: list[dict[str, Any]]) -> str:
     if not rows:
         return "_No family comparisons available._"
     header = (
-        "| Family | Left | Left NAME-Tolerant F1 | Right | Right NAME-Tolerant F1 | Delta | "
+        "| Family | Left | Left Overlap F1 | Right | Right Overlap F1 | Delta | "
         "Left Exact F1 | Right Exact F1 |\n| --- | --- | ---: | --- | ---: | ---: | ---: | ---: |"
     )
     body = [
@@ -1417,14 +1417,14 @@ def _format_provider_summary(rows: list[dict[str, Any]]) -> str:
     if not rows:
         return "_No provider summary available._"
     header = (
-        "| Provider | NAME-Tolerant F1 | Exact F1 | NAME-Tolerant Precision | NAME-Tolerant Recall | Cells |\n"
+        "| Provider | Overlap F1 | Exact F1 | Overlap Precision | Overlap Recall | Cells |\n"
         "| --- | ---: | ---: | ---: | ---: | ---: |"
     )
     body = [
-        f"| {row['label']} | {float(row.get('exact_name_affix_tolerant_f1', row['f1'])):.4f} | "
+        f"| {row['label']} | {float(row.get('overlap_f1', row['f1'])):.4f} | "
         f"{float(row['f1']):.4f} | "
-        f"{float(row.get('exact_name_affix_tolerant_precision', row['precision'])):.4f} | "
-        f"{float(row.get('exact_name_affix_tolerant_recall', row['recall'])):.4f} | {int(row['cell_count'])} |"
+        f"{float(row.get('overlap_precision', row['precision'])):.4f} | "
+        f"{float(row.get('overlap_recall', row['recall'])):.4f} | {int(row['cell_count'])} |"
         for row in rows
     ]
     return "\n".join([header, *body])
@@ -1445,15 +1445,15 @@ def _format_top_bottom(rows: list[dict[str, Any]]) -> str:
     if not rows:
         return "_No completed configurations._"
     header = (
-        "| Kind | Variant | Model | NAME-Tolerant F1 | Exact F1 | NAME-Tolerant Precision | NAME-Tolerant Recall |\n"
+        "| Kind | Variant | Model | Overlap F1 | Exact F1 | Overlap Precision | Overlap Recall |\n"
         "| --- | --- | --- | ---: | ---: | ---: | ---: |"
     )
     body = [
         f"| {row['kind']} | {row['variant_label']} | {row['model_variant_label']} "
-        f"| {float(row.get('exact_name_affix_tolerant_f1', row['f1'])):.4f} "
+        f"| {float(row.get('overlap_f1', row['f1'])):.4f} "
         f"| {row['f1']:.4f} "
-        f"| {float(row.get('exact_name_affix_tolerant_precision', row['precision'])):.4f} "
-        f"| {float(row.get('exact_name_affix_tolerant_recall', row['recall'])):.4f} |"
+        f"| {float(row.get('overlap_precision', row['precision'])):.4f} "
+        f"| {float(row.get('overlap_recall', row['recall'])):.4f} |"
         for row in rows
     ]
     return "\n".join([header, *body])
