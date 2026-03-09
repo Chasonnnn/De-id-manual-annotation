@@ -13,6 +13,7 @@ interface Props {
   documents: DocumentSummary[];
   selectedDocumentId: string | null;
   methods: AgentMethodOption[];
+  concurrencyMax: number;
   onRun: (payload: PromptLabRunCreateRequest) => Promise<void>;
   running: boolean;
   forceCollapsed?: boolean;
@@ -60,6 +61,7 @@ export default function PromptLabRunForm({
   documents,
   selectedDocumentId,
   methods,
+  concurrencyMax,
   onRun,
   running,
   forceCollapsed = false,
@@ -107,6 +109,10 @@ export default function PromptLabRunForm({
     if (!selectedDocumentId) return;
     setSelectedDocIds((prev) => (prev.length > 0 ? prev : [selectedDocumentId]));
   }, [selectedDocumentId]);
+
+  useEffect(() => {
+    setConcurrency((prev) => Math.min(Math.max(prev, 1), concurrencyMax));
+  }, [concurrencyMax]);
 
   useEffect(() => {
     try {
@@ -208,7 +214,9 @@ export default function PromptLabRunForm({
     if (selectedDocIds.length === 0) return "Select at least one document";
     if (prompts.length === 0 || prompts.length > 6) return "Prompt variants must be 1 to 6";
     if (models.length === 0 || models.length > 6) return "Model variants must be 1 to 6";
-    if (concurrency < 1 || concurrency > 6) return "Concurrency must be 1 to 6";
+    if (concurrency < 1 || concurrency > concurrencyMax) {
+      return `Concurrency must be 1 to ${concurrencyMax}`;
+    }
     if (chunkSizeChars < 2000 || chunkSizeChars > 30000) {
       return "Chunk size must be between 2000 and 30000";
     }
@@ -381,10 +389,13 @@ export default function PromptLabRunForm({
                 id="prompt-lab-concurrency"
                 type="number"
                 min={1}
-                max={6}
+                max={concurrencyMax}
                 value={concurrency}
                 onChange={(e) => setConcurrency(Number.parseInt(e.target.value, 10) || 1)}
               />
+              <div className="prompt-lab-config-note">
+                Max {concurrencyMax}. Higher values mostly help LLM-backed sweeps.
+              </div>
             </div>
 
             <div className="prompt-lab-field prompt-lab-inline">

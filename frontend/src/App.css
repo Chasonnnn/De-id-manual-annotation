@@ -600,15 +600,49 @@ textarea:focus-visible {
   gap: 6px;
 }
 
-.prompt-lab-history li button {
+.prompt-lab-history-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.prompt-lab-history-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.prompt-lab-history-select {
   width: 100%;
   text-align: left;
 }
 
-.prompt-lab-history li button.active {
+.prompt-lab-history-select.active {
   background: #2142d4;
   border-color: #2142d4;
   color: #fff;
+}
+
+.prompt-lab-history-delete {
+  padding: 8px 10px;
+  white-space: nowrap;
+  border-color: #e7b6b6;
+  background: #fff3f3;
+  color: #9a2f2f;
+}
+
+.prompt-lab-history-stop {
+  padding: 8px 10px;
+  white-space: nowrap;
+  border-color: #f0d2a3;
+  background: #fff8ee;
+  color: #8b5b1d;
+}
+
+.prompt-lab-history-delete:disabled,
+.prompt-lab-history-stop:disabled {
+  opacity: 0.65;
+  cursor: wait;
 }
 
 .prompt-lab-history-name {
@@ -1068,8 +1102,9 @@ textarea:focus-visible {
   border: 1px solid #ccc;
   border-radius: 4px;
   background: #fff;
-  width: 180px;
-  min-width: 180px;
+  width: auto;
+  min-width: 112px;
+  max-width: 180px;
 }
 
 .saved-run-chip-row {
@@ -1452,8 +1487,8 @@ textarea:focus-visible {
 
 @media (max-width: 1280px) {
   .agent-view-control select {
-    width: 160px;
-    min-width: 160px;
+    min-width: 96px;
+    max-width: 140px;
   }
 }
 

@@ -1,3 +1,6 @@
+import {
+  DEFAULT_EXPERIMENT_LIMITS,
+} from "../types";
 import type {
   AnnotationSource,
   AgentConfig,
@@ -11,6 +14,7 @@ import type {
   LLMConfidenceMetric,
   MatchMode,
   DocumentSummary,
+  ExperimentLimits,
   MetricsResult,
   MethodsLabDocResult,
   MethodsLabRunCreateRequest,
@@ -144,6 +148,11 @@ export async function getAgentMethods(): Promise<AgentMethodOption[]> {
   return data.methods;
 }
 
+export async function getExperimentLimits(): Promise<ExperimentLimits> {
+  const raw = await request<Record<string, unknown>>("/experiments/limits");
+  return normalizeExperimentLimits(raw);
+}
+
 export async function createPromptLabRun(
   payload: PromptLabRunCreateRequest,
 ): Promise<PromptLabRunDetail> {
@@ -163,6 +172,18 @@ export async function listPromptLabRuns(): Promise<PromptLabRunSummary[]> {
 export async function getPromptLabRun(runId: string): Promise<PromptLabRunDetail> {
   const raw = await request<Record<string, unknown>>(`/prompt-lab/runs/${runId}`);
   return normalizePromptLabRunDetail(raw);
+}
+
+export async function deletePromptLabRun(
+  runId: string,
+): Promise<{ ok: boolean; id: string }> {
+  return request(`/prompt-lab/runs/${runId}`, { method: "DELETE" });
+}
+
+export async function stopPromptLabRun(
+  runId: string,
+): Promise<{ ok: boolean; id: string; status: "cancelling" | "cancelled" }> {
+  return request(`/prompt-lab/runs/${runId}/cancel`, { method: "POST" });
 }
 
 export async function getPromptLabDocResult(
@@ -227,6 +248,18 @@ export async function listMethodsLabRuns(): Promise<MethodsLabRunSummary[]> {
 export async function getMethodsLabRun(runId: string): Promise<MethodsLabRunDetail> {
   const raw = await request<Record<string, unknown>>(`/methods-lab/runs/${runId}`);
   return normalizeMethodsLabRunDetail(raw);
+}
+
+export async function deleteMethodsLabRun(
+  runId: string,
+): Promise<{ ok: boolean; id: string }> {
+  return request(`/methods-lab/runs/${runId}`, { method: "DELETE" });
+}
+
+export async function stopMethodsLabRun(
+  runId: string,
+): Promise<{ ok: boolean; id: string; status: "cancelling" | "cancelled" }> {
+  return request(`/methods-lab/runs/${runId}/cancel`, { method: "POST" });
 }
 
 export async function getMethodsLabDocResult(
@@ -358,11 +391,33 @@ function normalizeMetrics(raw: Record<string, unknown>): MetricsResult {
   };
 }
 
+function normalizeExperimentLimits(raw: Record<string, unknown>): ExperimentLimits {
+  return {
+    prompt_lab_default_concurrency: toNumber(
+      raw.prompt_lab_default_concurrency,
+      DEFAULT_EXPERIMENT_LIMITS.prompt_lab_default_concurrency,
+    ),
+    prompt_lab_max_concurrency: toNumber(
+      raw.prompt_lab_max_concurrency,
+      DEFAULT_EXPERIMENT_LIMITS.prompt_lab_max_concurrency,
+    ),
+    methods_lab_default_concurrency: toNumber(
+      raw.methods_lab_default_concurrency,
+      DEFAULT_EXPERIMENT_LIMITS.methods_lab_default_concurrency,
+    ),
+    methods_lab_max_concurrency: toNumber(
+      raw.methods_lab_max_concurrency,
+      DEFAULT_EXPERIMENT_LIMITS.methods_lab_max_concurrency,
+    ),
+  };
+}
+
 function normalizePromptLabRunSummary(raw: Record<string, unknown>): PromptLabRunSummary {
   return {
     id: String(raw.id ?? ""),
     name: String(raw.name ?? ""),
     status: (raw.status as PromptLabRunSummary["status"] | undefined) ?? "queued",
+    cancellable: Boolean(raw.cancellable),
     created_at: String(raw.created_at ?? ""),
     started_at: typeof raw.started_at === "string" ? raw.started_at : null,
     finished_at: typeof raw.finished_at === "string" ? raw.finished_at : null,
@@ -380,6 +435,7 @@ function normalizeMethodsLabRunSummary(raw: Record<string, unknown>): MethodsLab
     id: String(raw.id ?? ""),
     name: String(raw.name ?? ""),
     status: (raw.status as MethodsLabRunSummary["status"] | undefined) ?? "queued",
+    cancellable: Boolean(raw.cancellable),
     created_at: String(raw.created_at ?? ""),
     started_at: typeof raw.started_at === "string" ? raw.started_at : null,
     finished_at: typeof raw.finished_at === "string" ? raw.finished_at : null,

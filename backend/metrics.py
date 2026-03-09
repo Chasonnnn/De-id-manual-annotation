@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import re
 import unicodedata
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 from models import CanonicalSpan
+
+
+_NAME_HONORIFIC_RE = re.compile(r"^(mr|mrs|ms|miss)\.?\s+", re.IGNORECASE)
+_TRAILING_POSSESSIVE_RE = re.compile(r"(?:'s|’s)$", re.IGNORECASE)
 
 
 def _overlap(a: CanonicalSpan, b: CanonicalSpan) -> int:
@@ -51,6 +56,32 @@ def _boundary_match(a: CanonicalSpan, b: CanonicalSpan) -> bool:
     return a_start == b_start and a_end == b_end
 
 
+def _canonicalize_name_affix_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", text or "")
+    normalized = normalized.strip()
+    if not normalized:
+        return ""
+    normalized = normalized.strip(" \t\r\n.,!?;:\"'()[]{}")
+    normalized = _NAME_HONORIFIC_RE.sub("", normalized)
+    normalized = normalized.strip(" \t\r\n.,!?;:\"'()[]{}")
+    normalized = _TRAILING_POSSESSIVE_RE.sub("", normalized)
+    normalized = normalized.strip(" \t\r\n.,!?;:\"'()[]{}")
+    normalized = " ".join(normalized.split())
+    return normalized.casefold()
+
+
+def _exact_name_affix_tolerant_match(a: CanonicalSpan, b: CanonicalSpan) -> bool:
+    if a.label != b.label:
+        return False
+    if a.label != "NAME":
+        return a.start == b.start and a.end == b.end
+    if _overlap(a, b) == 0:
+        return False
+    left = _canonicalize_name_affix_text(a.text)
+    right = _canonicalize_name_affix_text(b.text)
+    return bool(left) and left == right
+
+
 def match_spans(
     gold: list[CanonicalSpan],
     pred: list[CanonicalSpan],
@@ -78,6 +109,9 @@ def match_spans(
             if mode == "exact":
                 if g.start == p.start and g.end == p.end and g.label == p.label:
                     cost[i, j] = 0.0  # perfect match
+            elif mode == "exact_name_affix_tolerant":
+                if _exact_name_affix_tolerant_match(g, p):
+                    cost[i, j] = 0.0
             elif mode == "boundary":
                 if _boundary_match(g, p):
                     cost[i, j] = 0.0
@@ -122,7 +156,7 @@ def _prf(tp: int, fp: int, fn: int) -> dict:
     }
 
 
-def compute_metrics(
+def _compute_metrics_base(
     gold: list[CanonicalSpan],
     pred: list[CanonicalSpan],
     mode: str = "exact",
@@ -191,6 +225,25 @@ def compute_metrics(
         "cohens_kappa": kappa,
         "mean_iou": mean_iou,
     }
+
+
+def compute_metrics(
+    gold: list[CanonicalSpan],
+    pred: list[CanonicalSpan],
+    mode: str = "exact",
+    overlap_threshold: float = 0.5,
+) -> dict:
+    result = _compute_metrics_base(gold, pred, mode, overlap_threshold)
+    if mode == "exact":
+        result["co_primary_metrics"] = {
+            "exact_name_affix_tolerant": _compute_metrics_base(
+                gold,
+                pred,
+                "exact_name_affix_tolerant",
+                overlap_threshold,
+            )
+        }
+    return result
 
 
 def _build_confusion(

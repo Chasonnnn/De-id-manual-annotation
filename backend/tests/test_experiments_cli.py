@@ -99,6 +99,12 @@ def _mock_confidence_metric(
     )
 
 
+def _write_test_config(payload: dict) -> None:
+    import server
+
+    server.CONFIG_PATH.write_text(json.dumps(payload))
+
+
 def test_manifest_prompt_run_persists_artifacts_and_writes_reports(
     client, monkeypatch, tmp_path, capsys
 ):
@@ -243,6 +249,157 @@ def test_manifest_methods_run_persists_artifacts(client, monkeypatch, tmp_path, 
     assert saved is not None
     assert saved["status"] == "completed"
     assert saved["doc_ids"] == [doc_id]
+
+
+def test_manifest_prompt_run_accepts_concurrency_above_legacy_limit(
+    client, monkeypatch, tmp_path
+):
+    _write_test_config({"prompt_lab_max_concurrency": 16})
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_llm_with_metadata(**kwargs):
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(),
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    doc_id = _upload(client)
+    manifest_path = tmp_path / "prompt_manifest_high_concurrency.yaml"
+    manifest_path.write_text(
+        "\n".join(
+            [
+                "kind: prompt_lab",
+                "name: manifest-prompt-high-concurrency",
+                "session: default",
+                "doc_ids:",
+                f"  - {doc_id}",
+                "prompts:",
+                "  - id: p1",
+                "    label: Baseline",
+                "    system_prompt: Detect pii spans as strict JSON",
+                "models:",
+                "  - id: m1",
+                "    label: Codex",
+                "    model: openai.gpt-5.3-codex",
+                "    reasoning_effort: xhigh",
+                "runtime:",
+                "  api_key: request-key",
+                "  api_base: https://proxy.example.com/v1",
+                "  temperature: 0.0",
+                "  match_mode: exact",
+                "  reference_source: manual",
+                "  fallback_reference_source: pre",
+                "concurrency: 12",
+            ]
+        )
+    )
+
+    exit_code = main(["run", str(manifest_path)])
+
+    assert exit_code == 0
+    run_ids = _load_prompt_lab_index()
+    saved = _load_prompt_lab_run(run_ids[0])
+    assert saved is not None
+    assert saved["concurrency"] == 12
+
+
+def test_manifest_methods_run_accepts_concurrency_above_legacy_limit(
+    client, monkeypatch, tmp_path
+):
+    _write_test_config({"methods_lab_max_concurrency": 16})
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_method_with_metadata(**kwargs):
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(model="openai.gpt-5.3-codex"),
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    doc_id = _upload(client)
+    _set_manual_annotations(
+        client,
+        doc_id,
+        [{"start": 6, "end": 10, "label": "NAME", "text": "Anna"}],
+    )
+    manifest_path = tmp_path / "methods_manifest_high_concurrency.yaml"
+    manifest_path.write_text(
+        "\n".join(
+            [
+                "kind: methods_lab",
+                "name: manifest-methods-high-concurrency",
+                "session: default",
+                "doc_ids:",
+                f"  - {doc_id}",
+                "methods:",
+                "  - id: method_1",
+                "    label: Default",
+                "    method_id: default",
+                "models:",
+                "  - id: model_1",
+                "    label: Codex",
+                "    model: openai.gpt-5.3-codex",
+                "    reasoning_effort: xhigh",
+                "runtime:",
+                "  api_key: request-key",
+                "  api_base: https://proxy.example.com/v1",
+                "  temperature: 0.0",
+                "  match_mode: exact",
+                "concurrency: 12",
+            ]
+        )
+    )
+
+    exit_code = main(["run", str(manifest_path)])
+
+    assert exit_code == 0
+    run_ids = _load_methods_lab_index()
+    saved = _load_methods_lab_run(run_ids[0])
+    assert saved is not None
+    assert saved["concurrency"] == 12
+
+
+def test_manifest_prompt_run_rejects_concurrency_above_configured_cap(tmp_path, capsys):
+    _write_test_config({"prompt_lab_max_concurrency": 16})
+    manifest_path = tmp_path / "invalid_prompt_manifest.yaml"
+    manifest_path.write_text(
+        "\n".join(
+            [
+                "kind: prompt_lab",
+                "name: invalid-prompt-concurrency",
+                "session: default",
+                "doc_ids:",
+                "  - missing-doc",
+                "prompts:",
+                "  - id: p1",
+                "    label: Baseline",
+                "    system_prompt: Detect pii spans as strict JSON",
+                "models:",
+                "  - id: m1",
+                "    label: Codex",
+                "    model: openai.gpt-5.3-codex",
+                "runtime:",
+                "  api_key: request-key",
+                "concurrency: 17",
+            ]
+        )
+    )
+
+    exit_code = main(["run", str(manifest_path)])
+
+    assert exit_code == 1
+    assert "concurrency must be between 1 and 16" in capsys.readouterr().err
 
 
 def test_flag_prompt_run_compiles_and_succeeds(client, monkeypatch, tmp_path):

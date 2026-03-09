@@ -22,9 +22,10 @@ from agent import (
     _strip_code_fences,
     run_llm,
     run_llm_with_metadata,
+    run_method_with_metadata,
     run_regex,
 )
-from models import CanonicalSpan
+from models import CanonicalSpan, LLMConfidenceMetric
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +47,54 @@ class TestRunRegex:
         urls = [s for s in spans if s.label == "URL"]
         assert len(urls) == 1
         assert urls[0].text == "https://example.com/page"
+
+    def test_detects_bare_domain_url(self):
+        spans = run_regex("Visit upchieve.org for more info.")
+        urls = [s for s in spans if s.label == "URL"]
+        assert len(urls) == 1
+        assert urls[0].text == "upchieve.org"
+
+    def test_detects_bare_domain_split_after_dot(self):
+        text = "Visit upchieve.\norg for more info."
+        spans = run_regex(text)
+        urls = [s for s in spans if s.label == "URL"]
+        assert len(urls) == 1
+        assert urls[0].text == "upchieve.\norg"
+
+    def test_detects_bare_domain_split_before_dot(self):
+        text = "Visit upchieve\n.org for more info."
+        spans = run_regex(text)
+        urls = [s for s in spans if s.label == "URL"]
+        assert len(urls) == 1
+        assert urls[0].text == "upchieve\n.org"
+
+    def test_detects_multi_line_chained_domain(self):
+        text = "Can you go to meet.\ngoogle.\ncom and type this in?"
+        spans = run_regex(text)
+        urls = [s for s in spans if s.label == "URL"]
+        assert len(urls) == 1
+        assert urls[0].text == "meet.\ngoogle.\ncom"
+
+    def test_detects_multi_line_chained_domain_with_split_before_dot(self):
+        text = "Open docs\n.google.\ncom for the instructions."
+        spans = run_regex(text)
+        urls = [s for s in spans if s.label == "URL"]
+        assert len(urls) == 1
+        assert urls[0].text == "docs\n.google.\ncom"
+
+    def test_detects_split_country_tld_domain(self):
+        text = "So everybody go to kahoot.\nit"
+        spans = run_regex(text)
+        urls = [s for s in spans if s.label == "URL"]
+        assert len(urls) == 1
+        assert urls[0].text == "kahoot.\nit"
+
+    def test_does_not_double_count_email_domain_as_url(self):
+        spans = run_regex("Contact user@example.com for info.")
+        urls = [s for s in spans if s.label == "URL"]
+        emails = [s for s in spans if s.label == "EMAIL"]
+        assert len(emails) == 1
+        assert urls == []
 
     def test_detects_phone(self):
         spans = run_regex("Call +1-555-867-5309 now.")
@@ -254,6 +303,58 @@ class TestRunLLM:
         assert all("offset mismatch" not in warning for warning in result.warnings)
 
     @patch("agent.completion")
+    def test_snaps_name_span_to_include_honorific_prefix(self, mock_completion):
+        text = "Hello Mr. Muhammad"
+        muhammad_start = text.index("Muhammad")
+        payload = _spans_payload(
+            [
+                {
+                    "start": muhammad_start,
+                    "end": muhammad_start + len("Muhammad"),
+                    "label": "NAME",
+                    "text": "Muhammad",
+                }
+            ]
+        )
+        mock_completion.return_value = _mock_completion_response(payload)
+
+        result = run_llm_with_metadata(
+            text=text,
+            api_key="test-key",
+            model="openai/gpt-4o",
+        )
+
+        assert [(span.start, span.end, span.text) for span in result.spans] == [
+            (6, 18, "Mr. Muhammad")
+        ]
+
+    @patch("agent.completion")
+    def test_snaps_name_span_to_include_trailing_possessive_suffix(self, mock_completion):
+        text = "Sebastian's notebook"
+        sebastian_start = text.index("Sebastian")
+        payload = _spans_payload(
+            [
+                {
+                    "start": sebastian_start,
+                    "end": sebastian_start + len("Sebastian"),
+                    "label": "NAME",
+                    "text": "Sebastian",
+                }
+            ]
+        )
+        mock_completion.return_value = _mock_completion_response(payload)
+
+        result = run_llm_with_metadata(
+            text=text,
+            api_key="test-key",
+            model="openai/gpt-4o",
+        )
+
+        assert [(span.start, span.end, span.text) for span in result.spans] == [
+            (0, 11, "Sebastian's")
+        ]
+
+    @patch("agent.completion")
     def test_warns_when_finish_reason_is_length(self, mock_completion):
         payload = _spans_payload(
             [
@@ -430,6 +531,20 @@ class TestRunLLM:
 
         call_kwargs = mock_completion.call_args
         assert call_kwargs.kwargs["api_base"] == "https://litellm.local/v1"
+
+    @patch("agent.completion")
+    def test_timeout_is_passed_to_litellm(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
+
+        run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            model="openai/gpt-4o",
+            timeout_seconds=12.5,
+        )
+
+        call_kwargs = mock_completion.call_args
+        assert call_kwargs.kwargs["timeout"] == pytest.approx(12.5)
 
     @patch("agent.completion")
     def test_default_model_uses_litellm_prefix(self, mock_completion):
@@ -638,17 +753,25 @@ class TestRunLLM:
         )
         assert result.spans == []
 
-    def test_gateway_thinking_requires_temperature_one(self):
-        with pytest.raises(ValueError, match="requires temperature=1"):
-            run_llm_with_metadata(
-                text="text",
-                api_key="k",
-                api_base="https://proxy.example.com",
-                model="anthropic.claude-4.6-opus",
-                anthropic_thinking=True,
-                anthropic_thinking_budget_tokens=2048,
-                temperature=0.0,
-            )
+    @patch("agent.completion")
+    def test_gateway_thinking_forces_temperature_one(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
+        result = run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            api_base="https://proxy.example.com",
+            model="anthropic.claude-4.6-opus",
+            anthropic_thinking=True,
+            anthropic_thinking_budget_tokens=2048,
+            temperature=0.0,
+        )
+
+        call_kwargs = mock_completion.call_args
+        assert call_kwargs.kwargs["temperature"] == 1.0
+        assert any(
+            "overriding requested temperature to 1.0" in warning
+            for warning in result.warnings
+        )
 
     @patch("agent.completion")
     def test_anthropic_empty_thinking_output_raises_error(self, mock_completion):
@@ -965,6 +1088,45 @@ class TestRunLLM:
             ("COURSE", "Algebra 300"),
             ("DATE", "January 5, 2026"),
         ]
+
+    def test_run_method_with_metadata_emits_dual_pass_progress(self, monkeypatch):
+        progress_events: list[tuple[int, str]] = []
+
+        def fake_run_llm_with_metadata(**kwargs):
+            return types.SimpleNamespace(
+                spans=[CanonicalSpan(start=0, end=4, label="NAME", text="Anna")],
+                warnings=[],
+                llm_confidence=LLMConfidenceMetric(
+                    available=False,
+                    provider="gemini",
+                    model="google.gemini-3.1-pro-preview",
+                    reason="unsupported_provider",
+                    token_count=0,
+                    band="na",
+                ),
+            )
+
+        monkeypatch.setattr("agent.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+        result = run_method_with_metadata(
+            text="Anna emailed anna@example.com",
+            method_id="dual",
+            api_key="k",
+            api_base="https://proxy.example.com/v1",
+            model="google.gemini-3.1-pro-preview",
+            system_prompt="",
+            temperature=0.0,
+            reasoning_effort="none",
+            anthropic_thinking=False,
+            anthropic_thinking_budget_tokens=None,
+            method_verify=False,
+            progress_callback=lambda pass_index, pass_label: progress_events.append(
+                (pass_index, pass_label)
+            ),
+        )
+
+        assert result.spans
+        assert progress_events == [(1, "dual:names"), (2, "dual:identifiers")]
 
 
 def test_model_presets_include_requested_options():

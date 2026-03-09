@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import copy
 import threading
 from pathlib import Path
@@ -189,6 +190,8 @@ def resolve_prompt_lab_runtime(runtime: Any) -> dict[str, object]:
 
 def validate_prompt_lab_request(body: Any, session_id: str = "default"):
     srv = _server()
+    cfg = srv._load_config()
+    prompt_lab_max_concurrency = srv._get_prompt_lab_max_concurrency(cfg)
     if not body.doc_ids:
         raise HTTPException(status_code=400, detail="doc_ids is required")
     if len(body.prompts) < 1 or len(body.prompts) > srv.PROMPT_LAB_MAX_VARIANTS:
@@ -203,8 +206,10 @@ def validate_prompt_lab_request(body: Any, session_id: str = "default"):
             status_code=400,
             detail=f"Model variants must be between 1 and {srv.PROMPT_LAB_MAX_VARIANTS}",
         )
-    if body.concurrency < 1 or body.concurrency > srv.PROMPT_LAB_MAX_VARIANTS:
-        raise HTTPException(status_code=400, detail="concurrency must be between 1 and 6")
+    srv._validate_experiment_concurrency(
+        body.concurrency,
+        max_allowed=prompt_lab_max_concurrency,
+    )
     if len(body.prompts) * len(body.models) > srv.PROMPT_LAB_MAX_VARIANTS * srv.PROMPT_LAB_MAX_VARIANTS:
         raise HTTPException(status_code=400, detail="Matrix limit exceeded (max 6x6)")
 
@@ -388,17 +393,20 @@ def initialize_prompt_lab_run(
     }
 
 
-def _build_prompt_lab_cell_summary(cell: dict, total_docs: int) -> dict:
+def _build_prompt_lab_cell_summary(cell: dict, total_docs: int, run_status: str) -> dict:
     srv = _server()
     docs_raw = cell.get("documents", {})
     documents = docs_raw if isinstance(docs_raw, dict) else {}
     completed_docs = 0
     failed_docs = 0
+    pending_docs = 0
     tp = 0
     fp = 0
     fn = 0
     confidence_values: list[float] = []
     per_label_counts: dict[str, dict[str, int]] = {}
+    co_primary_counts: dict[str, dict[str, Any]] = {}
+    error_families: dict[str, int] = {}
 
     for result in documents.values():
         if not isinstance(result, dict):
@@ -431,6 +439,43 @@ def _build_prompt_lab_cell_summary(cell: dict, total_docs: int) -> dict:
                         aggregate["support"] += int(
                             label_metrics.get("support", label_tp + label_fn)
                         )
+                co_primary_metrics = metrics.get("co_primary_metrics", {})
+                if isinstance(co_primary_metrics, dict):
+                    for metric_name, metric_payload in co_primary_metrics.items():
+                        if not isinstance(metric_payload, dict):
+                            continue
+                        aggregate_metric = co_primary_counts.setdefault(
+                            str(metric_name),
+                            {
+                                "tp": 0,
+                                "fp": 0,
+                                "fn": 0,
+                                "per_label": {},
+                            },
+                        )
+                        nested_micro = metric_payload.get("micro", {})
+                        if isinstance(nested_micro, dict):
+                            aggregate_metric["tp"] += int(nested_micro.get("tp", 0))
+                            aggregate_metric["fp"] += int(nested_micro.get("fp", 0))
+                            aggregate_metric["fn"] += int(nested_micro.get("fn", 0))
+                        nested_per_label = metric_payload.get("per_label", {})
+                        if isinstance(nested_per_label, dict):
+                            for label, label_metrics in nested_per_label.items():
+                                if not isinstance(label_metrics, dict):
+                                    continue
+                                aggregate_label = aggregate_metric["per_label"].setdefault(
+                                    str(label),
+                                    {"tp": 0, "fp": 0, "fn": 0, "support": 0},
+                                )
+                                label_tp = int(label_metrics.get("tp", 0))
+                                label_fp = int(label_metrics.get("fp", 0))
+                                label_fn = int(label_metrics.get("fn", 0))
+                                aggregate_label["tp"] += label_tp
+                                aggregate_label["fp"] += label_fp
+                                aggregate_label["fn"] += label_fn
+                                aggregate_label["support"] += int(
+                                    label_metrics.get("support", label_tp + label_fn)
+                                )
             llm_confidence = result.get("llm_confidence")
             if isinstance(llm_confidence, dict):
                 conf = srv._safe_float(llm_confidence.get("confidence"))
@@ -439,10 +484,22 @@ def _build_prompt_lab_cell_summary(cell: dict, total_docs: int) -> dict:
             continue
         if status in {"failed", "unavailable"}:
             failed_docs += 1
+            error_family = result.get("error_family")
+            if not isinstance(error_family, str) or not error_family:
+                error_family = srv._normalize_error_family(result.get("error"))
+            if error_family:
+                error_families[error_family] = error_families.get(error_family, 0) + 1
+            continue
+        if status in {"pending", "running", "queued"}:
+            pending_docs += 1
 
     processed = completed_docs + failed_docs
     micro = srv._prf_from_counts(tp, fp, fn) if completed_docs > 0 else srv._prf_from_counts(0, 0, 0)
-    if processed == 0:
+    if run_status == "cancelled" and processed < total_docs:
+        status = "cancelled"
+    elif run_status == "cancelling" and processed < total_docs:
+        status = "cancelling"
+    elif processed == 0:
         status = "pending"
     elif processed < total_docs:
         status = "running"
@@ -459,6 +516,22 @@ def _build_prompt_lab_cell_summary(cell: dict, total_docs: int) -> dict:
             "support": counts["support"],
         }
 
+    co_primary_summary: dict[str, dict[str, Any]] = {}
+    for metric_name, counts in sorted(co_primary_counts.items()):
+        metric_per_label: dict[str, dict[str, float | int]] = {}
+        for label, label_counts in sorted(counts["per_label"].items()):
+            label_prf = srv._prf_from_counts(
+                label_counts["tp"], label_counts["fp"], label_counts["fn"]
+            )
+            metric_per_label[label] = {
+                **label_prf,
+                "support": label_counts["support"],
+            }
+        co_primary_summary[metric_name] = {
+            "micro": srv._prf_from_counts(counts["tp"], counts["fp"], counts["fn"]),
+            "per_label": metric_per_label,
+        }
+
     return {
         "id": cell.get("id"),
         "model_id": cell.get("model_id"),
@@ -469,8 +542,11 @@ def _build_prompt_lab_cell_summary(cell: dict, total_docs: int) -> dict:
         "total_docs": total_docs,
         "completed_docs": completed_docs,
         "failed_docs": failed_docs,
+        "pending_docs": pending_docs,
         "error_count": failed_docs,
+        "error_families": error_families,
         "micro": micro,
+        "co_primary_metrics": co_primary_summary,
         "per_label": per_label_summary,
         "mean_confidence": (
             sum(confidence_values) / len(confidence_values) if confidence_values else None
@@ -480,6 +556,7 @@ def _build_prompt_lab_cell_summary(cell: dict, total_docs: int) -> dict:
 
 def build_prompt_lab_matrix(run: dict) -> dict:
     total_docs = len(run.get("doc_ids", []))
+    run_status = str(run.get("status", ""))
     prompts = run.get("prompts", [])
     models = run.get("models", [])
     cells_raw = run.get("cells", {})
@@ -501,7 +578,7 @@ def build_prompt_lab_matrix(run: dict) -> dict:
                     "prompt_label": prompt.get("label", prompt_id),
                     "documents": {},
                 }
-            summary = _build_prompt_lab_cell_summary(cell, total_docs)
+            summary = _build_prompt_lab_cell_summary(cell, total_docs, run_status)
             per_label = summary.get("per_label", {})
             if isinstance(per_label, dict):
                 available_labels.update(str(label) for label in per_label.keys())
@@ -521,18 +598,22 @@ def build_prompt_lab_matrix(run: dict) -> dict:
 
 
 def build_prompt_lab_run_summary(run: dict) -> dict:
+    srv = _server()
     matrix = build_prompt_lab_matrix(run)
     cells = matrix["cells"]
     completed = 0
     failed = 0
     total = len(run.get("doc_ids", [])) * len(run.get("models", [])) * len(run.get("prompts", []))
+    run_id = str(run.get("id", ""))
+    session_id = str(run.get("session_id", "default") or "default")
+    status = str(run.get("status", ""))
     for cell in cells:
         completed += int(cell.get("completed_docs", 0)) + int(cell.get("failed_docs", 0))
         failed += int(cell.get("failed_docs", 0))
     return {
-        "id": run.get("id"),
+        "id": run_id,
         "name": run.get("name"),
-        "status": run.get("status"),
+        "status": status,
         "created_at": run.get("created_at"),
         "started_at": run.get("started_at"),
         "finished_at": run.get("finished_at"),
@@ -542,6 +623,10 @@ def build_prompt_lab_run_summary(run: dict) -> dict:
         "total_tasks": total,
         "completed_tasks": completed,
         "failed_tasks": failed,
+        "cancellable": (
+            status in {"queued", "running", "cancelling"}
+            and srv._get_prompt_lab_cancel_event(run_id, session_id) is not None
+        ),
     }
 
 
@@ -579,8 +664,51 @@ def build_prompt_lab_run_detail(run: dict) -> dict:
     }
 
 
+def _mark_pending_documents_cancelled(cells: object, *, updated_at: str):
+    if not isinstance(cells, dict):
+        return
+    for cell in cells.values():
+        if not isinstance(cell, dict):
+            continue
+        documents = cell.get("documents", {})
+        if not isinstance(documents, dict):
+            continue
+        for doc_id, result in list(documents.items()):
+            if not isinstance(result, dict):
+                documents[doc_id] = {
+                    "status": "cancelled",
+                    "updated_at": updated_at,
+                }
+                continue
+            if str(result.get("status", "pending")) in {
+                "completed",
+                "failed",
+                "unavailable",
+                "cancelled",
+            }:
+                continue
+            result["status"] = "cancelled"
+            result["updated_at"] = updated_at
+
+
+def _mark_prompt_lab_run_cancelled(run_id: str, session_id: str):
+    srv = _server()
+    with srv._prompt_lab_lock:
+        latest = srv._load_prompt_lab_run(run_id, session_id)
+        if latest is None:
+            return
+        if srv._is_terminal_prompt_lab_status(str(latest.get("status", ""))):
+            return
+        updated_at = srv._now_iso()
+        _mark_pending_documents_cancelled(latest.get("cells"), updated_at=updated_at)
+        latest["status"] = "cancelled"
+        latest["finished_at"] = updated_at
+        srv._save_prompt_lab_run(latest, session_id)
+
+
 def run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]):
     srv = _server()
+    cancel_event = srv._get_prompt_lab_cancel_event(run_id, session_id)
     api_key = str(runtime["api_key"])
     api_base = str(runtime["api_base"])
     temperature = float(runtime["temperature"])
@@ -591,10 +719,18 @@ def run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object])
     label_projection = srv._normalize_label_projection(runtime.get("label_projection", "native"))
     chunk_mode = str(runtime["chunk_mode"])
     chunk_size_chars = int(runtime["chunk_size_chars"])
+    task_timeout_seconds = srv._safe_float(runtime.get("task_timeout_seconds"))
+    task_timeout_seconds = srv._safe_float(runtime.get("task_timeout_seconds"))
 
     with srv._prompt_lab_lock:
         run = srv._load_prompt_lab_run(run_id, session_id)
         if run is None:
+            srv._clear_prompt_lab_cancel_event(run_id, session_id)
+            return
+        if cancel_event is not None and cancel_event.is_set():
+            srv._save_prompt_lab_run(run, session_id)
+            _mark_prompt_lab_run_cancelled(run_id, session_id)
+            srv._clear_prompt_lab_cancel_event(run_id, session_id)
             return
         run["status"] = "running"
         run["started_at"] = srv._now_iso()
@@ -613,12 +749,22 @@ def run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object])
     def _execute_task(cell_id: str, doc_id: str, model_id: str) -> tuple[str, str, dict]:
         cell = run.get("cells", {}).get(cell_id, {})
         if not isinstance(cell, dict):
-            return cell_id, doc_id, {"status": "failed", "error": f"Unknown cell '{cell_id}'"}
+            error = f"Unknown cell '{cell_id}'"
+            return cell_id, doc_id, {
+                "status": "failed",
+                "error": error,
+                "error_family": srv._normalize_error_family(error),
+            }
         prompt_id = str(cell.get("prompt_id", ""))
         prompt = prompt_by_id.get(prompt_id)
         model = model_by_id.get(model_id)
         if prompt is None or model is None:
-            return cell_id, doc_id, {"status": "failed", "error": "Invalid model/prompt mapping"}
+            error = "Invalid model/prompt mapping"
+            return cell_id, doc_id, {
+                "status": "failed",
+                "error": error,
+                "error_family": srv._normalize_error_family(error),
+            }
 
         doc = srv._load_doc(doc_id, session_id)
         if doc is None:
@@ -710,24 +856,48 @@ def run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object])
             return cell_id, doc_id, {
                 "status": "failed",
                 "error": message,
+                "error_family": srv._normalize_error_family(message),
                 "updated_at": srv._now_iso(),
                 "filename": enriched.filename,
             }
 
+    max_workers = srv._resolve_experiment_worker_count(
+        int(run.get("concurrency", srv.PROMPT_LAB_DEFAULT_CONCURRENCY)),
+        total_tasks=len(tasks),
+        max_allowed=srv._get_prompt_lab_max_concurrency(),
+    )
+    executor = srv.ThreadPoolExecutor(max_workers=max_workers)
+    cancelled = False
     try:
-        with srv.ThreadPoolExecutor(max_workers=int(run.get("concurrency", 1))) as executor:
-            future_map = {
-                executor.submit(_execute_task, cell_id, doc_id, model_id): (cell_id, doc_id)
-                for cell_id, doc_id, model_id in tasks
-            }
-            for future in srv.as_completed(future_map):
-                cell_id, doc_id = future_map[future]
+        future_map = {
+            executor.submit(_execute_task, cell_id, doc_id, model_id): (cell_id, doc_id)
+            for cell_id, doc_id, model_id in tasks
+        }
+        while future_map:
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                for future in future_map:
+                    future.cancel()
+                executor.shutdown(wait=False, cancel_futures=True)
+                _mark_prompt_lab_run_cancelled(run_id, session_id)
+                return
+            done, _ = concurrent.futures.wait(
+                set(future_map.keys()),
+                timeout=0.2,
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+            if not done:
+                continue
+            for future in done:
+                cell_id, doc_id = future_map.pop(future)
                 try:
                     _, _, result = future.result()
                 except Exception as exc:
+                    message = str(exc).strip() or exc.__class__.__name__
                     result = {
                         "status": "failed",
-                        "error": str(exc),
+                        "error": message,
+                        "error_family": srv._normalize_error_family(message),
                         "updated_at": srv._now_iso(),
                     }
                 with srv._prompt_lab_lock:
@@ -751,6 +921,10 @@ def run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object])
                 latest["errors"] = errors
                 srv._save_prompt_lab_run(latest, session_id)
         return
+    finally:
+        if not cancelled:
+            executor.shutdown(wait=True)
+        srv._clear_prompt_lab_cancel_event(run_id, session_id)
 
     with srv._prompt_lab_lock:
         latest = srv._load_prompt_lab_run(run_id, session_id)
@@ -807,6 +981,7 @@ def create_prompt_lab_run(
         ids.append(str(run["id"]))
         srv._save_prompt_lab_run(run, session_id)
         srv._save_prompt_lab_index(session_id)
+        srv._register_prompt_lab_cancel_event(str(run["id"]), session_id)
 
     if run_async:
         worker = threading.Thread(
@@ -845,6 +1020,9 @@ def resolve_methods_lab_runtime(runtime: Any) -> dict[str, object]:
     chunk_size_chars = srv._normalize_chunk_size(runtime.chunk_size_chars)
     label_profile = srv._normalize_label_profile(runtime.label_profile)
     label_projection = srv._normalize_label_projection(runtime.label_projection)
+    task_timeout_seconds = srv._safe_float(getattr(runtime, "task_timeout_seconds", None))
+    if task_timeout_seconds is not None and task_timeout_seconds <= 0:
+        raise HTTPException(status_code=400, detail="task_timeout_seconds must be greater than 0")
     return {
         "api_key": api_key,
         "api_base": api_base,
@@ -854,11 +1032,14 @@ def resolve_methods_lab_runtime(runtime: Any) -> dict[str, object]:
         "chunk_size_chars": chunk_size_chars,
         "label_profile": label_profile,
         "label_projection": label_projection,
+        "task_timeout_seconds": task_timeout_seconds,
     }
 
 
 def validate_methods_lab_request(body: Any, session_id: str = "default"):
     srv = _server()
+    cfg = srv._load_config()
+    methods_lab_max_concurrency = srv._get_methods_lab_max_concurrency(cfg)
     if not body.doc_ids:
         raise HTTPException(status_code=400, detail="doc_ids is required")
     if len(body.methods) < 1 or len(body.methods) > srv.METHODS_LAB_MAX_METHOD_VARIANTS:
@@ -874,8 +1055,10 @@ def validate_methods_lab_request(body: Any, session_id: str = "default"):
             status_code=400,
             detail=f"Model variants must be between 1 and {srv.PROMPT_LAB_MAX_VARIANTS}",
         )
-    if body.concurrency < 1 or body.concurrency > srv.PROMPT_LAB_MAX_VARIANTS:
-        raise HTTPException(status_code=400, detail="concurrency must be between 1 and 6")
+    srv._validate_experiment_concurrency(
+        body.concurrency,
+        max_allowed=methods_lab_max_concurrency,
+    )
 
     known_ids = set(srv._load_session_index(session_id))
     for doc_id in body.doc_ids:
@@ -991,6 +1174,7 @@ def initialize_methods_lab_run(
             "api_base": runtime["api_base"],
             "chunk_mode": runtime["chunk_mode"],
             "chunk_size_chars": runtime["chunk_size_chars"],
+            "task_timeout_seconds": runtime.get("task_timeout_seconds"),
         },
         "concurrency": body.concurrency,
         "warnings": [],
@@ -1000,17 +1184,20 @@ def initialize_methods_lab_run(
     }
 
 
-def _build_methods_lab_cell_summary(cell: dict, total_docs: int) -> dict:
+def _build_methods_lab_cell_summary(cell: dict, total_docs: int, run_status: str) -> dict:
     srv = _server()
     docs_raw = cell.get("documents", {})
     documents = docs_raw if isinstance(docs_raw, dict) else {}
     completed_docs = 0
     failed_docs = 0
+    pending_docs = 0
     tp = 0
     fp = 0
     fn = 0
     confidence_values: list[float] = []
     per_label_counts: dict[str, dict[str, int]] = {}
+    co_primary_counts: dict[str, dict[str, Any]] = {}
+    error_families: dict[str, int] = {}
 
     for result in documents.values():
         if not isinstance(result, dict):
@@ -1043,6 +1230,43 @@ def _build_methods_lab_cell_summary(cell: dict, total_docs: int) -> dict:
                         aggregate["support"] += int(
                             label_metrics.get("support", label_tp + label_fn)
                         )
+                co_primary_metrics = metrics.get("co_primary_metrics", {})
+                if isinstance(co_primary_metrics, dict):
+                    for metric_name, metric_payload in co_primary_metrics.items():
+                        if not isinstance(metric_payload, dict):
+                            continue
+                        aggregate_metric = co_primary_counts.setdefault(
+                            str(metric_name),
+                            {
+                                "tp": 0,
+                                "fp": 0,
+                                "fn": 0,
+                                "per_label": {},
+                            },
+                        )
+                        nested_micro = metric_payload.get("micro", {})
+                        if isinstance(nested_micro, dict):
+                            aggregate_metric["tp"] += int(nested_micro.get("tp", 0))
+                            aggregate_metric["fp"] += int(nested_micro.get("fp", 0))
+                            aggregate_metric["fn"] += int(nested_micro.get("fn", 0))
+                        nested_per_label = metric_payload.get("per_label", {})
+                        if isinstance(nested_per_label, dict):
+                            for label, label_metrics in nested_per_label.items():
+                                if not isinstance(label_metrics, dict):
+                                    continue
+                                aggregate_label = aggregate_metric["per_label"].setdefault(
+                                    str(label),
+                                    {"tp": 0, "fp": 0, "fn": 0, "support": 0},
+                                )
+                                label_tp = int(label_metrics.get("tp", 0))
+                                label_fp = int(label_metrics.get("fp", 0))
+                                label_fn = int(label_metrics.get("fn", 0))
+                                aggregate_label["tp"] += label_tp
+                                aggregate_label["fp"] += label_fp
+                                aggregate_label["fn"] += label_fn
+                                aggregate_label["support"] += int(
+                                    label_metrics.get("support", label_tp + label_fn)
+                                )
             llm_confidence = result.get("llm_confidence")
             if isinstance(llm_confidence, dict):
                 conf = srv._safe_float(llm_confidence.get("confidence"))
@@ -1051,10 +1275,22 @@ def _build_methods_lab_cell_summary(cell: dict, total_docs: int) -> dict:
             continue
         if status in {"failed", "unavailable"}:
             failed_docs += 1
+            error_family = result.get("error_family")
+            if not isinstance(error_family, str) or not error_family:
+                error_family = srv._normalize_error_family(result.get("error"))
+            if error_family:
+                error_families[error_family] = error_families.get(error_family, 0) + 1
+            continue
+        if status in {"pending", "running", "queued"}:
+            pending_docs += 1
 
     processed = completed_docs + failed_docs
     micro = srv._prf_from_counts(tp, fp, fn) if completed_docs > 0 else srv._prf_from_counts(0, 0, 0)
-    if processed == 0:
+    if run_status == "cancelled" and processed < total_docs:
+        status = "cancelled"
+    elif run_status == "cancelling" and processed < total_docs:
+        status = "cancelling"
+    elif processed == 0:
         status = "pending"
     elif processed < total_docs:
         status = "running"
@@ -1071,6 +1307,22 @@ def _build_methods_lab_cell_summary(cell: dict, total_docs: int) -> dict:
             "support": counts["support"],
         }
 
+    co_primary_summary: dict[str, dict[str, Any]] = {}
+    for metric_name, counts in sorted(co_primary_counts.items()):
+        metric_per_label: dict[str, dict[str, float | int]] = {}
+        for label, label_counts in sorted(counts["per_label"].items()):
+            label_prf = srv._prf_from_counts(
+                label_counts["tp"], label_counts["fp"], label_counts["fn"]
+            )
+            metric_per_label[label] = {
+                **label_prf,
+                "support": label_counts["support"],
+            }
+        co_primary_summary[metric_name] = {
+            "micro": srv._prf_from_counts(counts["tp"], counts["fp"], counts["fn"]),
+            "per_label": metric_per_label,
+        }
+
     return {
         "id": cell.get("id"),
         "model_id": cell.get("model_id"),
@@ -1081,8 +1333,11 @@ def _build_methods_lab_cell_summary(cell: dict, total_docs: int) -> dict:
         "total_docs": total_docs,
         "completed_docs": completed_docs,
         "failed_docs": failed_docs,
+        "pending_docs": pending_docs,
         "error_count": failed_docs,
+        "error_families": error_families,
         "micro": micro,
+        "co_primary_metrics": co_primary_summary,
         "per_label": per_label_summary,
         "mean_confidence": (
             sum(confidence_values) / len(confidence_values) if confidence_values else None
@@ -1092,6 +1347,7 @@ def _build_methods_lab_cell_summary(cell: dict, total_docs: int) -> dict:
 
 def build_methods_lab_matrix(run: dict) -> dict:
     total_docs = len(run.get("doc_ids", []))
+    run_status = str(run.get("status", ""))
     methods = run.get("methods", [])
     models = run.get("models", [])
     cells_raw = run.get("cells", {})
@@ -1113,7 +1369,7 @@ def build_methods_lab_matrix(run: dict) -> dict:
                     "method_label": method.get("label", method_variant_id),
                     "documents": {},
                 }
-            summary = _build_methods_lab_cell_summary(cell, total_docs)
+            summary = _build_methods_lab_cell_summary(cell, total_docs, run_status)
             per_label = summary.get("per_label", {})
             if isinstance(per_label, dict):
                 available_labels.update(str(label) for label in per_label.keys())
@@ -1133,18 +1389,22 @@ def build_methods_lab_matrix(run: dict) -> dict:
 
 
 def build_methods_lab_run_summary(run: dict) -> dict:
+    srv = _server()
     matrix = build_methods_lab_matrix(run)
     cells = matrix["cells"]
     completed = 0
     failed = 0
     total = len(run.get("doc_ids", [])) * len(run.get("models", [])) * len(run.get("methods", []))
+    run_id = str(run.get("id", ""))
+    session_id = str(run.get("session_id", "default") or "default")
+    status = str(run.get("status", ""))
     for cell in cells:
         completed += int(cell.get("completed_docs", 0)) + int(cell.get("failed_docs", 0))
         failed += int(cell.get("failed_docs", 0))
     return {
-        "id": run.get("id"),
+        "id": run_id,
         "name": run.get("name"),
-        "status": run.get("status"),
+        "status": status,
         "created_at": run.get("created_at"),
         "started_at": run.get("started_at"),
         "finished_at": run.get("finished_at"),
@@ -1154,6 +1414,10 @@ def build_methods_lab_run_summary(run: dict) -> dict:
         "total_tasks": total,
         "completed_tasks": completed,
         "failed_tasks": failed,
+        "cancellable": (
+            status in {"queued", "running", "cancelling"}
+            and srv._get_methods_lab_cancel_event(run_id, session_id) is not None
+        ),
     }
 
 
@@ -1176,6 +1440,7 @@ def build_methods_lab_run_detail(run: dict) -> dict:
             "api_base": runtime.get("api_base", ""),
             "chunk_mode": runtime.get("chunk_mode", "auto"),
             "chunk_size_chars": runtime.get("chunk_size_chars", srv.DEFAULT_CHUNK_SIZE_CHARS),
+            "task_timeout_seconds": runtime.get("task_timeout_seconds"),
         },
         "concurrency": run.get("concurrency", srv.METHODS_LAB_DEFAULT_CONCURRENCY),
         "warnings": run.get("warnings", []),
@@ -1189,8 +1454,65 @@ def build_methods_lab_run_detail(run: dict) -> dict:
     }
 
 
+def _mark_methods_lab_run_cancelled(run_id: str, session_id: str):
+    srv = _server()
+    with srv._methods_lab_lock:
+        latest = srv._load_methods_lab_run(run_id, session_id)
+        if latest is None:
+            return
+        if srv._is_terminal_methods_lab_status(str(latest.get("status", ""))):
+            return
+        updated_at = srv._now_iso()
+        _mark_pending_documents_cancelled(latest.get("cells"), updated_at=updated_at)
+        latest["status"] = "cancelled"
+        latest["finished_at"] = updated_at
+        srv._save_methods_lab_run(latest, session_id)
+
+
+def _persist_methods_lab_document_runtime(
+    *,
+    run_id: str,
+    session_id: str,
+    method_variant_id: str,
+    doc_id: str,
+    target_model_ids: list[str],
+    filename: str | None,
+    runtime_diagnostics: dict[str, object],
+) -> None:
+    srv = _server()
+    with srv._methods_lab_lock:
+        latest = srv._load_methods_lab_run(run_id, session_id)
+        if latest is None:
+            return
+        cells = latest.get("cells", {})
+        if not isinstance(cells, dict):
+            return
+        updated_at = srv._now_iso()
+        for target_model_id in target_model_ids:
+            cell_id = f"{target_model_id}__{method_variant_id}"
+            cell = cells.get(cell_id)
+            if not isinstance(cell, dict):
+                continue
+            documents = cell.get("documents", {})
+            if not isinstance(documents, dict):
+                continue
+            existing = documents.get(doc_id)
+            if not isinstance(existing, dict):
+                existing = {"status": "pending"}
+                documents[doc_id] = existing
+            if str(existing.get("status", "")) in {"completed", "failed", "cancelled", "unavailable"}:
+                continue
+            existing["status"] = "running"
+            existing["updated_at"] = updated_at
+            if filename:
+                existing["filename"] = filename
+            existing["runtime_diagnostics"] = copy.deepcopy(runtime_diagnostics)
+        srv._save_methods_lab_run(latest, session_id)
+
+
 def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]):
     srv = _server()
+    cancel_event = srv._get_methods_lab_cancel_event(run_id, session_id)
     api_key = str(runtime["api_key"])
     api_base = str(runtime["api_base"])
     temperature = float(runtime["temperature"])
@@ -1199,10 +1521,17 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
     label_projection = srv._normalize_label_projection(runtime.get("label_projection", "native"))
     chunk_mode = str(runtime["chunk_mode"])
     chunk_size_chars = int(runtime["chunk_size_chars"])
+    task_timeout_seconds = srv._safe_float(runtime.get("task_timeout_seconds"))
 
     with srv._methods_lab_lock:
         run = srv._load_methods_lab_run(run_id, session_id)
         if run is None:
+            srv._clear_methods_lab_cancel_event(run_id, session_id)
+            return
+        if cancel_event is not None and cancel_event.is_set():
+            srv._save_methods_lab_run(run, session_id)
+            _mark_methods_lab_run_cancelled(run_id, session_id)
+            srv._clear_methods_lab_cancel_event(run_id, session_id)
             return
         run["status"] = "running"
         run["started_at"] = srv._now_iso()
@@ -1250,6 +1579,9 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                 {
                     "status": "failed",
                     "error": f"Unknown method variant '{method_variant_id}'",
+                    "error_family": srv._normalize_error_family(
+                        f"Unknown method variant '{method_variant_id}'"
+                    ),
                     "updated_at": srv._now_iso(),
                 },
             )
@@ -1263,6 +1595,9 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                 {
                     "status": "failed",
                     "error": f"Unknown method: {method_variant.get('method_id')}",
+                    "error_family": srv._normalize_error_family(
+                        f"Unknown method: {method_variant.get('method_id')}"
+                    ),
                     "updated_at": srv._now_iso(),
                 },
             )
@@ -1309,29 +1644,103 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
         anthropic_budget = (
             model.get("anthropic_thinking_budget_tokens") if isinstance(model, dict) else None
         )
+        started_at = srv._now_iso()
+        runtime_state: dict[str, object] = {
+            "started_at": started_at,
+            "last_progress_at": started_at,
+        }
+        runtime_state_lock = threading.Lock()
+
+        def _runtime_snapshot() -> dict[str, object]:
+            with runtime_state_lock:
+                return copy.deepcopy(runtime_state)
+
+        def _record_runtime_progress(update: dict[str, object]) -> None:
+            progress_at = srv._now_iso()
+            with runtime_state_lock:
+                runtime_state.update(update)
+                runtime_state["last_progress_at"] = progress_at
+                snapshot = copy.deepcopy(runtime_state)
+            _persist_methods_lab_document_runtime(
+                run_id=run_id,
+                session_id=session_id,
+                method_variant_id=method_variant_id,
+                doc_id=doc_id,
+                target_model_ids=target_model_ids,
+                filename=enriched.filename,
+                runtime_diagnostics=snapshot,
+            )
+
+        _persist_methods_lab_document_runtime(
+            run_id=run_id,
+            session_id=session_id,
+            method_variant_id=method_variant_id,
+            doc_id=doc_id,
+            target_model_ids=target_model_ids,
+            filename=enriched.filename,
+            runtime_diagnostics=_runtime_snapshot(),
+        )
 
         try:
-            (
-                hypothesis_spans,
-                warnings,
-                llm_confidence,
-                _chunk_diagnostics,
-            ) = srv._run_method_for_document(
-                doc=enriched,
-                method_id=str(method_variant["method_id"]),
-                api_key=api_key or None,
-                api_base=api_base or None,
-                model=request_model,
-                system_prompt="",
-                temperature=temperature,
-                reasoning_effort=reasoning_effort,
-                anthropic_thinking=anthropic_thinking,
-                anthropic_thinking_budget_tokens=anthropic_budget,
-                method_verify=method_variant.get("method_verify_override"),
-                label_profile=label_profile,  # type: ignore[arg-type]
-                chunk_mode=chunk_mode,
-                chunk_size_chars=chunk_size_chars,
-            )
+            def _run_document():
+                return srv._run_method_for_document(
+                    doc=enriched,
+                    method_id=str(method_variant["method_id"]),
+                    api_key=api_key or None,
+                    api_base=api_base or None,
+                    model=request_model,
+                    system_prompt="",
+                    temperature=temperature,
+                    reasoning_effort=reasoning_effort,
+                    anthropic_thinking=anthropic_thinking,
+                    anthropic_thinking_budget_tokens=anthropic_budget,
+                    method_verify=method_variant.get("method_verify_override"),
+                    label_profile=label_profile,  # type: ignore[arg-type]
+                    chunk_mode=chunk_mode,
+                    chunk_size_chars=chunk_size_chars,
+                    runtime_progress_callback=_record_runtime_progress,
+                    timeout_seconds=task_timeout_seconds,
+                )
+
+            if task_timeout_seconds is None:
+                (
+                    hypothesis_spans,
+                    warnings,
+                    llm_confidence,
+                    _chunk_diagnostics,
+                ) = _run_document()
+            else:
+                task_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                task_future = task_executor.submit(_run_document)
+                timed_out = False
+                try:
+                    (
+                        hypothesis_spans,
+                        warnings,
+                        llm_confidence,
+                        _chunk_diagnostics,
+                    ) = task_future.result(timeout=task_timeout_seconds)
+                except concurrent.futures.TimeoutError as exc:
+                    timed_out = True
+                    task_future.cancel()
+                    message = (
+                        f"Methods Lab task timed out after {task_timeout_seconds:g} seconds."
+                    )
+                    return (
+                        method_variant_id,
+                        doc_id,
+                        target_model_ids,
+                        {
+                            "status": "failed",
+                            "error": message,
+                            "error_family": "timeout",
+                            "runtime_diagnostics": _runtime_snapshot(),
+                            "updated_at": srv._now_iso(),
+                            "filename": enriched.filename,
+                        },
+                    )
+                finally:
+                    task_executor.shutdown(wait=not timed_out, cancel_futures=timed_out)
             projected_reference, projected_hypothesis = srv._apply_label_projection(
                 enriched.manual_annotations,
                 hypothesis_spans,
@@ -1356,6 +1765,7 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                     "llm_confidence": (
                         llm_confidence.model_dump() if llm_confidence is not None else None
                     ),
+                    "runtime_diagnostics": _runtime_snapshot(),
                     "updated_at": srv._now_iso(),
                     "filename": enriched.filename,
                 },
@@ -1371,32 +1781,58 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                 {
                     "status": "failed",
                     "error": message,
+                    "error_family": srv._normalize_error_family(message),
+                    "runtime_diagnostics": _runtime_snapshot(),
                     "updated_at": srv._now_iso(),
                     "filename": enriched.filename,
                 },
             )
 
+    max_workers = srv._resolve_experiment_worker_count(
+        int(run.get("concurrency", srv.METHODS_LAB_DEFAULT_CONCURRENCY)),
+        total_tasks=len(tasks),
+        max_allowed=srv._get_methods_lab_max_concurrency(),
+    )
+    executor = srv.ThreadPoolExecutor(max_workers=max_workers)
+    cancelled = False
     try:
-        with srv.ThreadPoolExecutor(max_workers=int(run.get("concurrency", 1))) as executor:
-            future_map = {
-                executor.submit(_execute_task, method_variant_id, doc_id, model_id): (
-                    method_variant_id,
-                    doc_id,
-                    model_id,
-                )
-                for method_variant_id, doc_id, model_id in tasks
-            }
-            for future in srv.as_completed(future_map):
+        future_map = {
+            executor.submit(_execute_task, method_variant_id, doc_id, model_id): (
+                method_variant_id,
+                doc_id,
+                model_id,
+            )
+            for method_variant_id, doc_id, model_id in tasks
+        }
+        while future_map:
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                for future in future_map:
+                    future.cancel()
+                executor.shutdown(wait=False, cancel_futures=True)
+                _mark_methods_lab_run_cancelled(run_id, session_id)
+                return
+            done, _ = concurrent.futures.wait(
+                set(future_map.keys()),
+                timeout=0.2,
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+            if not done:
+                continue
+            for future in done:
                 try:
                     method_variant_id, doc_id, target_model_ids, result = future.result()
                 except Exception as exc:
+                    message = str(exc).strip() or exc.__class__.__name__
                     method_variant_id, doc_id, model_id = future_map[future]
                     target_model_ids = [model_id] if model_id else all_model_ids
                     result = {
                         "status": "failed",
-                        "error": str(exc),
+                        "error": message,
+                        "error_family": srv._normalize_error_family(message),
                         "updated_at": srv._now_iso(),
                     }
+                future_map.pop(future, None)
                 with srv._methods_lab_lock:
                     latest = srv._load_methods_lab_run(run_id, session_id)
                     if latest is None:
@@ -1422,6 +1858,10 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                 latest["errors"] = errors
                 srv._save_methods_lab_run(latest, session_id)
         return
+    finally:
+        if not cancelled:
+            executor.shutdown(wait=True)
+        srv._clear_methods_lab_cancel_event(run_id, session_id)
 
     with srv._methods_lab_lock:
         latest = srv._load_methods_lab_run(run_id, session_id)
@@ -1472,6 +1912,7 @@ def create_methods_lab_run(
         ids.append(str(run["id"]))
         srv._save_methods_lab_run(run, session_id)
         srv._save_methods_lab_index(session_id)
+        srv._register_methods_lab_cancel_event(str(run["id"]), session_id)
 
     if run_async:
         worker = threading.Thread(

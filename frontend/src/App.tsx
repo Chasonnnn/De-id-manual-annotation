@@ -49,6 +49,7 @@ import { computeDiff } from "./components/DiffOverlay";
 import PromptLabTab from "./components/PromptLabTab";
 import MethodsLabTab from "./components/MethodsLabTab";
 import { importSessionFiles } from "./importSessionFiles";
+import { getPromptPresetLabelFromSnapshot } from "./agentPromptPresets";
 
 // ---------------------------------------------------------------------------
 // 4.3: Error boundary to prevent white-screen crashes
@@ -599,9 +600,11 @@ function AppContent() {
       const meta = llmRunMeta[modelKey];
       const modelName = meta?.model ?? modelKey;
       const runTime = formatRunTimestamp(meta?.updated_at);
+      const presetLabel = getPromptPresetLabelFromSnapshot(meta?.prompt_snapshot ?? null);
+      const detail = [presetLabel, runTime].filter(Boolean).join(" • ");
       options.push({
         value: `agent.llm_run.${modelKey}` as AnnotationSource,
-        label: `Agent LLM: ${modelName}${runTime ? ` • ${runTime}` : ""}`,
+        label: `Agent LLM: ${modelName}${detail ? ` • ${detail}` : ""}`,
       });
     }
     const methodOptionsSeed =
@@ -636,9 +639,10 @@ function AppContent() {
       const runMeta = meta[key];
       const modelName = runMeta?.model ?? key;
       const runTime = formatRunTimestamp(runMeta?.updated_at);
+      const presetLabel = getPromptPresetLabelFromSnapshot(runMeta?.prompt_snapshot ?? null);
       return {
         key,
-        label: modelName,
+        label: presetLabel ? `${modelName} • ${presetLabel}` : modelName,
         subtitle: runTime,
       };
     });

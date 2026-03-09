@@ -172,7 +172,7 @@ runtime:
   match_mode: exact
   reference_source: manual
   fallback_reference_source: pre
-concurrency: 1
+concurrency: 12
 ```
 
 `AGENTS.md` prompt file example:
@@ -236,8 +236,13 @@ runtime:
   api_base: ${LITELLM_BASE_URL}
   temperature: 0.0
   match_mode: exact
-concurrency: 2
+concurrency: 8
 ```
+
+Concurrency notes:
+- Prompt Lab and Methods Lab default to `4` workers.
+- The server-configurable max defaults to `16` and is hard-capped at `32`.
+- Higher concurrency mainly helps LLM-backed sweeps. Local Presidio-heavy runs benefit less.
 
 ## Qwen3.5 9B local runner
 

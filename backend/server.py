@@ -68,8 +68,11 @@ PROMPT_LAB_DIR_NAME = "prompt_lab"
 METHODS_LAB_DIR_NAME = "methods_lab"
 PROMPT_LAB_MAX_VARIANTS = 6
 PROMPT_LAB_DEFAULT_CONCURRENCY = 4
+PROMPT_LAB_DEFAULT_MAX_CONCURRENCY = 16
 METHODS_LAB_MAX_METHOD_VARIANTS = max(12, len(METHOD_DEFINITION_BY_ID))
 METHODS_LAB_DEFAULT_CONCURRENCY = 4
+METHODS_LAB_DEFAULT_MAX_CONCURRENCY = 16
+EXPERIMENT_HARD_MAX_CONCURRENCY = 32
 DEFAULT_CHUNK_SIZE_CHARS = 10_000
 MIN_CHUNK_SIZE_CHARS = 2_000
 MAX_CHUNK_SIZE_CHARS = 30_000
@@ -112,6 +115,8 @@ DEFAULT_CONFIG = {
     "reasoning_effort": "xhigh",
     "anthropic_thinking": False,
     "anthropic_thinking_budget_tokens": None,
+    "prompt_lab_max_concurrency": PROMPT_LAB_DEFAULT_MAX_CONCURRENCY,
+    "methods_lab_max_concurrency": METHODS_LAB_DEFAULT_MAX_CONCURRENCY,
 }
 
 DEFAULT_SESSION_PROFILE = {
@@ -340,8 +345,10 @@ def _normalize_optional_llm_confidence(raw: object) -> LLMConfidenceMetric | Non
 _session_docs: dict[str, list[str]] = {}
 _prompt_lab_runs: dict[str, list[str]] = {}
 _prompt_lab_lock = threading.Lock()
+_prompt_lab_cancel_events: dict[tuple[str, str], threading.Event] = {}
 _methods_lab_runs: dict[str, list[str]] = {}
 _methods_lab_lock = threading.Lock()
+_methods_lab_cancel_events: dict[tuple[str, str], threading.Event] = {}
 _agent_progress: dict[str, dict[str, Any]] = {}
 _agent_progress_lock = threading.Lock()
 
@@ -649,6 +656,11 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _build_agent_llm_run_key(model: str) -> str:
+    normalized_model = model.strip() or "llm"
+    return f"{normalized_model}::{uuid.uuid4().hex[:10]}"
+
+
 def _agent_progress_key(doc_id: str, session_id: str = "default") -> str:
     return f"{session_id}:{doc_id}"
 
@@ -768,6 +780,26 @@ def _prompt_lab_run_path(run_id: str, session_id: str = "default") -> Path:
     return _prompt_lab_dir(session_id) / f"{run_id}.json"
 
 
+def _prompt_lab_cancel_key(run_id: str, session_id: str = "default") -> tuple[str, str]:
+    return session_id, run_id
+
+
+def _register_prompt_lab_cancel_event(run_id: str, session_id: str = "default") -> threading.Event:
+    event = threading.Event()
+    _prompt_lab_cancel_events[_prompt_lab_cancel_key(run_id, session_id)] = event
+    return event
+
+
+def _get_prompt_lab_cancel_event(
+    run_id: str, session_id: str = "default"
+) -> threading.Event | None:
+    return _prompt_lab_cancel_events.get(_prompt_lab_cancel_key(run_id, session_id))
+
+
+def _clear_prompt_lab_cancel_event(run_id: str, session_id: str = "default"):
+    _prompt_lab_cancel_events.pop(_prompt_lab_cancel_key(run_id, session_id), None)
+
+
 def _load_prompt_lab_index(session_id: str = "default") -> list[str]:
     if session_id in _prompt_lab_runs:
         return _prompt_lab_runs[session_id]
@@ -806,8 +838,22 @@ def _save_prompt_lab_run(run: dict, session_id: str = "default"):
     _prompt_lab_run_path(run_id, session_id).write_text(json.dumps(run, indent=2))
 
 
+def _delete_prompt_lab_run(run_id: str, session_id: str = "default") -> bool:
+    ids = _load_prompt_lab_index(session_id)
+    path = _prompt_lab_run_path(run_id, session_id)
+    existed = path.exists()
+    if not existed and run_id not in ids:
+        return False
+    if existed:
+        path.unlink()
+    _prompt_lab_runs[session_id] = [item for item in ids if item != run_id]
+    _clear_prompt_lab_cancel_event(run_id, session_id)
+    _save_prompt_lab_index(session_id)
+    return True
+
+
 def _is_terminal_prompt_lab_status(status: str) -> bool:
-    return status in {"completed", "completed_with_errors", "failed"}
+    return status in {"completed", "completed_with_errors", "failed", "cancelled"}
 
 
 def _methods_lab_dir(session_id: str = "default") -> Path:
@@ -820,6 +866,28 @@ def _methods_lab_index_path(session_id: str = "default") -> Path:
 
 def _methods_lab_run_path(run_id: str, session_id: str = "default") -> Path:
     return _methods_lab_dir(session_id) / f"{run_id}.json"
+
+
+def _methods_lab_cancel_key(run_id: str, session_id: str = "default") -> tuple[str, str]:
+    return session_id, run_id
+
+
+def _register_methods_lab_cancel_event(
+    run_id: str, session_id: str = "default"
+) -> threading.Event:
+    event = threading.Event()
+    _methods_lab_cancel_events[_methods_lab_cancel_key(run_id, session_id)] = event
+    return event
+
+
+def _get_methods_lab_cancel_event(
+    run_id: str, session_id: str = "default"
+) -> threading.Event | None:
+    return _methods_lab_cancel_events.get(_methods_lab_cancel_key(run_id, session_id))
+
+
+def _clear_methods_lab_cancel_event(run_id: str, session_id: str = "default"):
+    _methods_lab_cancel_events.pop(_methods_lab_cancel_key(run_id, session_id), None)
 
 
 def _load_methods_lab_index(session_id: str = "default") -> list[str]:
@@ -860,33 +928,134 @@ def _save_methods_lab_run(run: dict, session_id: str = "default"):
     _methods_lab_run_path(run_id, session_id).write_text(json.dumps(run, indent=2))
 
 
+def _delete_methods_lab_run(run_id: str, session_id: str = "default") -> bool:
+    ids = _load_methods_lab_index(session_id)
+    path = _methods_lab_run_path(run_id, session_id)
+    existed = path.exists()
+    if not existed and run_id not in ids:
+        return False
+    if existed:
+        path.unlink()
+    _methods_lab_runs[session_id] = [item for item in ids if item != run_id]
+    _clear_methods_lab_cancel_event(run_id, session_id)
+    _save_methods_lab_index(session_id)
+    return True
+
+
+def _is_terminal_methods_lab_status(status: str) -> bool:
+    return status in {"completed", "completed_with_errors", "failed", "cancelled"}
+
+
+def _request_prompt_lab_cancel(run_id: str, session_id: str = "default") -> dict[str, object]:
+    run = _load_prompt_lab_run(run_id, session_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Prompt Lab run not found")
+    status = str(run.get("status", ""))
+    if _is_terminal_prompt_lab_status(status):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Prompt Lab run is not cancellable in status '{status}'",
+        )
+    cancel_event = _get_prompt_lab_cancel_event(run_id, session_id)
+    if cancel_event is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Prompt Lab run is not active in this server process and cannot be cancelled",
+        )
+    cancel_event.set()
+    if status != "cancelling":
+        run["status"] = "cancelling"
+        warnings = run.get("warnings", [])
+        if not isinstance(warnings, list):
+            warnings = []
+        warnings.append(f"Cancellation requested at {_now_iso()}.")
+        run["warnings"] = warnings
+        _save_prompt_lab_run(run, session_id)
+    return {"ok": True, "id": run_id, "status": "cancelling"}
+
+
+def _request_methods_lab_cancel(run_id: str, session_id: str = "default") -> dict[str, object]:
+    run = _load_methods_lab_run(run_id, session_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Methods Lab run not found")
+    status = str(run.get("status", ""))
+    if _is_terminal_methods_lab_status(status):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Methods Lab run is not cancellable in status '{status}'",
+        )
+    cancel_event = _get_methods_lab_cancel_event(run_id, session_id)
+    if cancel_event is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Methods Lab run is not active in this server process and cannot be cancelled",
+        )
+    cancel_event.set()
+    if status != "cancelling":
+        run["status"] = "cancelling"
+        warnings = run.get("warnings", [])
+        if not isinstance(warnings, list):
+            warnings = []
+        warnings.append(f"Cancellation requested at {_now_iso()}.")
+        run["warnings"] = warnings
+        _save_methods_lab_run(run, session_id)
+    return {"ok": True, "id": run_id, "status": "cancelling"}
+
+
 def _safe_float(value: object) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
     return None
 
 
+def _normalize_error_family(error: str | None) -> str | None:
+    message = (error or "").strip().lower()
+    if not message:
+        return None
+    if "finish_reason=length" in message or (
+        "empty output content" in message and "length" in message
+    ):
+        return "empty_output_finish_reason_length"
+    if "connection error" in message or "connecterror" in message:
+        return "connection_error"
+    if "timeout" in message or "timed out" in message:
+        return "timeout"
+    if (
+        "requires temperature=1" in message
+        or "invalid" in message
+        or "unsupported" in message
+        or "api key" in message
+        or "missing api key" in message
+        or "system_prompt is required" in message
+        or "method_verify_override" in message
+    ):
+        return "config_error"
+    return "unknown_error"
+
+
+def _serialize_metrics_value(value: object) -> object:
+    if isinstance(value, CanonicalSpan):
+        return value.model_dump()
+    if isinstance(value, dict):
+        return {
+            str(key): _serialize_metrics_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_serialize_metrics_value(item) for item in value]
+    return value
+
+
 def _serialize_metrics_payload(metrics: dict) -> dict:
     payload = copy.deepcopy(metrics)
-    false_positives = payload.get("false_positives", [])
-    if isinstance(false_positives, list):
-        payload["false_positives"] = [
-            item.model_dump() if isinstance(item, CanonicalSpan) else item
-            for item in false_positives
-        ]
-    false_negatives = payload.get("false_negatives", [])
-    if isinstance(false_negatives, list):
-        payload["false_negatives"] = [
-            item.model_dump() if isinstance(item, CanonicalSpan) else item
-            for item in false_negatives
-        ]
-    return payload
+    serialized = _serialize_metrics_value(payload)
+    return serialized if isinstance(serialized, dict) else {}
 
 
-def _build_prompt_lab_cell_summary(cell: dict, total_docs: int) -> dict:
+def _build_prompt_lab_cell_summary(cell: dict, total_docs: int, run_status: str) -> dict:
     from experiment_service import _build_prompt_lab_cell_summary as service_impl
 
-    return service_impl(cell, total_docs)
+    return service_impl(cell, total_docs, run_status)
 
 
 def _build_prompt_lab_matrix(run: dict) -> dict:
@@ -974,10 +1143,10 @@ def _remap_prompt_lab_run_doc_ids(
     return remapped, warnings
 
 
-def _build_methods_lab_cell_summary(cell: dict, total_docs: int) -> dict:
+def _build_methods_lab_cell_summary(cell: dict, total_docs: int, run_status: str) -> dict:
     from experiment_service import _build_methods_lab_cell_summary as service_impl
 
-    return service_impl(cell, total_docs)
+    return service_impl(cell, total_docs, run_status)
 
 
 def _build_methods_lab_matrix(run: dict) -> dict:
@@ -1653,6 +1822,75 @@ def _save_config(cfg: dict):
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
 
 
+def _normalize_experiment_concurrency_cap(
+    value: object,
+    *,
+    default: int,
+    minimum: int,
+) -> int:
+    candidate = default
+    if isinstance(value, bool):
+        candidate = default
+    elif isinstance(value, int):
+        candidate = value
+    elif isinstance(value, float) and value.is_integer():
+        candidate = int(value)
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if stripped:
+            try:
+                candidate = int(stripped)
+            except ValueError:
+                candidate = default
+    return max(minimum, min(candidate, EXPERIMENT_HARD_MAX_CONCURRENCY))
+
+
+def _get_prompt_lab_max_concurrency(cfg: dict | None = None) -> int:
+    config = _load_config() if cfg is None else cfg
+    return _normalize_experiment_concurrency_cap(
+        config.get("prompt_lab_max_concurrency"),
+        default=PROMPT_LAB_DEFAULT_MAX_CONCURRENCY,
+        minimum=PROMPT_LAB_DEFAULT_CONCURRENCY,
+    )
+
+
+def _get_methods_lab_max_concurrency(cfg: dict | None = None) -> int:
+    config = _load_config() if cfg is None else cfg
+    return _normalize_experiment_concurrency_cap(
+        config.get("methods_lab_max_concurrency"),
+        default=METHODS_LAB_DEFAULT_MAX_CONCURRENCY,
+        minimum=METHODS_LAB_DEFAULT_CONCURRENCY,
+    )
+
+
+def _get_experiment_limits(cfg: dict | None = None) -> dict[str, int]:
+    config = _load_config() if cfg is None else cfg
+    return {
+        "prompt_lab_default_concurrency": PROMPT_LAB_DEFAULT_CONCURRENCY,
+        "prompt_lab_max_concurrency": _get_prompt_lab_max_concurrency(config),
+        "methods_lab_default_concurrency": METHODS_LAB_DEFAULT_CONCURRENCY,
+        "methods_lab_max_concurrency": _get_methods_lab_max_concurrency(config),
+    }
+
+
+def _validate_experiment_concurrency(value: int, *, max_allowed: int):
+    if value < 1 or value > max_allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"concurrency must be between 1 and {max_allowed}",
+        )
+
+
+def _resolve_experiment_worker_count(
+    requested: int,
+    *,
+    total_tasks: int,
+    max_allowed: int,
+) -> int:
+    bounded_total = max(1, total_tasks)
+    return max(1, min(int(requested), bounded_total, max_allowed))
+
+
 def _normalize_session_profile(raw: object) -> dict[str, str]:
     if raw is None:
         return dict(DEFAULT_SESSION_PROFILE)
@@ -2219,13 +2457,43 @@ def _run_method_for_document(
     chunk_mode: str,
     chunk_size_chars: int,
     progress_callback: Callable[[int, int], None] | None = None,
+    runtime_progress_callback: Callable[[dict[str, object]], None] | None = None,
+    timeout_seconds: float | None = None,
 ) -> tuple[
     list[CanonicalSpan],
     list[str],
     LLMConfidenceMetric | None,
     list[AgentChunkDiagnostic],
 ]:
+    def _emit_runtime_progress(
+        *,
+        chunk_index: int,
+        total_chunks: int,
+        start: int,
+        end: int,
+        pass_index: int | None = None,
+        pass_label: str | None = None,
+    ) -> None:
+        if runtime_progress_callback is None:
+            return
+        runtime_progress_callback(
+            {
+                "current_chunk_index": chunk_index,
+                "total_chunks": total_chunks,
+                "chunk_start": start,
+                "chunk_end": end,
+                "current_pass_index": pass_index,
+                "current_pass_label": pass_label,
+            }
+        )
+
     if not _should_use_chunking(len(doc.raw_text), chunk_mode, chunk_size_chars):
+        _emit_runtime_progress(
+            chunk_index=1,
+            total_chunks=1,
+            start=0,
+            end=len(doc.raw_text),
+        )
         method_result = run_method_with_metadata(
             text=doc.raw_text,
             method_id=method_id,
@@ -2239,6 +2507,17 @@ def _run_method_for_document(
             anthropic_thinking_budget_tokens=anthropic_thinking_budget_tokens,  # type: ignore[arg-type]
             method_verify=method_verify,
             label_profile=label_profile,
+            timeout_seconds=timeout_seconds,
+            progress_callback=(
+                lambda pass_index, pass_label: _emit_runtime_progress(
+                    chunk_index=1,
+                    total_chunks=1,
+                    start=0,
+                    end=len(doc.raw_text),
+                    pass_index=pass_index,
+                    pass_label=pass_label,
+                )
+            ),
         )
         spans = _normalize_and_validate_spans(
             normalize_method_spans(method_result.spans, label_profile=label_profile),
@@ -2260,6 +2539,12 @@ def _run_method_for_document(
         end: int,
     ) -> _ChunkExecutionResult:
         chunk_text = doc.raw_text[start:end]
+        _emit_runtime_progress(
+            chunk_index=idx + 1,
+            total_chunks=chunk_count,
+            start=start,
+            end=end,
+        )
         method_result = run_method_with_metadata(
             text=chunk_text,
             method_id=method_id,
@@ -2273,6 +2558,17 @@ def _run_method_for_document(
             anthropic_thinking_budget_tokens=anthropic_thinking_budget_tokens,  # type: ignore[arg-type]
             method_verify=method_verify,
             label_profile=label_profile,
+            timeout_seconds=timeout_seconds,
+            progress_callback=(
+                lambda pass_index, pass_label: _emit_runtime_progress(
+                    chunk_index=idx + 1,
+                    total_chunks=chunk_count,
+                    start=start,
+                    end=end,
+                    pass_index=pass_index,
+                    pass_label=pass_label,
+                )
+            ),
         )
         shifted = _shift_spans(
             normalize_method_spans(method_result.spans, label_profile=label_profile),
@@ -2520,6 +2816,7 @@ class MethodsLabRuntimeInput(BaseModel):
     label_projection: Literal["native", "coarse_simple"] = "native"
     chunk_mode: Literal["auto", "off", "force"] = "auto"
     chunk_size_chars: int = DEFAULT_CHUNK_SIZE_CHARS
+    task_timeout_seconds: float | None = None
 
 
 class MethodsLabRunCreateBody(BaseModel):
@@ -2529,6 +2826,13 @@ class MethodsLabRunCreateBody(BaseModel):
     models: list[PromptLabModelInput]
     runtime: MethodsLabRuntimeInput
     concurrency: int = METHODS_LAB_DEFAULT_CONCURRENCY
+
+
+class ExperimentLimitsResponse(BaseModel):
+    prompt_lab_default_concurrency: int
+    prompt_lab_max_concurrency: int
+    methods_lab_default_concurrency: int
+    methods_lab_max_concurrency: int
 
 
 def _resolve_prompt_lab_runtime(runtime: PromptLabRuntimeInput) -> dict[str, object]:
@@ -2566,6 +2870,8 @@ def _resolve_prompt_lab_runtime(runtime: PromptLabRuntimeInput) -> dict[str, obj
 
 
 def _validate_prompt_lab_request(body: PromptLabRunCreateBody, session_id: str = "default"):
+    cfg = _load_config()
+    prompt_lab_max_concurrency = _get_prompt_lab_max_concurrency(cfg)
     if not body.doc_ids:
         raise HTTPException(status_code=400, detail="doc_ids is required")
     if len(body.prompts) < 1 or len(body.prompts) > PROMPT_LAB_MAX_VARIANTS:
@@ -2578,8 +2884,10 @@ def _validate_prompt_lab_request(body: PromptLabRunCreateBody, session_id: str =
             status_code=400,
             detail=f"Model variants must be between 1 and {PROMPT_LAB_MAX_VARIANTS}",
         )
-    if body.concurrency < 1 or body.concurrency > PROMPT_LAB_MAX_VARIANTS:
-        raise HTTPException(status_code=400, detail="concurrency must be between 1 and 6")
+    _validate_experiment_concurrency(
+        body.concurrency,
+        max_allowed=prompt_lab_max_concurrency,
+    )
     if len(body.prompts) * len(body.models) > PROMPT_LAB_MAX_VARIANTS * PROMPT_LAB_MAX_VARIANTS:
         raise HTTPException(status_code=400, detail="Matrix limit exceeded (max 6x6)")
 
@@ -2958,6 +3266,9 @@ def _resolve_methods_lab_runtime(runtime: MethodsLabRuntimeInput) -> dict[str, o
     chunk_size_chars = _normalize_chunk_size(runtime.chunk_size_chars)
     label_profile = _normalize_label_profile(runtime.label_profile)
     label_projection = _normalize_label_projection(runtime.label_projection)
+    task_timeout_seconds = _safe_float(runtime.task_timeout_seconds)
+    if task_timeout_seconds is not None and task_timeout_seconds <= 0:
+        raise HTTPException(status_code=400, detail="task_timeout_seconds must be greater than 0")
     return {
         "api_key": api_key,
         "api_base": api_base,
@@ -2967,10 +3278,13 @@ def _resolve_methods_lab_runtime(runtime: MethodsLabRuntimeInput) -> dict[str, o
         "chunk_size_chars": chunk_size_chars,
         "label_profile": label_profile,
         "label_projection": label_projection,
+        "task_timeout_seconds": task_timeout_seconds,
     }
 
 
 def _validate_methods_lab_request(body: MethodsLabRunCreateBody, session_id: str = "default"):
+    cfg = _load_config()
+    methods_lab_max_concurrency = _get_methods_lab_max_concurrency(cfg)
     if not body.doc_ids:
         raise HTTPException(status_code=400, detail="doc_ids is required")
     if len(body.methods) < 1 or len(body.methods) > METHODS_LAB_MAX_METHOD_VARIANTS:
@@ -2985,8 +3299,10 @@ def _validate_methods_lab_request(body: MethodsLabRunCreateBody, session_id: str
             status_code=400,
             detail=f"Model variants must be between 1 and {PROMPT_LAB_MAX_VARIANTS}",
         )
-    if body.concurrency < 1 or body.concurrency > PROMPT_LAB_MAX_VARIANTS:
-        raise HTTPException(status_code=400, detail="concurrency must be between 1 and 6")
+    _validate_experiment_concurrency(
+        body.concurrency,
+        max_allowed=methods_lab_max_concurrency,
+    )
 
     known_ids = set(_load_session_index(session_id))
     for doc_id in body.doc_ids:
@@ -3101,6 +3417,7 @@ def _initialize_methods_lab_run(
             "api_base": runtime["api_base"],
             "chunk_mode": runtime["chunk_mode"],
             "chunk_size_chars": runtime["chunk_size_chars"],
+            "task_timeout_seconds": runtime.get("task_timeout_seconds"),
         },
         "concurrency": body.concurrency,
         "warnings": [],
@@ -3476,19 +3793,20 @@ def run_agent(doc_id: str, body: AgentRunBody):
                 message=detail,
             )
             raise HTTPException(status_code=502, detail=detail) from exc
+        run_key = _build_agent_llm_run_key(model)
         _save_sidecar(doc_id, "agent.llm", spans, session_id)
         _delete_sidecar(doc_id, "agent.openai", session_id)
         _upsert_span_map_entry(
             doc_id,
             LLM_RUNS_SIDECAR_KIND,
-            model,
+            run_key,
             spans,
             session_id,
         )
         _upsert_run_metadata(
             doc_id,
             LLM_RUNS_METADATA_SIDECAR_KIND,
-            model,
+            run_key,
             SavedRunMetadata(
                 mode="llm",
                 updated_at=_now_iso(),
@@ -3514,7 +3832,7 @@ def run_agent(doc_id: str, body: AgentRunBody):
             "agent.last_run",
             {
                 "mode": "llm",
-                "run_key": model,
+                "run_key": run_key,
                 "model": model,
                 "label_profile": label_profile,
                 "updated_at": _now_iso(),
@@ -3753,7 +4071,10 @@ async def get_prompt_lab_document_detail(run_id: str, cell_id: str, doc_id: str)
         "doc_id": doc_id,
         "status": stored.get("status", "pending"),
         "error": stored.get("error"),
+        "error_family": stored.get("error_family")
+        or _normalize_error_family(cast(str | None, stored.get("error"))),
         "warnings": stored.get("warnings", []),
+        "runtime_diagnostics": stored.get("runtime_diagnostics"),
         "reference_source_used": stored.get("reference_source_used"),
         "reference_spans": stored.get("reference_spans", []),
         "hypothesis_spans": stored.get("hypothesis_spans", []),
@@ -3767,6 +4088,23 @@ async def get_prompt_lab_document_detail(run_id: str, cell_id: str, doc_id: str)
         "model": model,
         "prompt": prompt,
     }
+
+
+@app.post("/api/prompt-lab/runs/{run_id}/cancel")
+async def cancel_prompt_lab_run(run_id: str) -> dict[str, object]:
+    session_id = "default"
+    with _prompt_lab_lock:
+        return _request_prompt_lab_cancel(run_id, session_id)
+
+
+@app.delete("/api/prompt-lab/runs/{run_id}")
+async def delete_prompt_lab_run(run_id: str) -> dict[str, object]:
+    session_id = "default"
+    with _prompt_lab_lock:
+        deleted = _delete_prompt_lab_run(run_id, session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return {"ok": True, "id": run_id}
 
 
 @app.post("/api/methods-lab/runs")
@@ -3844,7 +4182,10 @@ async def get_methods_lab_document_detail(run_id: str, cell_id: str, doc_id: str
         "doc_id": doc_id,
         "status": stored.get("status", "pending"),
         "error": stored.get("error"),
+        "error_family": stored.get("error_family")
+        or _normalize_error_family(cast(str | None, stored.get("error"))),
         "warnings": stored.get("warnings", []),
+        "runtime_diagnostics": stored.get("runtime_diagnostics"),
         "reference_source_used": stored.get("reference_source_used"),
         "reference_spans": stored.get("reference_spans", []),
         "hypothesis_spans": stored.get("hypothesis_spans", []),
@@ -3858,6 +4199,23 @@ async def get_methods_lab_document_detail(run_id: str, cell_id: str, doc_id: str
         "model": model,
         "method": method,
     }
+
+
+@app.post("/api/methods-lab/runs/{run_id}/cancel")
+async def cancel_methods_lab_run(run_id: str) -> dict[str, object]:
+    session_id = "default"
+    with _methods_lab_lock:
+        return _request_methods_lab_cancel(run_id, session_id)
+
+
+@app.delete("/api/methods-lab/runs/{run_id}")
+async def delete_methods_lab_run(run_id: str) -> dict[str, object]:
+    session_id = "default"
+    with _methods_lab_lock:
+        deleted = _delete_methods_lab_run(run_id, session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return {"ok": True, "id": run_id}
 
 
 @app.get("/api/documents/{doc_id}/metrics")
@@ -3884,7 +4242,9 @@ async def get_metrics(
         label_projection=normalized_projection,
     )
 
-    result = compute_metrics(eval_ref_spans, eval_hyp_spans, normalized_match_mode)
+    result = _serialize_metrics_payload(
+        compute_metrics(eval_ref_spans, eval_hyp_spans, normalized_match_mode)
+    )
     llm_confidence = _resolve_metrics_llm_confidence(enriched, reference, hypothesis)
     result["llm_confidence"] = (
         llm_confidence.model_dump()
@@ -4460,6 +4820,11 @@ async def update_config(body: dict):
     cfg.update(body)
     _save_config(cfg)
     return cfg
+
+
+@app.get("/api/experiments/limits")
+async def get_experiment_limits() -> ExperimentLimitsResponse:
+    return ExperimentLimitsResponse(**_get_experiment_limits())
 
 
 @app.get("/api/models/presets")

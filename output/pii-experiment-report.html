@@ -1,0 +1,1282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PII De-identification Experiment Report</title>
+    <link rel="stylesheet" href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&f[]=clash-display@500,600,700&display=swap">
+    <style>
+        /* ===========================================
+           THEME: Bright Analytical
+           Clean, light, data-focused report aesthetic
+           =========================================== */
+        :root {
+            --bg-primary: #f8f9fc;
+            --bg-secondary: #eef1f6;
+            --bg-card: #ffffff;
+            --bg-card-hover: #f3f5f9;
+            --text-primary: #1a1f2e;
+            --text-secondary: #4d5669;
+            --text-muted: #8892a4;
+            --accent: #0d9668;
+            --accent-dim: rgba(13, 150, 104, 0.08);
+            --accent-glow: rgba(13, 150, 104, 0.15);
+            --warn: #c47f0a;
+            --warn-dim: rgba(196, 127, 10, 0.08);
+            --danger: #d44040;
+            --danger-dim: rgba(212, 64, 64, 0.08);
+            --blue: #2f72d2;
+            --blue-dim: rgba(47, 114, 210, 0.08);
+            --purple: #7c5cbf;
+            --purple-dim: rgba(124, 92, 191, 0.08);
+            --border: rgba(0, 0, 0, 0.07);
+            --border-accent: rgba(13, 150, 104, 0.3);
+
+            --font-display: 'Clash Display', sans-serif;
+            --font-body: 'Satoshi', sans-serif;
+
+            --title-size: clamp(1.8rem, 5vw, 3.5rem);
+            --h2-size: clamp(1.3rem, 3.5vw, 2.2rem);
+            --h3-size: clamp(1rem, 2.2vw, 1.4rem);
+            --body-size: clamp(0.75rem, 1.3vw, 1rem);
+            --small-size: clamp(0.65rem, 1vw, 0.85rem);
+            --label-size: clamp(0.6rem, 0.9vw, 0.75rem);
+
+            --slide-padding: clamp(1.5rem, 4vw, 5rem);
+            --content-gap: clamp(0.75rem, 2vw, 2rem);
+            --element-gap: clamp(0.3rem, 0.8vw, 0.6rem);
+
+            --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+            --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+            --duration-normal: 0.7s;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        html {
+            scroll-behavior: smooth;
+            scroll-snap-type: y mandatory;
+            height: 100%;
+            overflow-x: hidden;
+        }
+
+        body {
+            font-family: var(--font-body);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            overflow-x: hidden;
+            height: 100%;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* ===========================================
+           SLIDE SYSTEM
+           =========================================== */
+        .slide {
+            width: 100vw;
+            height: 100vh;
+            height: 100dvh;
+            overflow: hidden;
+            scroll-snap-align: start;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            padding: var(--slide-padding);
+        }
+
+        .slide-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            max-height: 100%;
+            overflow: hidden;
+            gap: var(--content-gap);
+        }
+
+        /* Subtle grid background */
+        .slide::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background-image:
+                linear-gradient(rgba(0,0,0,0.025) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0,0,0,0.025) 1px, transparent 1px);
+            background-size: 60px 60px;
+            pointer-events: none;
+        }
+
+        /* Slide number */
+        .slide-num {
+            position: absolute;
+            top: var(--slide-padding);
+            right: var(--slide-padding);
+            font-family: var(--font-body);
+            font-size: var(--label-size);
+            color: var(--text-muted);
+            letter-spacing: 0.05em;
+            font-weight: 500;
+        }
+
+        /* Section label */
+        .section-label {
+            font-family: var(--font-body);
+            font-size: var(--label-size);
+            font-weight: 700;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            color: var(--accent);
+            margin-bottom: clamp(0.3rem, 0.8vw, 0.6rem);
+        }
+
+        h1 {
+            font-family: var(--font-display);
+            font-size: var(--title-size);
+            font-weight: 600;
+            line-height: 1.1;
+            letter-spacing: -0.02em;
+        }
+
+        h2 {
+            font-family: var(--font-display);
+            font-size: var(--h2-size);
+            font-weight: 600;
+            line-height: 1.15;
+            letter-spacing: -0.01em;
+        }
+
+        h3 {
+            font-family: var(--font-display);
+            font-size: var(--h3-size);
+            font-weight: 500;
+            line-height: 1.2;
+        }
+
+        p, li {
+            font-size: var(--body-size);
+            line-height: 1.5;
+            color: var(--text-secondary);
+        }
+
+        /* ===========================================
+           DATA TABLES
+           =========================================== */
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: var(--body-size);
+        }
+
+        .data-table th {
+            text-align: left;
+            font-size: var(--label-size);
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            padding: clamp(0.3rem, 0.6vw, 0.5rem) clamp(0.5rem, 1vw, 1rem);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .data-table td {
+            padding: clamp(0.35rem, 0.7vw, 0.6rem) clamp(0.5rem, 1vw, 1rem);
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .data-table tr:last-child td { border-bottom: none; }
+
+        .data-table .val { color: var(--text-primary); font-weight: 600; }
+        .data-table .best { color: var(--accent); font-weight: 700; }
+        .data-table .mid { color: var(--warn); font-weight: 600; }
+        .data-table .weak { color: var(--danger); font-weight: 600; }
+        .data-table .model-name { color: var(--text-primary); font-weight: 500; }
+
+        /* ===========================================
+           METRIC CARDS
+           =========================================== */
+        .metric-row {
+            display: grid;
+            gap: clamp(0.5rem, 1.2vw, 1rem);
+        }
+
+        .metric-row.cols-3 { grid-template-columns: repeat(3, 1fr); }
+        .metric-row.cols-4 { grid-template-columns: repeat(4, 1fr); }
+        .metric-row.cols-2 { grid-template-columns: repeat(2, 1fr); }
+
+        .metric-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: clamp(8px, 1vw, 12px);
+            padding: clamp(0.7rem, 1.5vw, 1.2rem);
+            display: flex;
+            flex-direction: column;
+            gap: clamp(0.15rem, 0.4vw, 0.3rem);
+        }
+
+        .metric-card .metric-label {
+            font-size: var(--label-size);
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+        }
+
+        .metric-card .metric-value {
+            font-family: var(--font-display);
+            font-size: clamp(1.4rem, 3vw, 2.4rem);
+            font-weight: 700;
+            color: var(--text-primary);
+            line-height: 1;
+        }
+
+        .metric-card .metric-detail {
+            font-size: var(--small-size);
+            color: var(--text-muted);
+        }
+
+        .metric-card { box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+        .metric-card.accent { border-color: var(--border-accent); background: linear-gradient(135deg, var(--accent-dim), var(--bg-card)); }
+        .metric-card.warn { border-color: rgba(196,127,10,0.3); background: linear-gradient(135deg, var(--warn-dim), var(--bg-card)); }
+        .metric-card.danger { border-color: rgba(212,64,64,0.3); background: linear-gradient(135deg, var(--danger-dim), var(--bg-card)); }
+        .metric-card.blue { border-color: rgba(47,114,210,0.3); background: linear-gradient(135deg, var(--blue-dim), var(--bg-card)); }
+
+        .metric-card.accent .metric-value { color: var(--accent); }
+        .metric-card.warn .metric-value { color: var(--warn); }
+        .metric-card.danger .metric-value { color: var(--danger); }
+        .metric-card.blue .metric-value { color: var(--blue); }
+
+        /* ===========================================
+           BAR CHART (CSS-only)
+           =========================================== */
+        .bar-chart {
+            display: flex;
+            flex-direction: column;
+            gap: clamp(0.25rem, 0.6vw, 0.45rem);
+        }
+
+        .bar-row {
+            display: grid;
+            grid-template-columns: clamp(100px, 15vw, 180px) 1fr clamp(40px, 5vw, 60px);
+            align-items: center;
+            gap: clamp(0.4rem, 0.8vw, 0.7rem);
+        }
+
+        .bar-label {
+            font-size: var(--small-size);
+            color: var(--text-secondary);
+            text-align: right;
+            font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .bar-track {
+            height: clamp(16px, 2.2vh, 26px);
+            background: #e8ecf2;
+            border-radius: 4px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .bar-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 1.2s var(--ease-out-expo);
+            width: 0;
+        }
+
+        .slide.visible .bar-fill { width: var(--bar-width); }
+
+        .bar-fill.green { background: linear-gradient(90deg, #0d9668, #34c896); }
+        .bar-fill.blue { background: linear-gradient(90deg, #2f72d2, #5a9be6); }
+        .bar-fill.yellow { background: linear-gradient(90deg, #c47f0a, #e5a840); }
+        .bar-fill.red { background: linear-gradient(90deg, #d44040, #e87272); }
+        .bar-fill.purple { background: linear-gradient(90deg, #7c5cbf, #a48ad6); }
+
+        .bar-value {
+            font-size: var(--small-size);
+            font-weight: 700;
+            color: var(--text-primary);
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* ===========================================
+           BADGES & TAGS
+           =========================================== */
+        .badge {
+            display: inline-block;
+            padding: 0.15em 0.5em;
+            border-radius: 4px;
+            font-size: var(--label-size);
+            font-weight: 700;
+            letter-spacing: 0.04em;
+        }
+
+        .badge.green { background: rgba(13,150,104,0.12); color: #0a7d56; }
+        .badge.yellow { background: rgba(196,127,10,0.12); color: #9a6508; }
+        .badge.red { background: rgba(212,64,64,0.12); color: #b33030; }
+        .badge.blue { background: rgba(47,114,210,0.12); color: #245da8; }
+
+        /* ===========================================
+           TWO-COLUMN LAYOUT
+           =========================================== */
+        .two-col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: clamp(1rem, 2.5vw, 2.5rem);
+            align-items: start;
+        }
+
+        .col-title {
+            font-size: var(--small-size);
+            font-weight: 700;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            margin-bottom: clamp(0.3rem, 0.6vw, 0.5rem);
+        }
+
+        /* ===========================================
+           BULLET LIST
+           =========================================== */
+        .bullet-list {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: var(--element-gap);
+        }
+
+        .bullet-list li {
+            padding-left: clamp(0.8rem, 1.5vw, 1.2rem);
+            position: relative;
+        }
+
+        .bullet-list li::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0.55em;
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background: var(--accent);
+        }
+
+        .bullet-list li.warn::before { background: var(--warn); }
+        .bullet-list li.danger::before { background: var(--danger); }
+
+        /* ===========================================
+           INSIGHT CALLOUT
+           =========================================== */
+        .insight {
+            background: var(--bg-card);
+            border-left: 3px solid var(--accent);
+            padding: clamp(0.6rem, 1.2vw, 1rem) clamp(0.8rem, 1.5vw, 1.2rem);
+            border-radius: 0 8px 8px 0;
+            font-size: var(--body-size);
+            color: var(--text-secondary);
+            line-height: 1.5;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+        }
+
+        .insight strong { color: var(--text-primary); }
+        .insight.warn { border-left-color: var(--warn); }
+        .insight.danger { border-left-color: var(--danger); }
+
+        /* ===========================================
+           ERROR BREAKDOWN TABLE
+           =========================================== */
+        .error-table td:first-child {
+            font-family: var(--font-body);
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+
+        /* ===========================================
+           ANIMATIONS
+           =========================================== */
+        .reveal {
+            opacity: 0;
+            transform: translateY(20px);
+            transition: opacity var(--duration-normal) var(--ease-out-expo),
+                        transform var(--duration-normal) var(--ease-out-expo);
+        }
+
+        .slide.visible .reveal {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .reveal:nth-child(2) { transition-delay: 0.08s; }
+        .reveal:nth-child(3) { transition-delay: 0.16s; }
+        .reveal:nth-child(4) { transition-delay: 0.24s; }
+        .reveal:nth-child(5) { transition-delay: 0.32s; }
+        .reveal:nth-child(6) { transition-delay: 0.40s; }
+
+        /* ===========================================
+           PROGRESS BAR
+           =========================================== */
+        .progress-bar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            height: 3px;
+            background: var(--accent);
+            z-index: 100;
+            transition: width 0.3s ease;
+        }
+
+        /* ===========================================
+           NAV DOTS
+           =========================================== */
+        .nav-dots {
+            position: fixed;
+            right: clamp(0.5rem, 1.5vw, 1.5rem);
+            top: 50%;
+            transform: translateY(-50%);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            z-index: 90;
+        }
+
+        .nav-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--text-muted);
+            opacity: 0.35;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border: none;
+            padding: 0;
+        }
+
+        .nav-dot.active {
+            opacity: 1;
+            background: var(--accent);
+        }
+
+        /* ===========================================
+           RESPONSIVE
+           =========================================== */
+        @media (max-height: 700px) {
+            :root {
+                --slide-padding: clamp(1rem, 3vw, 2.5rem);
+                --content-gap: clamp(0.5rem, 1.5vw, 1.2rem);
+                --title-size: clamp(1.5rem, 4.5vw, 2.8rem);
+                --h2-size: clamp(1.1rem, 3vw, 1.8rem);
+            }
+        }
+
+        @media (max-height: 600px) {
+            :root {
+                --slide-padding: clamp(0.75rem, 2.5vw, 1.5rem);
+                --content-gap: clamp(0.4rem, 1vw, 0.8rem);
+                --title-size: clamp(1.2rem, 4vw, 2rem);
+                --body-size: clamp(0.7rem, 1.1vw, 0.9rem);
+            }
+            .nav-dots, .slide-num { display: none; }
+        }
+
+        @media (max-height: 500px) {
+            :root {
+                --slide-padding: clamp(0.5rem, 2vw, 1rem);
+                --title-size: clamp(1rem, 3.5vw, 1.5rem);
+                --h2-size: clamp(0.9rem, 2.5vw, 1.25rem);
+                --body-size: clamp(0.65rem, 1vw, 0.8rem);
+            }
+        }
+
+        @media (max-width: 768px) {
+            .two-col { grid-template-columns: 1fr; gap: clamp(0.5rem, 2vw, 1rem); }
+            .metric-row.cols-4 { grid-template-columns: repeat(2, 1fr); }
+            .bar-row { grid-template-columns: clamp(70px, 20vw, 120px) 1fr clamp(35px, 6vw, 50px); }
+        }
+
+        @media (max-width: 480px) {
+            .metric-row.cols-3 { grid-template-columns: 1fr; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.01ms !important;
+                transition-duration: 0.2s !important;
+            }
+            html { scroll-behavior: auto; }
+            .bar-fill { transition-duration: 0.01ms !important; }
+        }
+
+        /* ===========================================
+           TITLE SLIDE SPECIAL
+           =========================================== */
+        .title-slide {
+            background:
+                radial-gradient(ellipse at 30% 70%, rgba(13, 150, 104, 0.06) 0%, transparent 50%),
+                radial-gradient(ellipse at 70% 30%, rgba(47, 114, 210, 0.05) 0%, transparent 50%),
+                var(--bg-primary);
+        }
+
+        .title-slide h1 {
+            background: linear-gradient(135deg, var(--text-primary) 0%, var(--accent) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .title-meta {
+            display: flex;
+            gap: clamp(1rem, 2vw, 2rem);
+            margin-top: clamp(0.3rem, 0.8vw, 0.5rem);
+        }
+
+        .title-meta span {
+            font-size: var(--small-size);
+            color: var(--text-muted);
+        }
+
+        .subtitle {
+            font-size: clamp(0.9rem, 1.8vw, 1.2rem);
+            color: var(--text-secondary);
+            max-width: 600px;
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+
+<div class="progress-bar" id="progressBar"></div>
+<nav class="nav-dots" id="navDots"></nav>
+
+<!-- ============================================
+     SLIDE 1: TITLE
+     ============================================ -->
+<section class="slide title-slide">
+    <span class="slide-num">01 / 14</span>
+    <div class="slide-content">
+        <div class="section-label reveal">Experiment Report</div>
+        <h1 class="reveal">PII De-identification<br>Evaluation Results</h1>
+        <p class="subtitle reveal">Cross-model, cross-method benchmark across 6 models, 6 prompts, 8 methods, and 17 documents.</p>
+        <div class="title-meta reveal">
+            <span>March 8, 2026</span>
+            <span>Prompt Lab + Methods Lab</span>
+            <span>960 total evaluations</span>
+        </div>
+    </div>
+</section>
+
+<!-- ============================================
+     SLIDE 2: EXPERIMENT OVERVIEW
+     ============================================ -->
+<section class="slide">
+    <span class="slide-num">02 / 14</span>
+    <div class="slide-content">
+        <div class="section-label reveal">Overview</div>
+        <h2 class="reveal">Two parallel experiments</h2>
+        <div class="two-col reveal">
+            <div>
+                <div class="col-title">Prompt Lab</div>
+                <div class="metric-row cols-2" style="margin-bottom: var(--element-gap);">
+                    <div class="metric-card">
+                        <span class="metric-label">Prompts</span>
+                        <span class="metric-value">6</span>
+                    </div>
+                    <div class="metric-card">
+                        <span class="metric-label">Models</span>
+                        <span class="metric-value">6</span>
+                    </div>
+                </div>
+                <ul class="bullet-list">
+                    <li>baseline_raw, annotator_agents_raw</li>
+                    <li>preset_default &amp; extended (verify on/off)</li>
+                    <li>576 total doc evaluations</li>
+                </ul>
+            </div>
+            <div>
+                <div class="col-title">Methods Lab</div>
+                <div class="metric-row cols-2" style="margin-bottom: var(--element-gap);">
+                    <div class="metric-card">
+                        <span class="metric-label">Methods</span>
+                        <span class="metric-value">8</span>
+                    </div>
+                    <div class="metric-card">
+                        <span class="metric-label">Models</span>
+                        <span class="metric-value">3</span>
+                    </div>
+                </div>
+                <ul class="bullet-list">
+                    <li>Default, Extended, Verified, Dual, Dual Split</li>
+                    <li>Presidio, Presidio+Default, Presidio+LLM Split</li>
+                    <li>384 total doc evaluations</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ============================================
+     SLIDE 3: MODEL RANKINGS - PROMPT LAB
+     ============================================ -->
+<section class="slide">
+    <span class="slide-num">03 / 14</span>
+    <div class="slide-content">
+        <div class="section-label reveal">Model Performance</div>
+        <h2 class="reveal">Prompt Lab: Pooled Micro F1 by model</h2>
+        <div class="bar-chart reveal">
+            <div class="bar-row">
+                <span class="bar-label">gemini_pro</span>
+                <div class="bar-track"><div class="bar-fill green" style="--bar-width: 82.6%"></div></div>
+                <span class="bar-value">82.6%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">gemini_flash_lite</span>
+                <div class="bar-track"><div class="bar-fill green" style="--bar-width: 80.8%"></div></div>
+                <span class="bar-value">80.8%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">codex_xhigh</span>
+                <div class="bar-track"><div class="bar-fill blue" style="--bar-width: 73.5%"></div></div>
+                <span class="bar-value">73.5%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">codex_none</span>
+                <div class="bar-track"><div class="bar-fill blue" style="--bar-width: 73.4%"></div></div>
+                <span class="bar-value">73.4%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">chat52_xhigh</span>
+                <div class="bar-track"><div class="bar-fill yellow" style="--bar-width: 59.9%"></div></div>
+                <span class="bar-value">59.9%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">chat52_none</span>
+                <div class="bar-track"><div class="bar-fill red" style="--bar-width: 52.0%"></div></div>
+                <span class="bar-value">52.0%</span>
+            </div>
+        </div>
+        <div class="insight reveal">
+            <strong>Gemini Pro leads overall</strong> with 0 failures. Codex reasoning effort (xhigh vs none) makes almost no difference. chat52_none is incomplete (81 pending) and unreliable.
+        </div>
+    </div>
+</section>
+
+<!-- ============================================
+     SLIDE 4: MODEL RANKINGS - METHODS LAB
+     ============================================ -->
+<section class="slide">
+    <span class="slide-num">04 / 14</span>
+    <div class="slide-content">
+        <div class="section-label reveal">Model Performance</div>
+        <h2 class="reveal">Methods Lab: Pooled Micro F1 by model</h2>
+        <div class="bar-chart reveal">
+            <div class="bar-row">
+                <span class="bar-label">gemini_pro</span>
+                <div class="bar-track"><div class="bar-fill green" style="--bar-width: 81.4%"></div></div>
+                <span class="bar-value">81.4%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">gemini_flash_lite</span>
+                <div class="bar-track"><div class="bar-fill yellow" style="--bar-width: 77.2%"></div></div>
+                <span class="bar-value">77.2%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">Codex</span>
+                <div class="bar-track"><div class="bar-fill blue" style="--bar-width: 70.7%"></div></div>
+                <span class="bar-value">70.7%</span>
+            </div>
+        </div>
+        <div class="metric-row cols-3 reveal">
+            <div class="metric-card accent">
+                <span class="metric-label">gemini_pro failures</span>
+                <span class="metric-value">1</span>
+                <span class="metric-detail">Connection error (transient)</span>
+            </div>
+            <div class="metric-card warn">
+                <span class="metric-label">flash_lite failures</span>
+                <span class="metric-value">14</span>
+                <span class="metric-detail">Output token limit</span>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Codex failures</span>
+                <span class="metric-value">0</span>
+                <span class="metric-detail">Fully reliable</span>
+            </div>
+        </div>
+        <div class="insight reveal">
+            <strong>Methods help Gemini more than Codex.</strong> Gemini Pro best method (86.1%) beats its best prompt (84.5%). Codex best prompt (77.5%) beats its best method (75.5%).
+        </div>
+    </div>
+</section>
+
+<!-- ============================================
+     SLIDE 5: BEST PROMPTS
+     ============================================ -->
+<section class="slide">
+    <span class="slide-num">05 / 14</span>
+    <div class="slide-content">
+        <div class="section-label reveal">Prompt Lab</div>
+        <h2 class="reveal">annotator_agents_raw is the cross-model winner</h2>
+        <div class="bar-chart reveal">
+            <div class="bar-row">
+                <span class="bar-label">annotator_agents_raw</span>
+                <div class="bar-track"><div class="bar-fill green" style="--bar-width: 79.6%"></div></div>
+                <span class="bar-value">79.6%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">preset_extended_off</span>
+                <div class="bar-track"><div class="bar-fill blue" style="--bar-width: 74.5%"></div></div>
+                <span class="bar-value">74.5%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">preset_default_on</span>
+                <div class="bar-track"><div class="bar-fill blue" style="--bar-width: 73.9%"></div></div>
+                <span class="bar-value">73.9%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">preset_default_off</span>
+                <div class="bar-track"><div class="bar-fill blue" style="--bar-width: 73.8%"></div></div>
+                <span class="bar-value">73.8%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">baseline_raw</span>
+                <div class="bar-track"><div class="bar-fill blue" style="--bar-width: 73.0%"></div></div>
+                <span class="bar-value">73.0%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">preset_extended_on</span>
+                <div class="bar-track"><div class="bar-fill blue" style="--bar-width: 72.6%"></div></div>
+                <span class="bar-value">72.6%</span>
+            </div>
+        </div>
+        <div class="insight reveal">
+            <strong>Best cells:</strong> gemini_pro + preset_extended_verify_off <span class="badge green">84.5%</span> &nbsp; gemini_pro + preset_default_verify_off <span class="badge green">83.6%</span> &nbsp; flash_lite + annotator_agents_raw <span class="badge green">83.2%</span>
+        </div>
+    </div>
+</section>
+
+<!-- ============================================
+     SLIDE 6: BEST METHODS
+     ============================================ -->
+<section class="slide">
+    <span class="slide-num">06 / 14</span>
+    <div class="slide-content">
+        <div class="section-label reveal">Methods Lab</div>
+        <h2 class="reveal">Dual and Dual Split are the clear leaders</h2>
+        <div class="bar-chart reveal">
+            <div class="bar-row">
+                <span class="bar-label">Dual</span>
+                <div class="bar-track"><div class="bar-fill green" style="--bar-width: 79.5%"></div></div>
+                <span class="bar-value">79.5%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">Dual Split</span>
+                <div class="bar-track"><div class="bar-fill green" style="--bar-width: 79.0%"></div></div>
+                <span class="bar-value">79.0%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">Extended</span>
+                <div class="bar-track"><div class="bar-fill blue" style="--bar-width: 77.4%"></div></div>
+                <span class="bar-value">77.4%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">Presidio + LLM Split</span>
+                <div class="bar-track"><div class="bar-fill blue" style="--bar-width: 77.3%"></div></div>
+                <span class="bar-value">77.3%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">Presidio + Default</span>
+                <div class="bar-track"><div class="bar-fill blue" style="--bar-width: 76.5%"></div></div>
+                <span class="bar-value">76.5%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">Default</span>
+                <div class="bar-track"><div class="bar-fill blue" style="--bar-width: 76.5%"></div></div>
+                <span class="bar-value">76.5%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">Verified</span>
+                <div class="bar-track"><div class="bar-fill yellow" style="--bar-width: 75.1%"></div></div>
+                <span class="bar-value">75.1%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">Presidio only</span>
+                <div class="bar-track"><div class="bar-fill red" style="--bar-width: 60.4%"></div></div>
+                <span class="bar-value">60.4%</span>
+            </div>
+        </div>
+        <div class="insight reveal">
+            <strong>Best cells:</strong> gemini_pro + Dual <span class="badge green">86.1%</span> &nbsp; gemini_pro + Dual Split <span class="badge green">86.0%</span> &nbsp; flash_lite + Dual Split <span class="badge green">84.5%</span>
+        </div>
+    </div>
+</section>
+
+<!-- ============================================
+     SLIDE 7: TOP CONFIGURATIONS
+     ============================================ -->
+<section class="slide">
+    <span class="slide-num">07 / 14</span>
+    <div class="slide-content">
+        <div class="section-label reveal">Leaderboard</div>
+        <h2 class="reveal">Top 5 configurations overall</h2>
+        <table class="data-table reveal">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Model</th>
+                    <th>Config</th>
+                    <th>Lab</th>
+                    <th>Pooled F1</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td class="val">1</td>
+                    <td class="model-name">gemini_pro</td>
+                    <td>Dual</td>
+                    <td><span class="badge blue">METHOD</span></td>
+                    <td class="best">86.1%</td>
+                </tr>
+                <tr>
+                    <td class="val">2</td>
+                    <td class="model-name">gemini_pro</td>
+                    <td>Dual Split</td>
+                    <td><span class="badge blue">METHOD</span></td>
+                    <td class="best">86.0%</td>
+                </tr>
+                <tr>
+                    <td class="val">3</td>
+                    <td class="model-name">gemini_pro</td>
+                    <td>preset_extended_verify_off</td>
+                    <td><span class="badge green">PROMPT</span></td>
+                    <td class="best">84.5%</td>
+                </tr>
+                <tr>
+                    <td class="val">4</td>
+                    <td class="model-name">gemini_flash_lite</td>
+                    <td>Dual Split</td>
+                    <td><span class="badge blue">METHOD</span></td>
+                    <td class="best">84.5%</td>
+                </tr>
+                <tr>
+                    <td class="val">5</td>
+                    <td class="model-name">gemini_pro</td>
+                    <td>preset_default_verify_off</td>
+                    <td><span class="badge green">PROMPT</span></td>
+                    <td class="val">83.6%</td>
+                </tr>
+            </tbody>
+        </table>
+        <div class="insight reveal">
+            <strong>gemini_pro dominates the top 5.</strong> The best OpenAI result is codex_none + annotator_agents_raw at 77.5%, a full 8.6 points behind the leader.
+        </div>
+    </div>
+</section>
+
+<!-- ============================================
+     SLIDE 8: PII CATEGORY PERFORMANCE
+     ============================================ -->
+<section class="slide">
+    <span class="slide-num">08 / 14</span>
+    <div class="slide-content">
+        <div class="section-label reveal">Category Analysis</div>
+        <h2 class="reveal">NAME carries the signal; most categories are weak</h2>
+        <div class="two-col reveal">
+            <div>
+                <div class="col-title">Prompt Lab category F1</div>
+                <div class="bar-chart">
+                    <div class="bar-row">
+                        <span class="bar-label">NAME</span>
+                        <div class="bar-track"><div class="bar-fill green" style="--bar-width: 78.9%"></div></div>
+                        <span class="bar-value">78.9%</span>
+                    </div>
+                    <div class="bar-row">
+                        <span class="bar-label">URL</span>
+                        <div class="bar-track"><div class="bar-fill yellow" style="--bar-width: 59.3%"></div></div>
+                        <span class="bar-value">59.3%</span>
+                    </div>
+                    <div class="bar-row">
+                        <span class="bar-label">DATE</span>
+                        <div class="bar-track"><div class="bar-fill red" style="--bar-width: 18.6%"></div></div>
+                        <span class="bar-value">18.6%</span>
+                    </div>
+                    <div class="bar-row">
+                        <span class="bar-label">LOCATION</span>
+                        <div class="bar-track"><div class="bar-fill red" style="--bar-width: 17.8%"></div></div>
+                        <span class="bar-value">17.8%</span>
+                    </div>
+                    <div class="bar-row">
+                        <span class="bar-label">AGE</span>
+                        <div class="bar-track"><div class="bar-fill red" style="--bar-width: 9.9%"></div></div>
+                        <span class="bar-value">9.9%</span>
+                    </div>
+                    <div class="bar-row">
+                        <span class="bar-label">MISC_ID</span>
+                        <div class="bar-track"><div class="bar-fill red" style="--bar-width: 5.0%"></div></div>
+                        <span class="bar-value">5.0%</span>
+                    </div>
+                </div>
+            </div>
+            <div>
+                <div class="col-title">Methods Lab category F1</div>
+                <div class="bar-chart">
+                    <div class="bar-row">
+                        <span class="bar-label">NAME</span>
+                        <div class="bar-track"><div class="bar-fill green" style="--bar-width: 79.6%"></div></div>
+                        <span class="bar-value">79.6%</span>
+                    </div>
+                    <div class="bar-row">
+                        <span class="bar-label">URL</span>
+                        <div class="bar-track"><div class="bar-fill yellow" style="--bar-width: 44.3%"></div></div>
+                        <span class="bar-value">44.3%</span>
+                    </div>
+                    <div class="bar-row">
+                        <span class="bar-label">LOCATION</span>
+                        <div class="bar-track"><div class="bar-fill red" style="--bar-width: 11.8%"></div></div>
+                        <span class="bar-value">11.8%</span>
+                    </div>
+                    <div class="bar-row">
+                        <span class="bar-label">DATE</span>
+                        <div class="bar-track"><div class="bar-fill red" style="--bar-width: 11.9%"></div></div>
+                        <span class="bar-value">11.9%</span>
+                    </div>
+                    <div class="bar-row">
+                        <span class="bar-label">MISC_ID</span>
+                        <div class="bar-track"><div class="bar-fill red" style="--bar-width: 5.1%"></div></div>
+                        <span class="bar-value">5.1%</span>
+                    </div>
+                    <div class="bar-row">
+                        <span class="bar-label">AGE</span>
+                        <div class="bar-track"><div class="bar-fill red" style="--bar-width: 0%"></div></div>
+                        <span class="bar-value">0.0%</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="insight warn reveal">
+            <strong>SCHOOL and OTHER are 0.0% F1 across both labs.</strong> SCHOOL predictions are pure false positives (zero support). Evaluate whether these labels should exist in the current taxonomy.
+        </div>
+    </div>
+</section>
+
+<!-- ============================================
+     SLIDE 9: NAME F1 BY MODEL
+     ============================================ -->
+<section class="slide">
+    <span class="slide-num">09 / 14</span>
+    <div class="slide-content">
+        <div class="section-label reveal">Category Deep Dive</div>
+        <h2 class="reveal">Gemini dominates NAME detection</h2>
+        <div class="bar-chart reveal">
+            <div class="bar-row">
+                <span class="bar-label">gemini_flash_lite</span>
+                <div class="bar-track"><div class="bar-fill green" style="--bar-width: 87.3%"></div></div>
+                <span class="bar-value">87.3%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">gemini_pro</span>
+                <div class="bar-track"><div class="bar-fill green" style="--bar-width: 82.3%"></div></div>
+                <span class="bar-value">82.3%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">codex_none</span>
+                <div class="bar-track"><div class="bar-fill blue" style="--bar-width: 77.9%"></div></div>
+                <span class="bar-value">77.9%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">codex_xhigh</span>
+                <div class="bar-track"><div class="bar-fill blue" style="--bar-width: 77.3%"></div></div>
+                <span class="bar-value">77.3%</span>
+            </div>
+            <div class="bar-row">
+                <span class="bar-label">chat52_xhigh</span>
+                <div class="bar-track"><div class="bar-fill yellow" style="--bar-width: 72.3%"></div></div>
+                <span class="bar-value">72.3%</span>
+            </div>
+        </div>
+        <div class="insight reveal">
+            <strong>NAME is the highest-support category</strong> and the main driver of overall F1. Gemini's ~10-point edge over OpenAI on NAME largely explains the overall model gap.
+        </div>
+    </div>
+</section>
+
+<!-- ============================================
+     SLIDE 10: ERROR ANALYSIS
+     ============================================ -->
+<section class="slide">
+    <span class="slide-num">10 / 14</span>
+    <div class="slide-content">
+        <div class="section-label reveal">Reliability</div>
+        <h2 class="reveal">251 total failures across all runs</h2>
+        <div class="metric-row cols-3 reveal">
+            <div class="metric-card danger">
+                <span class="metric-label">Output token limit</span>
+                <span class="metric-value">154</span>
+                <span class="metric-detail">finish_reason=length</span>
+            </div>
+            <div class="metric-card warn">
+                <span class="metric-label">Temperature config bug</span>
+                <span class="metric-value">96</span>
+                <span class="metric-detail">Claude thinking mode</span>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">Connection error</span>
+                <span class="metric-value">1</span>
+                <span class="metric-detail">Transient, gemini_pro</span>
+            </div>
+        </div>
+        <table class="data-table error-table reveal">
+            <thead>
+                <tr><th>Model</th><th>Prompt Lab</th><th>Methods Lab</th><th>Total</th><th>Root Cause</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>claude_thinking_on</td>
+                    <td class="weak">148</td>
+                    <td class="weak">77</td>
+                    <td class="weak">225</td>
+                    <td>96 temp bug + 129 token limit</td>
+                </tr>
+                <tr>
+                    <td>gemini_flash_lite</td>
+                    <td class="mid">11</td>
+                    <td class="mid">14</td>
+                    <td class="mid">25</td>
+                    <td>All output token limit</td>
+                </tr>
+                <tr>
+                    <td>gemini_pro</td>
+                    <td class="best">0</td>
+                    <td>1</td>
+                    <td>1</td>
+                    <td>Connection error</td>
+                </tr>
+                <tr>
+                    <td>OpenAI (all)</td>
+                    <td class="best">0</td>
+                    <td class="best">0</td>
+                    <td class="best">0</td>
+                    <td>&mdash;</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<!-- ============================================
+     SLIDE 11: FAILURE DOCS
+     ============================================ -->
+<section class="slide">
+    <span class="slide-num">11 / 14</span>
+    <div class="slide-content">
+        <div class="section-label reveal">Failure Clustering</div>
+        <h2 class="reveal">gemini_flash_lite failures cluster on 4 hard docs</h2>
+        <table class="data-table reveal">
+            <thead>
+                <tr><th>Doc ID</th><th>Prompt Lab</th><th>Methods Lab</th><th>Total</th><th>Pattern</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td class="model-name">35abe043</td>
+                    <td>3</td><td>5</td><td class="weak">8</td>
+                    <td>Non-chunked &amp; chunk fails</td>
+                </tr>
+                <tr>
+                    <td class="model-name">d4df4c18</td>
+                    <td>2</td><td>5</td><td class="weak">7</td>
+                    <td>Always chunk 2/2</td>
+                </tr>
+                <tr>
+                    <td class="model-name">c9c3cf4c</td>
+                    <td>3</td><td>3</td><td class="mid">6</td>
+                    <td>Always chunk 1/4</td>
+                </tr>
+                <tr>
+                    <td class="model-name">f5d5b0e9</td>
+                    <td>1</td><td>1</td><td>2</td>
+                    <td>Chunk 1/2</td>
+                </tr>
+            </tbody>
+        </table>
+        <div class="insight reveal">
+            <strong>Root cause: output token budget exhaustion</strong>, not document difficulty. These docs produce enough PII annotations that flash_lite's max output tokens can't hold the full response. Smaller chunk sizes or higher max_tokens would fix this.
+        </div>
+    </div>
+</section>
+
+<!-- ============================================
+     SLIDE 12: KEY PATTERNS
+     ============================================ -->
+<section class="slide">
+    <span class="slide-num">12 / 14</span>
+    <div class="slide-content">
+        <div class="section-label reveal">Key Patterns</div>
+        <h2 class="reveal">What the data tells us</h2>
+        <ul class="bullet-list reveal">
+            <li><strong>Recall is the bottleneck everywhere.</strong> Precision 0.77&ndash;0.94 consistently exceeds recall 0.55&ndash;0.81 across all configs.</li>
+            <li><strong>Verifier hurts net F1.</strong> Gains 2&ndash;5 points precision but loses 3&ndash;10 points recall. Not worth enabling.</li>
+            <li><strong>Codex reasoning effort is wasted.</strong> codex_xhigh (73.5%) &asymp; codex_none (73.4%). Save the tokens.</li>
+            <li class="warn"><strong>SCHOOL is pathological.</strong> Zero support in ground truth, but models predict it &rarr; pure false positives.</li>
+            <li class="warn"><strong>Claude thinking mode has a fixable config bug.</strong> 96 of 225 failures are temperature misconfiguration, not model quality. Worth re-evaluating after fix.</li>
+        </ul>
+    </div>
+</section>
+
+<!-- ============================================
+     SLIDE 13: RECOMMENDED NEXT STEPS
+     ============================================ -->
+<section class="slide">
+    <span class="slide-num">13 / 14</span>
+    <div class="slide-content">
+        <div class="section-label reveal">Next Steps</div>
+        <h2 class="reveal">Recommended experiments</h2>
+        <div class="two-col reveal">
+            <div>
+                <div class="col-title">Confirmation Sweep</div>
+                <ul class="bullet-list">
+                    <li>gemini_pro + Dual</li>
+                    <li>gemini_pro + Dual Split</li>
+                    <li>gemini_pro + Extended</li>
+                    <li>gemini_pro + annotator_agents_raw</li>
+                    <li>codex_none + annotator_agents_raw</li>
+                    <li>codex_none + Dual</li>
+                </ul>
+            </div>
+            <div>
+                <div class="col-title">Hard-Doc Experiment</div>
+                <ul class="bullet-list">
+                    <li>Target: c9c3cf4c, d4df4c18, 35abe043, f5d5b0e9, 56f8e098</li>
+                    <li>Test smaller chunk sizes</li>
+                    <li>Test increased max_tokens</li>
+                    <li>Validate flash_lite viability</li>
+                </ul>
+            </div>
+        </div>
+        <div class="insight reveal">
+            <strong>Best candidate now:</strong> gemini_pro + Dual (86.1%). <strong>Best OpenAI baseline:</strong> codex_none + annotator_agents_raw (77.5%).
+        </div>
+    </div>
+</section>
+
+<!-- ============================================
+     SLIDE 14: IMPROVEMENT PRIORITIES
+     ============================================ -->
+<section class="slide">
+    <span class="slide-num">14 / 14</span>
+    <div class="slide-content">
+        <div class="section-label reveal">Improvement Priorities</div>
+        <h2 class="reveal">What to fix and investigate</h2>
+        <div class="metric-row cols-2 reveal">
+            <div class="metric-card danger">
+                <span class="metric-label">P0: Fix Now</span>
+                <span class="metric-value" style="font-size: clamp(1rem, 2vw, 1.4rem);">Config Bugs</span>
+                <span class="metric-detail">Fix Claude temperature=1 requirement. Add orphaned-run reconciliation at startup.</span>
+            </div>
+            <div class="metric-card warn">
+                <span class="metric-label">P1: Label Taxonomy</span>
+                <span class="metric-value" style="font-size: clamp(1rem, 2vw, 1.4rem);">Audit Labels</span>
+                <span class="metric-detail">Remove or reclassify SCHOOL (0% F1, pure FP). Evaluate OTHER. Consider folding AGE into broader category.</span>
+            </div>
+        </div>
+        <div class="metric-row cols-2 reveal">
+            <div class="metric-card blue">
+                <span class="metric-label">P2: Recall Improvements</span>
+                <span class="metric-value" style="font-size: clamp(1rem, 2vw, 1.4rem);">Weak Categories</span>
+                <span class="metric-detail">Add positive examples for MISC_ID and AGE. Tighten false-positive handling for DATE and LOCATION.</span>
+            </div>
+            <div class="metric-card">
+                <span class="metric-label">P3: Explore</span>
+                <span class="metric-value" style="font-size: clamp(1rem, 2vw, 1.4rem);">New Combos</span>
+                <span class="metric-detail">Combine annotator_agents_raw prompt with Dual method. Test union ensemble for recall. Re-evaluate Claude after fix.</span>
+            </div>
+        </div>
+        <div class="insight reveal">
+            <strong>Do not</strong> spend more time on claude_thinking_on until the temperature bug is fixed. <strong>Do not</strong> use gemini_flash_lite as primary until failure pattern is resolved.
+        </div>
+    </div>
+</section>
+
+<script>
+    /* ===========================================
+       SLIDE PRESENTATION CONTROLLER
+       Handles navigation, animations, progress
+       =========================================== */
+    class SlidePresentation {
+        constructor() {
+            this.slides = document.querySelectorAll('.slide');
+            this.currentSlide = 0;
+            this.progressBar = document.getElementById('progressBar');
+            this.navDotsContainer = document.getElementById('navDots');
+
+            this.createNavDots();
+            this.setupIntersectionObserver();
+            this.setupKeyboardNav();
+            this.updateProgress();
+        }
+
+        createNavDots() {
+            this.slides.forEach((_, i) => {
+                const dot = document.createElement('button');
+                dot.className = 'nav-dot' + (i === 0 ? ' active' : '');
+                dot.setAttribute('aria-label', `Go to slide ${i + 1}`);
+                dot.addEventListener('click', () => {
+                    this.slides[i].scrollIntoView({ behavior: 'smooth' });
+                });
+                this.navDotsContainer.appendChild(dot);
+            });
+            this.navDots = this.navDotsContainer.querySelectorAll('.nav-dot');
+        }
+
+        setupIntersectionObserver() {
+            const observer = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        entry.target.classList.add('visible');
+                        const index = Array.from(this.slides).indexOf(entry.target);
+                        this.currentSlide = index;
+                        this.updateProgress();
+                        this.updateNavDots();
+                    }
+                });
+            }, { threshold: 0.5 });
+
+            this.slides.forEach(slide => observer.observe(slide));
+        }
+
+        setupKeyboardNav() {
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'ArrowDown' || e.key === 'ArrowRight' || e.key === ' ') {
+                    e.preventDefault();
+                    this.goToSlide(this.currentSlide + 1);
+                } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+                    e.preventDefault();
+                    this.goToSlide(this.currentSlide - 1);
+                }
+            });
+        }
+
+        goToSlide(index) {
+            if (index >= 0 && index < this.slides.length) {
+                this.slides[index].scrollIntoView({ behavior: 'smooth' });
+            }
+        }
+
+        updateProgress() {
+            const progress = ((this.currentSlide + 1) / this.slides.length) * 100;
+            this.progressBar.style.width = progress + '%';
+        }
+
+        updateNavDots() {
+            this.navDots.forEach((dot, i) => {
+                dot.classList.toggle('active', i === this.currentSlide);
+            });
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => new SlidePresentation());
+</script>
+
+</body>
+</html>

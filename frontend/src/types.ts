@@ -297,6 +297,20 @@ export interface AgentCredentialStatus {
   api_base_sources: string[];
 }
 
+export interface ExperimentLimits {
+  prompt_lab_default_concurrency: number;
+  prompt_lab_max_concurrency: number;
+  methods_lab_default_concurrency: number;
+  methods_lab_max_concurrency: number;
+}
+
+export const DEFAULT_EXPERIMENT_LIMITS: ExperimentLimits = {
+  prompt_lab_default_concurrency: 4,
+  prompt_lab_max_concurrency: 16,
+  methods_lab_default_concurrency: 4,
+  methods_lab_max_concurrency: 16,
+};
+
 export interface AgentRunProgress {
   doc_id: string;
   mode: string | null;
@@ -312,6 +326,8 @@ export interface AgentRunProgress {
 export type PromptLabRunStatus =
   | "queued"
   | "running"
+  | "cancelling"
+  | "cancelled"
   | "completed"
   | "completed_with_errors"
   | "failed";
@@ -423,6 +439,7 @@ export interface PromptLabRunSummary {
   id: string;
   name: string;
   status: PromptLabRunStatus;
+  cancellable: boolean;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -459,7 +476,7 @@ export interface PromptLabDocResult {
   run_id: string;
   cell_id: string;
   doc_id: string;
-  status: "pending" | "completed" | "failed" | "unavailable";
+  status: "pending" | "completed" | "failed" | "unavailable" | "cancelled";
   error?: string | null;
   warnings: string[];
   reference_source_used?: "manual" | "pre";
@@ -509,6 +526,7 @@ export interface MethodsLabRunSummary {
   id: string;
   name: string;
   status: PromptLabRunStatus;
+  cancellable: boolean;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -545,7 +563,7 @@ export interface MethodsLabDocResult {
   run_id: string;
   cell_id: string;
   doc_id: string;
-  status: "pending" | "completed" | "failed" | "unavailable";
+  status: "pending" | "completed" | "failed" | "unavailable" | "cancelled";
   error?: string | null;
   warnings: string[];
   reference_source_used?: "manual";

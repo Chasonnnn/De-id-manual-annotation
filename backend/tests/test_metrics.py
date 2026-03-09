@@ -65,6 +65,54 @@ class TestBoundaryMatch:
         assert m["micro"]["fn"] == 1
 
 
+class TestExactNameAffixTolerant:
+    def test_co_primary_matches_supported_name_boundary_affixes(self):
+        gold = [
+            _span(0, 12, "NAME", "Mr. Muhammad"),
+            _span(20, 26, "NAME", "David,"),
+            _span(30, 34, "NAME", "Ana."),
+            _span(40, 47, "NAME", "Javier "),
+            _span(50, 61, "NAME", "Sebastian's"),
+        ]
+        pred = [
+            _span(4, 12, "NAME", "Muhammad"),
+            _span(20, 25, "NAME", "David"),
+            _span(30, 33, "NAME", "Ana"),
+            _span(40, 46, "NAME", "Javier"),
+            _span(50, 59, "NAME", "Sebastian"),
+        ]
+
+        m = compute_metrics(gold, pred, mode="exact")
+
+        assert m["micro"]["f1"] == 0.0
+        tolerant = m["co_primary_metrics"]["exact_name_affix_tolerant"]
+        assert tolerant["micro"]["precision"] == 1.0
+        assert tolerant["micro"]["recall"] == 1.0
+        assert tolerant["micro"]["f1"] == 1.0
+
+    def test_co_primary_does_not_allow_multi_token_name_to_single_token(self):
+        gold = [_span(0, 14, "NAME", "Michael Myers")]
+        pred = [_span(0, 7, "NAME", "Michael")]
+
+        m = compute_metrics(gold, pred, mode="exact")
+
+        tolerant = m["co_primary_metrics"]["exact_name_affix_tolerant"]
+        assert tolerant["micro"]["tp"] == 0
+        assert tolerant["micro"]["fp"] == 1
+        assert tolerant["micro"]["fn"] == 1
+
+    def test_co_primary_keeps_non_name_labels_exact(self):
+        gold = [_span(0, 6, "URL", "abc.com")]
+        pred = [_span(0, 5, "URL", "abc.c")]
+
+        m = compute_metrics(gold, pred, mode="exact")
+
+        tolerant = m["co_primary_metrics"]["exact_name_affix_tolerant"]
+        assert tolerant["micro"]["tp"] == 0
+        assert tolerant["micro"]["fp"] == 1
+        assert tolerant["micro"]["fn"] == 1
+
+
 # ---------------------------------------------------------------------------
 # Overlap (bipartite) matching
 # ---------------------------------------------------------------------------

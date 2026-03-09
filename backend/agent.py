@@ -7,16 +7,25 @@ import json
 import math
 import re
 import threading
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from litellm import completion
 
 from models import CanonicalSpan, LLMConfidenceMetric
 
 # Regex patterns for rule-based detection
+DOMAIN_LABEL_PATTERN = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+DOMAIN_SEPARATOR_PATTERN = r"\s*\.\s*"
+DOMAIN_PATTERN = (
+    rf"(?:{DOMAIN_LABEL_PATTERN}{DOMAIN_SEPARATOR_PATTERN})+[a-z]{{2,63}}"
+)
+
 PATTERNS: dict[str, re.Pattern] = {
     "EMAIL": re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"),
-    "URL": re.compile(r"https?://[^\s,)]+"),
+    "URL": re.compile(
+        rf"(?<!@)\b(?:https?://)?{DOMAIN_PATTERN}(?:/[^\s,)]+)?",
+        re.IGNORECASE,
+    ),
     "PHONE": re.compile(r"\+?\d[\d\- ]{7,}\d"),
     "DATE": re.compile(
         r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b"
@@ -455,7 +464,12 @@ METHOD_DEFINITIONS: list[dict[str, Any]] = [
         "supports_verify_override": True,
         "default_verify": False,
         "passes": [
-            {"kind": "llm", "prompt": METHOD_DEFAULT_PROMPT, "entity_types": None},
+            {
+                "kind": "llm",
+                "prompt": METHOD_DEFAULT_PROMPT,
+                "entity_types": None,
+                "pass_label": "default:all",
+            },
         ],
     },
     {
@@ -467,7 +481,12 @@ METHOD_DEFINITIONS: list[dict[str, Any]] = [
         "supports_verify_override": True,
         "default_verify": False,
         "passes": [
-            {"kind": "llm", "prompt": METHOD_EXTENDED_PROMPT, "entity_types": None},
+            {
+                "kind": "llm",
+                "prompt": METHOD_EXTENDED_PROMPT,
+                "entity_types": None,
+                "pass_label": "extended:all",
+            },
         ],
     },
     {
@@ -479,7 +498,12 @@ METHOD_DEFINITIONS: list[dict[str, Any]] = [
         "supports_verify_override": True,
         "default_verify": True,
         "passes": [
-            {"kind": "llm", "prompt": METHOD_DEFAULT_PROMPT, "entity_types": None},
+            {
+                "kind": "llm",
+                "prompt": METHOD_DEFAULT_PROMPT,
+                "entity_types": None,
+                "pass_label": "verified:all",
+            },
         ],
     },
     {
@@ -495,6 +519,7 @@ METHOD_DEFINITIONS: list[dict[str, Any]] = [
                 "kind": "llm",
                 "prompt": METHOD_DUAL_NAMES_PROMPT,
                 "entity_types": ["NAME"],
+                "pass_label": "dual:names",
             },
             {
                 "kind": "llm",
@@ -511,6 +536,7 @@ METHOD_DEFINITIONS: list[dict[str, Any]] = [
                     "IP_ADDRESS",
                     "IDENTIFYING_NUMBER",
                 ],
+                "pass_label": "dual:identifiers",
             },
         ],
     },
@@ -527,6 +553,7 @@ METHOD_DEFINITIONS: list[dict[str, Any]] = [
                 "kind": "llm",
                 "prompt": METHOD_DUAL_NAMES_LOCATION_PROMPT,
                 "entity_types": ["NAME", "ADDRESS"],
+                "pass_label": "dual-split:names_locations",
             },
             {
                 "kind": "llm",
@@ -542,6 +569,7 @@ METHOD_DEFINITIONS: list[dict[str, Any]] = [
                     "IP_ADDRESS",
                     "IDENTIFYING_NUMBER",
                 ],
+                "pass_label": "dual-split:numeric_identifiers",
             },
         ],
     },
@@ -564,6 +592,7 @@ METHOD_DEFINITIONS: list[dict[str, Any]] = [
                     "PHONE_NUMBER",
                     "IP_ADDRESS",
                 ],
+                "pass_label": "presidio:core",
             },
         ],
     },
@@ -588,8 +617,14 @@ METHOD_DEFINITIONS: list[dict[str, Any]] = [
                     "US_BANK_NUMBER",
                     "IBAN_CODE",
                 ],
+                "pass_label": "presidio+default:presidio",
             },
-            {"kind": "llm", "prompt": METHOD_DEFAULT_PROMPT, "entity_types": None},
+            {
+                "kind": "llm",
+                "prompt": METHOD_DEFAULT_PROMPT,
+                "entity_types": None,
+                "pass_label": "presidio+default:llm",
+            },
         ],
     },
     {
@@ -609,6 +644,7 @@ METHOD_DEFINITIONS: list[dict[str, Any]] = [
                     "PHONE_NUMBER",
                     "IP_ADDRESS",
                 ],
+                "pass_label": "presidio+llm-split:presidio",
             },
             {
                 "kind": "llm",
@@ -624,6 +660,7 @@ METHOD_DEFINITIONS: list[dict[str, Any]] = [
                     "IMAGE",
                     "IDENTIFYING_NUMBER",
                 ],
+                "pass_label": "presidio+llm-split:llm",
             },
         ],
     },
@@ -1181,6 +1218,82 @@ def _is_plausible_name_span(raw_text: str, span: CanonicalSpan) -> bool:
     return _has_name_word_boundaries(raw_text, span.start, span.end)
 
 
+_NAME_HONORIFIC_PREFIX_RE = re.compile(r"^(Mr\.?|Mrs\.?|Ms\.?|Miss)\s+", re.IGNORECASE)
+_NAME_HONORIFIC_SUFFIX_RE = re.compile(r"(Mr\.?|Mrs\.?|Ms\.?|Miss)\s*$", re.IGNORECASE)
+_NAME_TRAILING_POSSESSIVE_SUFFIXES = ("'s", "’s")
+
+
+def _canonicalize_name_boundary_text(value: str) -> str:
+    cleaned = value.strip()
+    cleaned = cleaned.strip(" \t\r\n.,!?;:\"'()[]{}")
+    cleaned = _NAME_HONORIFIC_PREFIX_RE.sub("", cleaned)
+    cleaned = cleaned.strip(" \t\r\n.,!?;:\"'()[]{}")
+    for suffix in _NAME_TRAILING_POSSESSIVE_SUFFIXES:
+        if cleaned.lower().endswith(suffix.lower()):
+            cleaned = cleaned[: -len(suffix)]
+            break
+    cleaned = cleaned.strip(" \t\r\n.,!?;:\"'()[]{}")
+    cleaned = " ".join(cleaned.split())
+    return cleaned.casefold()
+
+
+def _snap_name_boundary_affixes(
+    raw_text: str,
+    spans: list[CanonicalSpan],
+    *,
+    label_profile: Literal["simple", "advanced"] = "simple",
+) -> tuple[list[CanonicalSpan], int]:
+    if not spans:
+        return spans, 0
+
+    snapped = 0
+    adjusted: list[CanonicalSpan] = []
+    target_labels = {"NAME", "PERSON"}
+    for span in spans:
+        if normalize_method_label(span.label, label_profile=label_profile) not in target_labels:
+            adjusted.append(span)
+            continue
+
+        start = span.start
+        end = span.end
+        core = _canonicalize_name_boundary_text(span.text)
+        if not core:
+            adjusted.append(span)
+            continue
+
+        prefix = raw_text[max(0, start - 16) : start]
+        honorific_match = None
+        for match in _NAME_HONORIFIC_SUFFIX_RE.finditer(prefix):
+            honorific_match = match
+        if honorific_match is not None:
+            candidate_start = start - (len(prefix) - honorific_match.start())
+            candidate_text = raw_text[candidate_start:end]
+            if _canonicalize_name_boundary_text(candidate_text) == core:
+                start = candidate_start
+
+        for suffix in _NAME_TRAILING_POSSESSIVE_SUFFIXES:
+            if raw_text.startswith(suffix, end):
+                candidate_end = end + len(suffix)
+                candidate_text = raw_text[start:candidate_end]
+                if _canonicalize_name_boundary_text(candidate_text) == core:
+                    end = candidate_end
+                    break
+
+        if start != span.start or end != span.end:
+            snapped += 1
+            adjusted.append(
+                CanonicalSpan(
+                    start=start,
+                    end=end,
+                    label=span.label,
+                    text=raw_text[start:end],
+                )
+            )
+            continue
+        adjusted.append(span)
+    return adjusted, snapped
+
+
 def _find_occurrences(text: str, needle: str) -> list[tuple[int, int]]:
     if not needle:
         return []
@@ -1705,6 +1818,7 @@ def _run_llm_verifier(
     api_key: str,
     api_base: str | None,
     model: str,
+    timeout_seconds: float | None = None,
 ) -> tuple[list[CanonicalSpan], list[str]]:
     if not spans:
         return [], []
@@ -1753,6 +1867,8 @@ def _run_llm_verifier(
         "response_format": response_format,
         "api_key": api_key,
     }
+    if timeout_seconds is not None:
+        base_request_kwargs["timeout"] = timeout_seconds
 
     warnings: list[str] = []
     api_base_candidates = _build_api_base_candidates(api_base)
@@ -1846,6 +1962,8 @@ def run_method_with_metadata(
     anthropic_thinking_budget_tokens: int | None,
     method_verify: bool | None,
     label_profile: Literal["simple", "advanced"] = "simple",
+    timeout_seconds: float | None = None,
+    progress_callback: Callable[[int, str], None] | None = None,
 ) -> MethodRunResult:
     method = METHOD_DEFINITION_BY_ID.get(method_id)
     if method is None:
@@ -1873,6 +1991,9 @@ def run_method_with_metadata(
 
     for idx, method_pass in enumerate(method["passes"]):
         kind = method_pass["kind"]
+        pass_label = str(method_pass.get("pass_label") or f"{method_id}:pass_{idx + 1}")
+        if progress_callback is not None:
+            progress_callback(idx + 1, pass_label)
         if kind == "presidio":
             pass_spans = _run_presidio_pass(
                 text=text,
@@ -1896,6 +2017,7 @@ def run_method_with_metadata(
             anthropic_thinking=anthropic_thinking,
             anthropic_thinking_budget_tokens=anthropic_thinking_budget_tokens,
             label_profile=label_profile,
+            timeout_seconds=timeout_seconds,
         )
         llm_metrics.append(llm_result.llm_confidence)
         pass_spans = _filter_method_pass_spans(
@@ -1911,12 +2033,15 @@ def run_method_with_metadata(
 
     if should_verify:
         try:
+            if progress_callback is not None:
+                progress_callback(len(method["passes"]) + 1, f"{method_id}:verifier")
             verified_spans, verify_warnings = _run_llm_verifier(
                 text=text,
                 spans=merged,
                 api_key=api_key or "",
                 api_base=api_base,
                 model=model,
+                timeout_seconds=timeout_seconds,
             )
             merged = merge_method_spans(
                 normalize_method_spans(verified_spans, label_profile=label_profile)
@@ -1943,6 +2068,7 @@ def run_llm_with_metadata(
     anthropic_thinking: bool = False,
     anthropic_thinking_budget_tokens: int | None = None,
     label_profile: Literal["simple", "advanced"] = "simple",
+    timeout_seconds: float | None = None,
 ) -> LLMRunResult:
     """Run LLM-based PII detection with provider-aware advanced parameters."""
     provider = _infer_provider(model)
@@ -1962,8 +2088,9 @@ def run_llm_with_metadata(
 
     if anthropic_thinking and supports_thinking:
         if temperature != 1.0:
-            raise ValueError(
-                f"Model '{model}' requires temperature=1 when thinking is enabled."
+            warnings.append(
+                f"Model '{model}' requires temperature=1 when thinking is enabled; "
+                "overriding requested temperature to 1.0."
             )
         effective_temperature = 1.0
     elif not supports_custom_temperature:
@@ -1977,6 +2104,8 @@ def run_llm_with_metadata(
         ],
         "api_key": api_key,
     }
+    if timeout_seconds is not None:
+        base_request_kwargs["timeout"] = timeout_seconds
     supports_logprobs = _supports_logprobs(
         model,
         provider,
@@ -2064,6 +2193,16 @@ def run_llm_with_metadata(
                 label_profile=label_profile,
             )
             warnings.extend(repair_warnings)
+            spans, snapped_name_spans = _snap_name_boundary_affixes(
+                text,
+                spans,
+                label_profile=label_profile,
+            )
+            if snapped_name_spans > 0:
+                target_label = "NAME" if label_profile == "simple" else "PERSON"
+                warnings.append(
+                    f"Expanded {snapped_name_spans} {target_label} span(s) to include supported boundary affixes."
+                )
             spans, dropped_name_spans = _drop_implausible_name_spans(
                 text,
                 spans,

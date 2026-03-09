@@ -1,5 +1,10 @@
 import { forwardRef, useEffect, useState } from "react";
 import { getAgentCredentialStatus } from "../api/client";
+import {
+  AGENT_PROMPT_PRESETS,
+  detectAgentPromptPresetId,
+  getAgentPromptPreset,
+} from "../agentPromptPresets";
 import { MODEL_PRESETS, getModelPreset } from "../modelPresets";
 import type {
   AgentConfig,
@@ -55,8 +60,11 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
   ) => {
     const [configOpen, setConfigOpen] = useState(false);
     const [mode, setMode] = useState<"rule" | "llm">("rule");
+    const [promptPreset, setPromptPreset] = useState<"baseline" | "annotator_agents" | "custom">(
+      "baseline",
+    );
     const [systemPrompt, setSystemPrompt] = useState(
-      "You are a PII annotation assistant. Identify all explicit personally identifiable information (PII) spans in the transcript.",
+      getAgentPromptPreset("baseline").systemPrompt,
     );
     const [model, setModel] = useState("openai.gpt-5.3-codex");
     const [customModel, setCustomModel] = useState("");
@@ -133,10 +141,11 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
     const effectiveModel = model === "__custom__" ? customModel : model;
     const selectedPreset =
       model === "__custom__" ? undefined : getModelPreset(effectiveModel);
+    const selectedPromptPreset =
+      promptPreset === "custom" ? null : getAgentPromptPreset(promptPreset);
     const supportsReasoningEffort = selectedPreset?.supportsReasoningEffort ?? false;
     const supportsAnthropicThinking =
       selectedPreset?.supportsAnthropicThinking ?? false;
-
     const handleRun = () => {
       onRunAgent({
         mode,
@@ -220,12 +229,45 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
           {mode === "llm" && (
             <>
               <div className="field">
+                <label htmlFor="agent-prompt-preset">Prompt Preset</label>
+                <select
+                  id="agent-prompt-preset"
+                  name="agent_prompt_preset"
+                  value={promptPreset}
+                  onChange={(e) => {
+                    const value = e.target.value as
+                      | "baseline"
+                      | "annotator_agents"
+                      | "custom";
+                    setPromptPreset(value);
+                    if (value !== "custom") {
+                      setSystemPrompt(getAgentPromptPreset(value).systemPrompt);
+                    }
+                  }}
+                >
+                  {AGENT_PROMPT_PRESETS.map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {preset.label}
+                    </option>
+                  ))}
+                  <option value="custom">Custom</option>
+                </select>
+                <span className="config-note">
+                  {selectedPromptPreset?.description ??
+                    "Custom prompt text. Saved LLM runs keep their own prompt snapshots."}
+                </span>
+              </div>
+              <div className="field">
                 <label htmlFor="agent-system-prompt">System Prompt</label>
                 <textarea
                   id="agent-system-prompt"
                   name="agent_system_prompt"
                   value={systemPrompt}
-                  onChange={(e) => setSystemPrompt(e.target.value)}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setSystemPrompt(value);
+                    setPromptPreset(detectAgentPromptPresetId(value));
+                  }}
                 />
               </div>
               <div className="field">
@@ -455,6 +497,7 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
               </div>
             </>
           )}
+          {chunkDiagnostics.length > 0 && <ChunkDiagnosticsPanel diagnostics={chunkDiagnostics} />}
           <button className="run-btn" onClick={handleRun} disabled={running}>
             {running ? "Running..." : "Run Agent"}
           </button>
@@ -473,7 +516,6 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
             </div>
           )}
         </div>
-        <ChunkDiagnosticsPanel diagnostics={chunkDiagnostics} />
         <div
           className="pane-body"
           ref={ref}
