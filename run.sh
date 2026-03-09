@@ -65,12 +65,82 @@ if [[ "$INSTALL_DEPS" == true ]]; then
     (cd "$FRONTEND_DIR" && npm install)
 fi
 
+port_listener_pids() {
+    local port="$1"
+    lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true
+}
+
+process_cwd() {
+    local pid="$1"
+    lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | awk 'BEGIN { FS = "" } /^n/ { print substr($0, 2) }'
+}
+
+wait_for_port_release() {
+    local port="$1"
+    local attempts=50
+    while [[ $attempts -gt 0 ]]; do
+        if [[ -z "$(port_listener_pids "$port")" ]]; then
+            return 0
+        fi
+        sleep 0.1
+        attempts=$((attempts - 1))
+    done
+    echo "Timed out waiting for port $port to become available."
+    return 1
+}
+
+restart_repo_processes_on_port() {
+    local port="$1"
+    local label="$2"
+    local match_dir="$3"
+    shift 3
+    local expected_terms=("$@")
+    local port_var_name
+    case "$label" in
+        backend) port_var_name="BACKEND_PORT" ;;
+        frontend) port_var_name="FRONTEND_PORT" ;;
+        *) port_var_name="PORT" ;;
+    esac
+    local pids
+    pids="$(port_listener_pids "$port")"
+    [[ -z "$pids" ]] && return 0
+
+    while IFS= read -r pid; do
+        [[ -z "$pid" ]] && continue
+        local cwd
+        cwd="$(process_cwd "$pid")"
+        local matches_repo=false
+        if [[ "$cwd" == "$match_dir" ]]; then
+            matches_repo=true
+        fi
+
+        if [[ "$matches_repo" == true ]]; then
+            echo "Restarting existing $label on port $port (PID $pid)..."
+            kill "$pid"
+        else
+            echo "Port $port is already in use by an unrelated process:"
+            if [[ -n "$cwd" ]]; then
+                echo "  PID $pid (cwd: $cwd)"
+            else
+                echo "  PID $pid"
+            fi
+            echo "Stop it manually or set $port_var_name to a different value."
+            exit 1
+        fi
+    done <<< "$pids"
+
+    wait_for_port_release "$port"
+}
+
 cleanup() {
     echo "Shutting down..."
     kill 0
     wait
 }
 trap cleanup SIGINT SIGTERM
+
+restart_repo_processes_on_port "$BACKEND_PORT" "backend" "$BACKEND_DIR" "uvicorn" "server:app"
+restart_repo_processes_on_port "$FRONTEND_PORT" "frontend" "$FRONTEND_DIR" "vite"
 
 echo "Starting backend (FastAPI)..."
 (cd "$BACKEND_DIR" && uv run uvicorn server:app --reload --port "$BACKEND_PORT") &
