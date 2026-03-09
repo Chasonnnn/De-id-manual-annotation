@@ -533,9 +533,14 @@ def _matrix_rows(kind: str, detail: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         tolerant = _name_tolerant_metrics(cell)
         tolerant_micro = tolerant.get("micro", {}) if isinstance(tolerant, dict) else {}
+        raw_tolerant = cell.get("raw_co_primary_metrics", {}).get("exact_name_affix_tolerant", {})
+        raw_tolerant_micro = raw_tolerant.get("micro", {}) if isinstance(raw_tolerant, dict) else {}
         error_families = cell.get("error_families", {})
         if not isinstance(error_families, dict):
             error_families = {}
+        resolution_summary = cell.get("resolution_summary", {})
+        if not isinstance(resolution_summary, dict):
+            resolution_summary = {}
         row = {
             "id": cell.get("id"),
             "status": cell.get("status"),
@@ -548,9 +553,19 @@ def _matrix_rows(kind: str, detail: dict[str, Any]) -> list[dict[str, Any]]:
             "precision": cell.get("micro", {}).get("precision"),
             "recall": cell.get("micro", {}).get("recall"),
             "f1": cell.get("micro", {}).get("f1"),
+            "raw_precision": cell.get("raw_micro", {}).get("precision"),
+            "raw_recall": cell.get("raw_micro", {}).get("recall"),
+            "raw_f1": cell.get("raw_micro", {}).get("f1"),
             "exact_name_affix_tolerant_precision": tolerant_micro.get("precision"),
             "exact_name_affix_tolerant_recall": tolerant_micro.get("recall"),
             "exact_name_affix_tolerant_f1": tolerant_micro.get("f1"),
+            "raw_exact_name_affix_tolerant_precision": raw_tolerant_micro.get("precision"),
+            "raw_exact_name_affix_tolerant_recall": raw_tolerant_micro.get("recall"),
+            "raw_exact_name_affix_tolerant_f1": raw_tolerant_micro.get("f1"),
+            "exact_name_affix_gap_f1": cell.get("exact_name_affix_gap_f1"),
+            "raw_exact_name_affix_gap_f1": cell.get("raw_exact_name_affix_gap_f1"),
+            "boundary_fix_count": resolution_summary.get("boundary_fix_count", 0),
+            "augmentation_count": resolution_summary.get("augmentation_count", 0),
             "mean_confidence": cell.get("mean_confidence"),
         }
         for family in ERROR_FAMILY_COLUMNS:
@@ -582,9 +597,19 @@ def _write_run_csv(path: Path, *, kind: str, detail: dict[str, Any]) -> None:
             "precision",
             "recall",
             "f1",
+            "raw_precision",
+            "raw_recall",
+            "raw_f1",
             "exact_name_affix_tolerant_precision",
             "exact_name_affix_tolerant_recall",
             "exact_name_affix_tolerant_f1",
+            "raw_exact_name_affix_tolerant_precision",
+            "raw_exact_name_affix_tolerant_recall",
+            "raw_exact_name_affix_tolerant_f1",
+            "exact_name_affix_gap_f1",
+            "raw_exact_name_affix_gap_f1",
+            "boundary_fix_count",
+            "augmentation_count",
             "mean_confidence",
             *[f"error_family_{family}" for family in ERROR_FAMILY_COLUMNS],
         ]
@@ -603,9 +628,19 @@ def _write_run_csv(path: Path, *, kind: str, detail: dict[str, Any]) -> None:
             "precision",
             "recall",
             "f1",
+            "raw_precision",
+            "raw_recall",
+            "raw_f1",
             "exact_name_affix_tolerant_precision",
             "exact_name_affix_tolerant_recall",
             "exact_name_affix_tolerant_f1",
+            "raw_exact_name_affix_tolerant_precision",
+            "raw_exact_name_affix_tolerant_recall",
+            "raw_exact_name_affix_tolerant_f1",
+            "exact_name_affix_gap_f1",
+            "raw_exact_name_affix_gap_f1",
+            "boundary_fix_count",
+            "augmentation_count",
             "mean_confidence",
             *[f"error_family_{family}" for family in ERROR_FAMILY_COLUMNS],
         ]
@@ -861,9 +896,16 @@ def _cell_records(run_details: list[dict[str, Any]]) -> tuple[list[dict[str, Any
             model_meta = models_by_id.get(str(cell.get("model_id")), {})
             tolerant = _name_tolerant_metrics(cell)
             tolerant_micro = tolerant.get("micro", {}) if isinstance(tolerant, dict) else {}
+            raw_tolerant = cell.get("raw_co_primary_metrics", {}).get(
+                "exact_name_affix_tolerant", {}
+            )
+            raw_tolerant_micro = raw_tolerant.get("micro", {}) if isinstance(raw_tolerant, dict) else {}
             error_families = cell.get("error_families", {})
             if not isinstance(error_families, dict):
                 error_families = {}
+            resolution_summary = cell.get("resolution_summary", {})
+            if not isinstance(resolution_summary, dict):
+                resolution_summary = {}
             record = {
                 "kind": kind,
                 "run_name": detail.get("name"),
@@ -885,6 +927,9 @@ def _cell_records(run_details: list[dict[str, Any]]) -> tuple[list[dict[str, Any
                 "precision": _safe_float(cell.get("micro", {}).get("precision")) or 0.0,
                 "recall": _safe_float(cell.get("micro", {}).get("recall")) or 0.0,
                 "f1": _safe_float(cell.get("micro", {}).get("f1")) or 0.0,
+                "raw_precision": _safe_float(cell.get("raw_micro", {}).get("precision")) or 0.0,
+                "raw_recall": _safe_float(cell.get("raw_micro", {}).get("recall")) or 0.0,
+                "raw_f1": _safe_float(cell.get("raw_micro", {}).get("f1")) or 0.0,
                 "tp": int(cell.get("micro", {}).get("tp", 0)),
                 "fp": int(cell.get("micro", {}).get("fp", 0)),
                 "fn": int(cell.get("micro", {}).get("fn", 0)),
@@ -897,9 +942,26 @@ def _cell_records(run_details: list[dict[str, Any]]) -> tuple[list[dict[str, Any
                 "exact_name_affix_tolerant_f1": (
                     _safe_float(tolerant_micro.get("f1")) or 0.0
                 ),
+                "raw_exact_name_affix_tolerant_precision": (
+                    _safe_float(raw_tolerant_micro.get("precision")) or 0.0
+                ),
+                "raw_exact_name_affix_tolerant_recall": (
+                    _safe_float(raw_tolerant_micro.get("recall")) or 0.0
+                ),
+                "raw_exact_name_affix_tolerant_f1": (
+                    _safe_float(raw_tolerant_micro.get("f1")) or 0.0
+                ),
                 "exact_name_affix_tolerant_tp": int(tolerant_micro.get("tp", 0)),
                 "exact_name_affix_tolerant_fp": int(tolerant_micro.get("fp", 0)),
                 "exact_name_affix_tolerant_fn": int(tolerant_micro.get("fn", 0)),
+                "exact_name_affix_gap_f1": _safe_float(cell.get("exact_name_affix_gap_f1"))
+                or 0.0,
+                "raw_exact_name_affix_gap_f1": _safe_float(
+                    cell.get("raw_exact_name_affix_gap_f1")
+                )
+                or 0.0,
+                "boundary_fix_count": int(resolution_summary.get("boundary_fix_count", 0)),
+                "augmentation_count": int(resolution_summary.get("augmentation_count", 0)),
                 "error_family_counts": {
                     family: int(error_families.get(family, 0))
                     for family in ERROR_FAMILY_COLUMNS
@@ -907,6 +969,8 @@ def _cell_records(run_details: list[dict[str, Any]]) -> tuple[list[dict[str, Any
                 },
                 "mean_confidence": _safe_float(cell.get("mean_confidence")),
                 "per_label": cell.get("per_label", {}),
+                "raw_per_label": cell.get("raw_per_label", {}),
+                "resolution_summary": resolution_summary,
             }
             for family in ERROR_FAMILY_COLUMNS:
                 record[f"error_family_{family}"] = int(error_families.get(family, 0))
@@ -927,6 +991,19 @@ def _provider_from_model(model: str) -> str:
     if model.startswith("google."):
         return "Google Gemini"
     return "OpenAI"
+
+
+def _primary_metric_value(row: dict[str, Any], field: str) -> float:
+    tolerant_field = {
+        "precision": "exact_name_affix_tolerant_precision",
+        "recall": "exact_name_affix_tolerant_recall",
+        "f1": "exact_name_affix_tolerant_f1",
+    }.get(field)
+    if tolerant_field is not None:
+        tolerant_value = _safe_float(row.get(tolerant_field))
+        if tolerant_value is not None:
+            return tolerant_value
+    return _safe_float(row.get(field)) or 0.0
 
 
 def _aggregate_variant_rankings(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -974,7 +1051,9 @@ def _aggregate_variant_rankings(records: list[dict[str, Any]]) -> list[dict[str,
                 "exact_name_affix_tolerant_f1": tolerant_prf["f1"],
             }
         )
-    ranking.sort(key=lambda item: (-float(item["f1"]), item["variant_label"]))
+    ranking.sort(
+        key=lambda item: (-_primary_metric_value(item, "f1"), -float(item["f1"]), item["variant_label"])
+    )
     return ranking
 
 
@@ -1019,7 +1098,7 @@ def _aggregate_by_group(records: list[dict[str, Any]], *, field: str) -> list[di
                 "exact_name_affix_tolerant_f1": tolerant_prf["f1"],
             }
         )
-    rows.sort(key=lambda item: (-float(item["f1"]), item["label"]))
+    rows.sort(key=lambda item: (-_primary_metric_value(item, "f1"), -float(item["f1"]), item["label"]))
     return rows
 
 
@@ -1057,9 +1136,11 @@ def _verifier_comparisons(records: list[dict[str, Any]]) -> list[dict[str, Any]]
         comparisons.append(
             {
                 "base_label": base_label,
-                "off_f1": float(off["f1"]),
-                "on_f1": float(on["f1"]),
-                "delta_f1": float(on["f1"]) - float(off["f1"]),
+                "off_f1": _primary_metric_value(off, "f1"),
+                "on_f1": _primary_metric_value(on, "f1"),
+                "off_exact_f1": float(off["f1"]),
+                "on_exact_f1": float(on["f1"]),
+                "delta_f1": _primary_metric_value(on, "f1") - _primary_metric_value(off, "f1"),
             }
         )
     comparisons.sort(key=lambda item: (-abs(item["delta_f1"]), item["base_label"]))
@@ -1073,10 +1154,12 @@ def _comparison_row(records: list[dict[str, Any]], labels: tuple[str, str]) -> d
     right = by_label.get(labels[1], {"f1": 0.0})
     return {
         "left_label": labels[0],
-        "left_f1": float(left["f1"]),
+        "left_f1": _primary_metric_value(left, "f1"),
+        "left_exact_f1": float(left["f1"]),
         "right_label": labels[1],
-        "right_f1": float(right["f1"]),
-        "delta_f1": float(left["f1"]) - float(right["f1"]),
+        "right_f1": _primary_metric_value(right, "f1"),
+        "right_exact_f1": float(right["f1"]),
+        "delta_f1": _primary_metric_value(left, "f1") - _primary_metric_value(right, "f1"),
     }
 
 
@@ -1113,12 +1196,26 @@ def _top_bottom_configurations(
         for record in [*prompt_records, *method_records]
         if str(record["status"]) in {"completed", "completed_with_errors"}
     ]
-    rows.sort(key=lambda item: (-item["f1"], item["kind"], item["variant_label"], item["model_variant_label"]))
+    rows.sort(
+        key=lambda item: (
+            -_primary_metric_value(item, "f1"),
+            -item["f1"],
+            item["kind"],
+            item["variant_label"],
+            item["model_variant_label"],
+        )
+    )
     if not rows:
         return [], []
     bottom_rows = sorted(
         rows,
-        key=lambda item: (item["f1"], item["kind"], item["variant_label"], item["model_variant_label"]),
+        key=lambda item: (
+            _primary_metric_value(item, "f1"),
+            item["f1"],
+            item["kind"],
+            item["variant_label"],
+            item["model_variant_label"],
+        ),
     )[:10]
     return rows[:10], bottom_rows
 
@@ -1165,12 +1262,22 @@ def _write_aggregate_csv(path: Path, *, kind: str, rows: list[dict[str, Any]]) -
             "precision",
             "recall",
             "f1",
+            "raw_precision",
+            "raw_recall",
+            "raw_f1",
             "exact_name_affix_tolerant_precision",
             "exact_name_affix_tolerant_recall",
             "exact_name_affix_tolerant_f1",
+            "raw_exact_name_affix_tolerant_precision",
+            "raw_exact_name_affix_tolerant_recall",
+            "raw_exact_name_affix_tolerant_f1",
+            "exact_name_affix_gap_f1",
+            "raw_exact_name_affix_gap_f1",
             "tp",
             "fp",
             "fn",
+            "boundary_fix_count",
+            "augmentation_count",
             "mean_confidence",
             "error_family_empty_output_finish_reason_length",
             "error_family_connection_error",
@@ -1197,12 +1304,22 @@ def _write_aggregate_csv(path: Path, *, kind: str, rows: list[dict[str, Any]]) -
             "precision",
             "recall",
             "f1",
+            "raw_precision",
+            "raw_recall",
+            "raw_f1",
             "exact_name_affix_tolerant_precision",
             "exact_name_affix_tolerant_recall",
             "exact_name_affix_tolerant_f1",
+            "raw_exact_name_affix_tolerant_precision",
+            "raw_exact_name_affix_tolerant_recall",
+            "raw_exact_name_affix_tolerant_f1",
+            "exact_name_affix_gap_f1",
+            "raw_exact_name_affix_gap_f1",
             "tp",
             "fp",
             "fn",
+            "boundary_fix_count",
+            "augmentation_count",
             "mean_confidence",
             "error_family_empty_output_finish_reason_length",
             "error_family_connection_error",
@@ -1221,13 +1338,14 @@ def _format_ranking_table(rows: list[dict[str, Any]], *, variant_key: str = "var
     if not rows:
         return "_No completed cells._"
     header = (
-        "| Variant | F1 | NAME-Tolerant F1 | Precision | Recall | TP | FP | FN |\n"
+        "| Variant | NAME-Tolerant F1 | Exact F1 | NAME-Tolerant Precision | NAME-Tolerant Recall | TP | FP | FN |\n"
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
     )
     body = [
-        f"| {row[variant_key]} | {float(row['f1']):.4f} | "
-        f"{float(row.get('exact_name_affix_tolerant_f1', 0.0)):.4f} | "
-        f"{float(row['precision']):.4f} | {float(row['recall']):.4f} | "
+        f"| {row[variant_key]} | {float(row.get('exact_name_affix_tolerant_f1', row['f1'])):.4f} | "
+        f"{float(row['f1']):.4f} | "
+        f"{float(row.get('exact_name_affix_tolerant_precision', row['precision'])):.4f} | "
+        f"{float(row.get('exact_name_affix_tolerant_recall', row['recall'])):.4f} | "
         f"{int(row['tp'])} | {int(row['fp'])} | {int(row['fn'])} |"
         for row in rows
     ]
@@ -1238,13 +1356,15 @@ def _format_cell_table(rows: list[dict[str, Any]], *, label_key: str = "variant_
     if not rows:
         return "_No completed cells._"
     header = (
-        "| Model | Variant | F1 | NAME-Tolerant F1 | Precision | Recall |\n"
+        "| Model | Variant | NAME-Tolerant F1 | Exact F1 | NAME-Tolerant Precision | NAME-Tolerant Recall |\n"
         "| --- | --- | ---: | ---: | ---: | ---: |"
     )
     body = [
-        f"| {row['model_variant_label']} | {row[label_key]} | {float(row['f1']):.4f} "
-        f"| {float(row.get('exact_name_affix_tolerant_f1', 0.0)):.4f} "
-        f"| {float(row['precision']):.4f} | {float(row['recall']):.4f} |"
+        f"| {row['model_variant_label']} | {row[label_key]} "
+        f"| {float(row.get('exact_name_affix_tolerant_f1', row['f1'])):.4f} "
+        f"| {float(row['f1']):.4f} "
+        f"| {float(row.get('exact_name_affix_tolerant_precision', row['precision'])):.4f} "
+        f"| {float(row.get('exact_name_affix_tolerant_recall', row['recall'])):.4f} |"
         for row in rows
     ]
     return "\n".join([header, *body])
@@ -1265,9 +1385,13 @@ def _format_run_inventory(runs: list[dict[str, Any]]) -> str:
 def _format_comparison_rows(rows: list[dict[str, Any]], *, label_field: str) -> str:
     if not rows:
         return "_No comparisons available._"
-    header = f"| {label_field} | Off F1 | On F1 | Delta |\n| --- | ---: | ---: | ---: |"
+    header = (
+        f"| {label_field} | Off NAME-Tolerant F1 | On NAME-Tolerant F1 | Delta | "
+        "Off Exact F1 | On Exact F1 |\n| --- | ---: | ---: | ---: | ---: | ---: |"
+    )
     body = [
-        f"| {row['base_label']} | {row['off_f1']:.4f} | {row['on_f1']:.4f} | {row['delta_f1']:+.4f} |"
+        f"| {row['base_label']} | {row['off_f1']:.4f} | {row['on_f1']:.4f} | {row['delta_f1']:+.4f} "
+        f"| {row['off_exact_f1']:.4f} | {row['on_exact_f1']:.4f} |"
         for row in rows
     ]
     return "\n".join([header, *body])
@@ -1276,10 +1400,14 @@ def _format_comparison_rows(rows: list[dict[str, Any]], *, label_field: str) -> 
 def _format_family_comparisons(rows: list[dict[str, Any]]) -> str:
     if not rows:
         return "_No family comparisons available._"
-    header = "| Family | Left | Left F1 | Right | Right F1 | Delta |\n| --- | --- | ---: | --- | ---: | ---: |"
+    header = (
+        "| Family | Left | Left NAME-Tolerant F1 | Right | Right NAME-Tolerant F1 | Delta | "
+        "Left Exact F1 | Right Exact F1 |\n| --- | --- | ---: | --- | ---: | ---: | ---: | ---: |"
+    )
     body = [
         f"| {row['family']} | {row['left_label']} | {row['left_f1']:.4f} | {row['right_label']} "
-        f"| {row['right_f1']:.4f} | {row['delta_f1']:+.4f} |"
+        f"| {row['right_f1']:.4f} | {row['delta_f1']:+.4f} "
+        f"| {row['left_exact_f1']:.4f} | {row['right_exact_f1']:.4f} |"
         for row in rows
     ]
     return "\n".join([header, *body])
@@ -1289,13 +1417,14 @@ def _format_provider_summary(rows: list[dict[str, Any]]) -> str:
     if not rows:
         return "_No provider summary available._"
     header = (
-        "| Provider | F1 | NAME-Tolerant F1 | Precision | Recall | Cells |\n"
+        "| Provider | NAME-Tolerant F1 | Exact F1 | NAME-Tolerant Precision | NAME-Tolerant Recall | Cells |\n"
         "| --- | ---: | ---: | ---: | ---: | ---: |"
     )
     body = [
-        f"| {row['label']} | {float(row['f1']):.4f} | "
-        f"{float(row.get('exact_name_affix_tolerant_f1', 0.0)):.4f} | "
-        f"{float(row['precision']):.4f} | {float(row['recall']):.4f} | {int(row['cell_count'])} |"
+        f"| {row['label']} | {float(row.get('exact_name_affix_tolerant_f1', row['f1'])):.4f} | "
+        f"{float(row['f1']):.4f} | "
+        f"{float(row.get('exact_name_affix_tolerant_precision', row['precision'])):.4f} | "
+        f"{float(row.get('exact_name_affix_tolerant_recall', row['recall'])):.4f} | {int(row['cell_count'])} |"
         for row in rows
     ]
     return "\n".join([header, *body])
@@ -1316,13 +1445,15 @@ def _format_top_bottom(rows: list[dict[str, Any]]) -> str:
     if not rows:
         return "_No completed configurations._"
     header = (
-        "| Kind | Variant | Model | F1 | NAME-Tolerant F1 | Precision | Recall |\n"
+        "| Kind | Variant | Model | NAME-Tolerant F1 | Exact F1 | NAME-Tolerant Precision | NAME-Tolerant Recall |\n"
         "| --- | --- | --- | ---: | ---: | ---: | ---: |"
     )
     body = [
-        f"| {row['kind']} | {row['variant_label']} | {row['model_variant_label']} | {row['f1']:.4f} "
-        f"| {float(row.get('exact_name_affix_tolerant_f1', 0.0)):.4f} "
-        f"| {row['precision']:.4f} | {row['recall']:.4f} |"
+        f"| {row['kind']} | {row['variant_label']} | {row['model_variant_label']} "
+        f"| {float(row.get('exact_name_affix_tolerant_f1', row['f1'])):.4f} "
+        f"| {row['f1']:.4f} "
+        f"| {float(row.get('exact_name_affix_tolerant_precision', row['precision'])):.4f} "
+        f"| {float(row.get('exact_name_affix_tolerant_recall', row['recall'])):.4f} |"
         for row in rows
     ]
     return "\n".join([header, *body])

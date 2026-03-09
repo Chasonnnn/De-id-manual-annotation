@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { PromptLabMatrixCellSummary, PromptLabRunDetail } from "../types";
+import { getPrimaryMatrixMetrics, getPrimaryMetricLabel } from "../metricPresentation";
 
 interface Props {
   run: PromptLabRunDetail;
@@ -7,7 +8,8 @@ interface Props {
   onSelectCell: (cellId: string) => void;
 }
 
-const MICRO_METRIC_KEY = "__micro__";
+const OVERALL_METRIC_KEY = "__micro__";
+type MetricMeasure = "f1" | "recall" | "precision";
 
 function fmtPct(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
@@ -16,12 +18,25 @@ function fmtPct(value: number): string {
 function getMetricScore(
   cell: PromptLabMatrixCellSummary | undefined,
   metricKey: string,
+  measure: MetricMeasure,
 ): number {
   if (!cell) return 0;
-  if (metricKey === MICRO_METRIC_KEY) {
-    return cell.micro.f1 ?? 0;
+  const { primaryMicro, primaryPerLabel } = getPrimaryMatrixMetrics(cell);
+  if (metricKey === OVERALL_METRIC_KEY) {
+    return primaryMicro[measure] ?? 0;
   }
-  return cell.per_label[metricKey]?.f1 ?? 0;
+  return primaryPerLabel[metricKey]?.[measure] ?? 0;
+}
+
+function getMeasureLabel(measure: MetricMeasure): string {
+  switch (measure) {
+    case "precision":
+      return "Precision";
+    case "recall":
+      return "Recall";
+    default:
+      return "F1";
+  }
 }
 
 function getHeatColor(score: number): string {
@@ -32,15 +47,16 @@ function getHeatColor(score: number): string {
 }
 
 export default function PromptLabMatrix({ run, selectedCellId, onSelectCell }: Props) {
-  const [metricKey, setMetricKey] = useState<string>(MICRO_METRIC_KEY);
+  const [metricKey, setMetricKey] = useState<string>(OVERALL_METRIC_KEY);
+  const [metricMeasure, setMetricMeasure] = useState<MetricMeasure>("f1");
   const [collapsed, setCollapsed] = useState(false);
   const totalCells = run.matrix.models.length * run.matrix.prompts.length;
   const totalRequests = run.total_tasks || run.doc_count * totalCells;
 
   useEffect(() => {
-    const options = [MICRO_METRIC_KEY, ...(run.matrix.available_labels ?? [])];
+    const options = [OVERALL_METRIC_KEY, ...(run.matrix.available_labels ?? [])];
     if (!options.includes(metricKey)) {
-      setMetricKey(MICRO_METRIC_KEY);
+      setMetricKey(OVERALL_METRIC_KEY);
     }
   }, [metricKey, run.matrix.available_labels]);
 
@@ -78,16 +94,26 @@ export default function PromptLabMatrix({ run, selectedCellId, onSelectCell }: P
       {!collapsed && (
         <>
           <div className="prompt-lab-matrix-controls">
-            <label htmlFor="prompt-lab-metric-select">Metric</label>
+            <label htmlFor="prompt-lab-measure-select">Measure</label>
+            <select
+              id="prompt-lab-measure-select"
+              value={metricMeasure}
+              onChange={(e) => setMetricMeasure(e.target.value as MetricMeasure)}
+            >
+              <option value="f1">F1</option>
+              <option value="recall">Recall</option>
+              <option value="precision">Precision</option>
+            </select>
+            <label htmlFor="prompt-lab-metric-select">Label</label>
             <select
               id="prompt-lab-metric-select"
               value={metricKey}
               onChange={(e) => setMetricKey(e.target.value)}
             >
-              <option value={MICRO_METRIC_KEY}>Micro F1</option>
+              <option value={OVERALL_METRIC_KEY}>Overall</option>
               {(run.matrix.available_labels ?? []).map((label) => (
                 <option key={label} value={label}>
-                  {label} F1
+                  {label}
                 </option>
               ))}
             </select>
@@ -110,7 +136,12 @@ export default function PromptLabMatrix({ run, selectedCellId, onSelectCell }: P
                       const cellId = `${model.id}__${prompt.id}`;
                       const cell = cellsById.get(cellId);
                       const active = selectedCellId === cellId;
-                      const score = getMetricScore(cell, metricKey);
+                      const score = getMetricScore(cell, metricKey, metricMeasure);
+                      const { usingNameTolerant, exactMicro } = getPrimaryMatrixMetrics(cell);
+                      const selectedMetricLabel =
+                        metricKey === OVERALL_METRIC_KEY
+                          ? getPrimaryMetricLabel(`Overall ${getMeasureLabel(metricMeasure)}`, usingNameTolerant)
+                          : getPrimaryMetricLabel(`${metricKey} ${getMeasureLabel(metricMeasure)}`, usingNameTolerant);
                       return (
                         <td key={cellId}>
                           <button
@@ -120,9 +151,15 @@ export default function PromptLabMatrix({ run, selectedCellId, onSelectCell }: P
                             style={{ background: getHeatColor(score) }}
                           >
                             <div className="prompt-lab-cell-status">{cell?.status ?? "pending"}</div>
-                            <div className="prompt-lab-cell-f1">{fmtPct(score)}</div>
+                            <div className="prompt-lab-cell-metric-label">{selectedMetricLabel}</div>
+                            <div className="prompt-lab-cell-score">{fmtPct(score)}</div>
                             <div className="prompt-lab-cell-meta">
                               Docs {cell?.completed_docs ?? 0}/{cell?.total_docs ?? run.doc_count}
+                            </div>
+                            <div className="prompt-lab-cell-meta">
+                              {usingNameTolerant
+                                ? `Exact F1 ${fmtPct(exactMicro.f1 ?? 0)} · Exact R ${fmtPct(exactMicro.recall ?? 0)}`
+                                : `F1 ${fmtPct(cell?.micro.f1 ?? 0)} · R ${fmtPct(cell?.micro.recall ?? 0)}`}
                             </div>
                             <div className="prompt-lab-cell-meta">
                               Errors {cell?.error_count ?? 0} · Conf{" "}

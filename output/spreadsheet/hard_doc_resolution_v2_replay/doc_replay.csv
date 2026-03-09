@@ -1,0 +1,85 @@
+lab,cell_id,model,variant,doc_id,status,raw_exact_f1,v1_exact_f1,v2_exact_f1,v2_minus_raw_f1,v2_minus_v1_f1,boundary_fix_count,augmentation_count,policy_version
+prompt,codex_none__annotator_agents_raw,codex_none,annotator_agents_raw,56f8e098,completed,0.7499999999999999,0.37499999999999994,0.7499999999999999,0.0,0.37499999999999994,0,0,2026-03-span-resolution-v2
+prompt,codex_none__annotator_agents_raw,codex_none,annotator_agents_raw,9bb358ed,completed,0.6250000000000001,0.6250000000000001,0.6250000000000001,0.0,0.0,0,0,2026-03-span-resolution-v2
+prompt,codex_none__annotator_agents_raw,codex_none,annotator_agents_raw,d4df4c18,completed,0.6285714285714286,0.4,0.6285714285714286,0.0,0.22857142857142854,0,0,2026-03-span-resolution-v2
+prompt,codex_none__annotator_agents_raw,codex_none,annotator_agents_raw,26028249,completed,0.75,0.6071428571428571,0.75,0.0,0.1428571428571429,0,0,2026-03-span-resolution-v2
+prompt,codex_none__annotator_agents_raw,codex_none,annotator_agents_raw,f5d5b0e9,completed,0.7462686567164178,0.5911330049261083,0.7389162561576356,-0.007352400558782279,0.14778325123152725,0,2,2026-03-span-resolution-v2
+prompt,codex_none__annotator_agents_raw,codex_none,annotator_agents_raw,ad20d7f7,completed,0.8571428571428571,0.8571428571428571,0.8571428571428571,0.0,0.0,0,0,2026-03-span-resolution-v2
+prompt,codex_none__annotator_agents_raw,codex_none,annotator_agents_raw,fe8b0fe8,completed,0.5,0.5,0.5,0.0,0.0,0,0,2026-03-span-resolution-v2
+prompt,claude_thinking_off__annotator_agents_raw,claude_thinking_off,annotator_agents_raw,56f8e098,completed,0.6,0.4000000000000001,0.6,0.0,0.1999999999999999,0,0,2026-03-span-resolution-v2
+prompt,claude_thinking_off__annotator_agents_raw,claude_thinking_off,annotator_agents_raw,9bb358ed,completed,0.7777777777777778,0.6666666666666666,0.7777777777777778,0.0,0.11111111111111116,0,0,2026-03-span-resolution-v2
+prompt,claude_thinking_off__annotator_agents_raw,claude_thinking_off,annotator_agents_raw,d4df4c18,completed,0.8153846153846153,0.6,0.8153846153846153,0.0,0.21538461538461529,0,0,2026-03-span-resolution-v2
+prompt,claude_thinking_off__annotator_agents_raw,claude_thinking_off,annotator_agents_raw,26028249,completed,0.7666666666666667,0.6333333333333333,0.7666666666666667,0.0,0.13333333333333341,0,0,2026-03-span-resolution-v2
+prompt,claude_thinking_off__annotator_agents_raw,claude_thinking_off,annotator_agents_raw,f5d5b0e9,completed,0.7980295566502463,0.6146341463414635,0.7902439024390243,-0.007785654211222015,0.1756097560975608,0,2,2026-03-span-resolution-v2
+prompt,claude_thinking_off__annotator_agents_raw,claude_thinking_off,annotator_agents_raw,ad20d7f7,completed,0.8571428571428571,0.8571428571428571,0.8571428571428571,0.0,0.0,0,0,2026-03-span-resolution-v2
+prompt,claude_thinking_off__annotator_agents_raw,claude_thinking_off,annotator_agents_raw,fe8b0fe8,completed,0.5,0.5,0.5,0.0,0.0,0,0,2026-03-span-resolution-v2
+prompt,gemini_pro__annotator_agents_raw,gemini_pro,annotator_agents_raw,56f8e098,completed,0.6363636363636365,0.45454545454545453,0.6363636363636365,0.0,0.18181818181818193,0,0,2026-03-span-resolution-v2
+prompt,gemini_pro__annotator_agents_raw,gemini_pro,annotator_agents_raw,9bb358ed,completed,0.7777777777777778,0.6666666666666666,0.7777777777777778,0.0,0.11111111111111116,0,0,2026-03-span-resolution-v2
+prompt,gemini_pro__annotator_agents_raw,gemini_pro,annotator_agents_raw,d4df4c18,completed,0.773109243697479,0.5714285714285714,0.773109243697479,0.0,0.20168067226890762,0,0,2026-03-span-resolution-v2
+prompt,gemini_pro__annotator_agents_raw,gemini_pro,annotator_agents_raw,26028249,completed,0.8333333333333334,0.6333333333333333,0.8333333333333334,0.0,0.20000000000000007,0,0,2026-03-span-resolution-v2
+prompt,gemini_pro__annotator_agents_raw,gemini_pro,annotator_agents_raw,f5d5b0e9,completed,0.7474747474747474,0.61,0.74,-0.007474747474747412,0.13,0,2,2026-03-span-resolution-v2
+prompt,gemini_pro__annotator_agents_raw,gemini_pro,annotator_agents_raw,ad20d7f7,completed,0.8571428571428571,0.8571428571428571,0.8571428571428571,0.0,0.0,0,0,2026-03-span-resolution-v2
+prompt,gemini_pro__annotator_agents_raw,gemini_pro,annotator_agents_raw,fe8b0fe8,completed,0.5,0.5,0.5,0.0,0.0,0,0,2026-03-span-resolution-v2
+methods,codex_none__default,codex_none,Default,56f8e098,completed,0.8235294117647058,0.47058823529411764,0.8235294117647058,0.0,0.3529411764705882,0,0,2026-03-span-resolution-v2
+methods,codex_none__default,codex_none,Default,9bb358ed,completed,0.5333333333333333,0.5333333333333333,0.5333333333333333,0.0,0.0,0,0,2026-03-span-resolution-v2
+methods,codex_none__default,codex_none,Default,d4df4c18,completed,0.6178861788617885,0.45528455284552843,0.6178861788617885,0.0,0.1626016260162601,0,0,2026-03-span-resolution-v2
+methods,codex_none__default,codex_none,Default,26028249,completed,0.588235294117647,0.5490196078431373,0.588235294117647,0.0,0.039215686274509665,0,0,2026-03-span-resolution-v2
+methods,codex_none__default,codex_none,Default,f5d5b0e9,completed,0.7064676616915423,0.541871921182266,0.6995073891625615,-0.006960272528980793,0.15763546798029549,0,2,2026-03-span-resolution-v2
+methods,codex_none__default,codex_none,Default,ad20d7f7,completed,0.5,0.5,0.5,0.0,0.0,0,0,2026-03-span-resolution-v2
+methods,codex_none__default,codex_none,Default,fe8b0fe8,completed,0.8,0.8,0.8,0.0,0.0,0,0,2026-03-span-resolution-v2
+methods,codex_none__dual,codex_none,Dual,56f8e098,completed,0.5454545454545454,0.3636363636363636,0.5454545454545454,0.0,0.18181818181818182,0,0,2026-03-span-resolution-v2
+methods,codex_none__dual,codex_none,Dual,9bb358ed,completed,0.6250000000000001,0.6250000000000001,0.6250000000000001,0.0,0.0,0,0,2026-03-span-resolution-v2
+methods,codex_none__dual,codex_none,Dual,d4df4c18,completed,0.6285714285714286,0.4,0.6285714285714286,0.0,0.22857142857142854,0,0,2026-03-span-resolution-v2
+methods,codex_none__dual,codex_none,Dual,26028249,completed,0.7037037037037038,0.5925925925925926,0.7037037037037038,0.0,0.11111111111111127,0,0,2026-03-span-resolution-v2
+methods,codex_none__dual,codex_none,Dual,f5d5b0e9,completed,0.7980295566502463,0.6341463414634146,0.7902439024390243,-0.007785654211222015,0.15609756097560967,0,2,2026-03-span-resolution-v2
+methods,codex_none__dual,codex_none,Dual,ad20d7f7,completed,0.8571428571428571,0.8571428571428571,0.8571428571428571,0.0,0.0,0,0,2026-03-span-resolution-v2
+methods,codex_none__dual,codex_none,Dual,fe8b0fe8,completed,0.5,0.5,0.5,0.0,0.0,0,0,2026-03-span-resolution-v2
+methods,codex_none__dual_split,codex_none,Dual Split,56f8e098,completed,0.5,0.20000000000000004,0.5,0.0,0.29999999999999993,0,0,2026-03-span-resolution-v2
+methods,codex_none__dual_split,codex_none,Dual Split,9bb358ed,completed,0.75,0.75,0.75,0.0,0.0,0,0,2026-03-span-resolution-v2
+methods,codex_none__dual_split,codex_none,Dual Split,d4df4c18,completed,0.7288135593220338,0.559322033898305,0.7288135593220338,0.0,0.1694915254237288,0,0,2026-03-span-resolution-v2
+methods,codex_none__dual_split,codex_none,Dual Split,26028249,completed,0.6923076923076923,0.5,0.6923076923076923,0.0,0.1923076923076923,0,0,2026-03-span-resolution-v2
+methods,codex_none__dual_split,codex_none,Dual Split,f5d5b0e9,completed,0.768472906403941,0.6146341463414635,0.7609756097560976,-0.007497296647843377,0.14634146341463405,0,2,2026-03-span-resolution-v2
+methods,codex_none__dual_split,codex_none,Dual Split,ad20d7f7,completed,0.8571428571428571,0.8571428571428571,0.8571428571428571,0.0,0.0,0,0,2026-03-span-resolution-v2
+methods,codex_none__dual_split,codex_none,Dual Split,fe8b0fe8,completed,0.5,0.5,0.5,0.0,0.0,0,0,2026-03-span-resolution-v2
+methods,claude_thinking_off__default,claude_thinking_off,Default,56f8e098,completed,0.33333333333333326,0.11111111111111112,0.33333333333333326,0.0,0.22222222222222215,0,0,2026-03-span-resolution-v2
+methods,claude_thinking_off__default,claude_thinking_off,Default,9bb358ed,completed,0.7777777777777778,0.6666666666666666,0.7777777777777778,0.0,0.11111111111111116,0,0,2026-03-span-resolution-v2
+methods,claude_thinking_off__default,claude_thinking_off,Default,d4df4c18,completed,0.7457627118644068,0.5423728813559321,0.7457627118644068,0.0,0.2033898305084747,0,0,2026-03-span-resolution-v2
+methods,claude_thinking_off__default,claude_thinking_off,Default,26028249,completed,0.7457627118644068,0.6101694915254238,0.7457627118644068,0.0,0.13559322033898302,0,0,2026-03-span-resolution-v2
+methods,claude_thinking_off__default,claude_thinking_off,Default,f5d5b0e9,completed,0.847926267281106,0.6666666666666667,0.8401826484018264,-0.007743618879279546,0.1735159817351597,0,2,2026-03-span-resolution-v2
+methods,claude_thinking_off__default,claude_thinking_off,Default,ad20d7f7,completed,0.0,0.0,0.0,0.0,0.0,0,0,2026-03-span-resolution-v2
+methods,claude_thinking_off__default,claude_thinking_off,Default,fe8b0fe8,completed,0.5,0.5,0.5,0.0,0.0,0,0,2026-03-span-resolution-v2
+methods,claude_thinking_off__dual,claude_thinking_off,Dual,56f8e098,completed,0.625,0.37499999999999994,0.625,0.0,0.25000000000000006,0,0,2026-03-span-resolution-v2
+methods,claude_thinking_off__dual,claude_thinking_off,Dual,9bb358ed,completed,0.7058823529411765,0.5882352941176471,0.7058823529411765,0.0,0.11764705882352944,0,0,2026-03-span-resolution-v2
+methods,claude_thinking_off__dual,claude_thinking_off,Dual,d4df4c18,completed,0.6727272727272727,0.43636363636363634,0.6727272727272727,0.0,0.2363636363636364,0,0,2026-03-span-resolution-v2
+methods,claude_thinking_off__dual,claude_thinking_off,Dual,26028249,completed,0.8000000000000002,0.6333333333333333,0.8000000000000002,0.0,0.16666666666666685,0,0,2026-03-span-resolution-v2
+methods,claude_thinking_off__dual,claude_thinking_off,Dual,f5d5b0e9,completed,0.8727272727272727,0.6756756756756757,0.8648648648648648,-0.007862407862407883,0.18918918918918914,0,2,2026-03-span-resolution-v2
+methods,claude_thinking_off__dual,claude_thinking_off,Dual,ad20d7f7,completed,0.8571428571428571,0.8571428571428571,0.8571428571428571,0.0,0.0,0,0,2026-03-span-resolution-v2
+methods,claude_thinking_off__dual,claude_thinking_off,Dual,fe8b0fe8,completed,0.5,0.5,0.5,0.0,0.0,0,0,2026-03-span-resolution-v2
+methods,claude_thinking_off__dual_split,claude_thinking_off,Dual Split,56f8e098,completed,0.5454545454545454,0.3636363636363636,0.5454545454545454,0.0,0.18181818181818182,0,0,2026-03-span-resolution-v2
+methods,claude_thinking_off__dual_split,claude_thinking_off,Dual Split,9bb358ed,completed,0.7058823529411765,0.5882352941176471,0.7058823529411765,0.0,0.11764705882352944,0,0,2026-03-span-resolution-v2
+methods,claude_thinking_off__dual_split,claude_thinking_off,Dual Split,d4df4c18,completed,0.7839999999999999,0.576,0.7839999999999999,0.0,0.20799999999999996,0,0,2026-03-span-resolution-v2
+methods,claude_thinking_off__dual_split,claude_thinking_off,Dual Split,26028249,completed,0.8000000000000002,0.6333333333333333,0.8000000000000002,0.0,0.16666666666666685,0,0,2026-03-span-resolution-v2
+methods,claude_thinking_off__dual_split,claude_thinking_off,Dual Split,f5d5b0e9,completed,0.8584474885844748,0.6606334841628959,0.8506787330316743,-0.007768755552800544,0.19004524886877838,0,2,2026-03-span-resolution-v2
+methods,claude_thinking_off__dual_split,claude_thinking_off,Dual Split,ad20d7f7,completed,0.8571428571428571,0.8571428571428571,0.8571428571428571,0.0,0.0,0,0,2026-03-span-resolution-v2
+methods,claude_thinking_off__dual_split,claude_thinking_off,Dual Split,fe8b0fe8,completed,0.5,0.5,0.5,0.0,0.0,0,0,2026-03-span-resolution-v2
+methods,gemini_pro__default,gemini_pro,Default,56f8e098,completed,0.48,0.4,0.48,0.0,0.07999999999999996,0,0,2026-03-span-resolution-v2
+methods,gemini_pro__default,gemini_pro,Default,9bb358ed,completed,0.7777777777777778,0.6666666666666666,0.7777777777777778,0.0,0.11111111111111116,0,0,2026-03-span-resolution-v2
+methods,gemini_pro__default,gemini_pro,Default,d4df4c18,completed,0.7968749999999999,0.578125,0.7968749999999999,0.0,0.2187499999999999,0,0,2026-03-span-resolution-v2
+methods,gemini_pro__default,gemini_pro,Default,26028249,completed,0.819672131147541,0.6229508196721313,0.819672131147541,0.0,0.19672131147540972,0,0,2026-03-span-resolution-v2
+methods,gemini_pro__default,gemini_pro,Default,f5d5b0e9,completed,0.8444444444444443,0.6784140969162995,0.8370044052863437,-0.007440039158100653,0.15859030837004418,0,2,2026-03-span-resolution-v2
+methods,gemini_pro__default,gemini_pro,Default,ad20d7f7,completed,1.0,1.0,1.0,0.0,0.0,0,0,2026-03-span-resolution-v2
+methods,gemini_pro__default,gemini_pro,Default,fe8b0fe8,completed,0.0,0.5,0.5,0.5,0.0,1,0,2026-03-span-resolution-v2
+methods,gemini_pro__dual,gemini_pro,Dual,56f8e098,failed,,,,,,,,2026-03-span-resolution-v2
+methods,gemini_pro__dual,gemini_pro,Dual,9bb358ed,completed,0.7777777777777778,0.6666666666666666,0.7777777777777778,0.0,0.11111111111111116,0,0,2026-03-span-resolution-v2
+methods,gemini_pro__dual,gemini_pro,Dual,d4df4c18,completed,0.6909090909090909,0.4727272727272727,0.6909090909090909,0.0,0.2181818181818182,0,0,2026-03-span-resolution-v2
+methods,gemini_pro__dual,gemini_pro,Dual,26028249,completed,0.8000000000000002,0.6333333333333333,0.8000000000000002,0.0,0.16666666666666685,0,0,2026-03-span-resolution-v2
+methods,gemini_pro__dual,gemini_pro,Dual,f5d5b0e9,completed,0.8722466960352422,0.6724890829694323,0.8646288209606988,-0.007617875074543368,0.1921397379912665,0,2,2026-03-span-resolution-v2
+methods,gemini_pro__dual,gemini_pro,Dual,ad20d7f7,completed,0.8571428571428571,0.8571428571428571,0.8571428571428571,0.0,0.0,0,0,2026-03-span-resolution-v2
+methods,gemini_pro__dual,gemini_pro,Dual,fe8b0fe8,completed,0.5,0.5,0.5,0.0,0.0,0,0,2026-03-span-resolution-v2
+methods,gemini_pro__dual_split,gemini_pro,Dual Split,56f8e098,completed,0.5454545454545454,0.45454545454545453,0.5454545454545454,0.0,0.09090909090909088,0,0,2026-03-span-resolution-v2
+methods,gemini_pro__dual_split,gemini_pro,Dual Split,9bb358ed,completed,0.7777777777777778,0.6666666666666666,0.7777777777777778,0.0,0.11111111111111116,0,0,2026-03-span-resolution-v2
+methods,gemini_pro__dual_split,gemini_pro,Dual Split,d4df4c18,completed,0.8188976377952756,0.6141732283464567,0.8188976377952756,0.0,0.20472440944881887,0,0,2026-03-span-resolution-v2
+methods,gemini_pro__dual_split,gemini_pro,Dual Split,26028249,completed,0.7868852459016393,0.6229508196721313,0.7868852459016393,0.0,0.16393442622950805,0,0,2026-03-span-resolution-v2
+methods,gemini_pro__dual_split,gemini_pro,Dual Split,f5d5b0e9,completed,0.8820960698689956,0.683982683982684,0.8744588744588744,-0.0076371954101212,0.19047619047619035,0,2,2026-03-span-resolution-v2
+methods,gemini_pro__dual_split,gemini_pro,Dual Split,ad20d7f7,completed,0.8571428571428571,0.8571428571428571,0.8571428571428571,0.0,0.0,0,0,2026-03-span-resolution-v2
+methods,gemini_pro__dual_split,gemini_pro,Dual Split,fe8b0fe8,completed,0.5,0.5,0.5,0.0,0.0,0,0,2026-03-span-resolution-v2

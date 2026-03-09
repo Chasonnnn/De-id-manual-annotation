@@ -1,5 +1,10 @@
 import { useState } from "react";
 import type { DashboardMetricsResult } from "../types";
+import {
+  getPrimaryDashboardDocumentMetrics,
+  getPrimaryDashboardMetrics,
+  getPrimaryMetricLabel,
+} from "../metricPresentation";
 
 interface Props {
   dashboard: DashboardMetricsResult | null;
@@ -26,6 +31,7 @@ export default function DashboardPanel({
     value == null ? "N/A" : `${(value * 100).toFixed(1)}%`;
   const fmtMatchMode = (value: DashboardMetricsResult["match_mode"]) =>
     value === "boundary" ? "trim space/punct" : value;
+  const { primaryMicro, exactMicro, usingNameTolerant } = getPrimaryDashboardMetrics(dashboard);
 
   return (
     <div className={`dashboard-panel ${collapsed ? "collapsed" : ""}`}>
@@ -61,6 +67,12 @@ export default function DashboardPanel({
                 Comparing <strong>{dashboard.reference}</strong> vs{" "}
                 <strong>{dashboard.hypothesis}</strong> ({fmtMatchMode(dashboard.match_mode)})
               </div>
+              {usingNameTolerant && exactMicro && (
+                <div className="metrics-diagnostic-note">
+                  Exact diagnostic: P {fmtPct(exactMicro.precision)} · R {fmtPct(exactMicro.recall)} ·
+                  F1 {fmtPct(exactMicro.f1)}
+                </div>
+              )}
 
               <div className="metric-cards">
                 <div className="metric-card">
@@ -71,19 +83,25 @@ export default function DashboardPanel({
                   </div>
                 </div>
                 <div className="metric-card">
-                  <div className="card-label">Global Precision</div>
-                  <div className="card-value">{fmtPct(dashboard.micro.precision)}</div>
+                  <div className="card-label">
+                    {getPrimaryMetricLabel("Global Precision", usingNameTolerant)}
+                  </div>
+                  <div className="card-value">{fmtPct(primaryMicro?.precision ?? dashboard.micro.precision)}</div>
                 </div>
                 <div className="metric-card">
-                  <div className="card-label">Global Recall</div>
-                  <div className="card-value">{fmtPct(dashboard.micro.recall)}</div>
+                  <div className="card-label">
+                    {getPrimaryMetricLabel("Global Recall", usingNameTolerant)}
+                  </div>
+                  <div className="card-value">{fmtPct(primaryMicro?.recall ?? dashboard.micro.recall)}</div>
                 </div>
                 <div className="metric-card">
-                  <div className="card-label">Global F1</div>
-                  <div className="card-value">{fmtPct(dashboard.micro.f1)}</div>
+                  <div className="card-label">
+                    {getPrimaryMetricLabel("Global F1", usingNameTolerant)}
+                  </div>
+                  <div className="card-value">{fmtPct(primaryMicro?.f1 ?? dashboard.micro.f1)}</div>
                   <div className="card-sub">
-                    TP {dashboard.micro.tp} / FP {dashboard.micro.fp} / FN{" "}
-                    {dashboard.micro.fn}
+                    TP {primaryMicro?.tp ?? dashboard.micro.tp} / FP {primaryMicro?.fp ?? dashboard.micro.fp} / FN{" "}
+                    {primaryMicro?.fn ?? dashboard.micro.fn}
                   </div>
                 </div>
                 <div className="metric-card">
@@ -110,9 +128,10 @@ export default function DashboardPanel({
                 <thead>
                   <tr>
                     <th>Document</th>
-                    <th>Micro P</th>
-                    <th>Micro R</th>
-                    <th>Micro F1</th>
+                    <th>{getPrimaryMetricLabel("Micro P", usingNameTolerant)}</th>
+                    <th>{getPrimaryMetricLabel("Micro R", usingNameTolerant)}</th>
+                    <th>{getPrimaryMetricLabel("Micro F1", usingNameTolerant)}</th>
+                    <th>Exact F1</th>
                     <th>Macro F1</th>
                     <th>Kappa</th>
                     <th>IoU</th>
@@ -121,33 +140,37 @@ export default function DashboardPanel({
                   </tr>
                 </thead>
                 <tbody>
-                  {dashboard.documents.map((row) => (
-                    <tr
-                      key={row.id}
-                      className={selectedId === row.id ? "selected" : ""}
-                      onClick={() => onSelectDocument(row.id)}
-                      style={{ cursor: "pointer" }}
-                    >
-                      <td title={row.filename}>{row.filename}</td>
-                      <td>{fmtPct(row.micro.precision)}</td>
-                      <td>{fmtPct(row.micro.recall)}</td>
-                      <td>{fmtPct(row.micro.f1)}</td>
-                      <td>{fmtPct(row.macro.f1)}</td>
-                      <td>{fmtNum(row.cohens_kappa)}</td>
-                      <td>{fmtNum(row.mean_iou)}</td>
-                      <td>
-                        {row.llm_confidence?.confidence != null
-                          ? fmtPct(row.llm_confidence.confidence)
-                          : "N/A"}
-                      </td>
-                      <td>
-                        {row.reference_count}/{row.hypothesis_count}
-                      </td>
-                    </tr>
-                  ))}
+                  {dashboard.documents.map((row) => {
+                    const { primaryMicro: rowPrimaryMicro } = getPrimaryDashboardDocumentMetrics(row);
+                    return (
+                      <tr
+                        key={row.id}
+                        className={selectedId === row.id ? "selected" : ""}
+                        onClick={() => onSelectDocument(row.id)}
+                        style={{ cursor: "pointer" }}
+                      >
+                        <td title={row.filename}>{row.filename}</td>
+                        <td>{fmtPct(rowPrimaryMicro.precision)}</td>
+                        <td>{fmtPct(rowPrimaryMicro.recall)}</td>
+                        <td>{fmtPct(rowPrimaryMicro.f1)}</td>
+                        <td>{fmtPct(row.micro.f1)}</td>
+                        <td>{fmtPct(row.macro.f1)}</td>
+                        <td>{fmtNum(row.cohens_kappa)}</td>
+                        <td>{fmtNum(row.mean_iou)}</td>
+                        <td>
+                          {row.llm_confidence?.confidence != null
+                            ? fmtPct(row.llm_confidence.confidence)
+                            : "N/A"}
+                        </td>
+                        <td>
+                          {row.reference_count}/{row.hypothesis_count}
+                        </td>
+                      </tr>
+                    );
+                  })}
                   {dashboard.documents.length === 0 && (
                     <tr>
-                      <td colSpan={9} style={{ textAlign: "left" }}>
+                      <td colSpan={10} style={{ textAlign: "left" }}>
                         No comparable documents yet.
                       </td>
                     </tr>

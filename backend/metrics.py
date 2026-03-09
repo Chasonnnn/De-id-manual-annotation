@@ -7,6 +7,7 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 from models import CanonicalSpan
+from span_resolution import canonicalize_name_affix_text
 
 
 _NAME_HONORIFIC_RE = re.compile(r"^(mr|mrs|ms|miss)\.?\s+", re.IGNORECASE)
@@ -56,20 +57,6 @@ def _boundary_match(a: CanonicalSpan, b: CanonicalSpan) -> bool:
     return a_start == b_start and a_end == b_end
 
 
-def _canonicalize_name_affix_text(text: str) -> str:
-    normalized = unicodedata.normalize("NFKC", text or "")
-    normalized = normalized.strip()
-    if not normalized:
-        return ""
-    normalized = normalized.strip(" \t\r\n.,!?;:\"'()[]{}")
-    normalized = _NAME_HONORIFIC_RE.sub("", normalized)
-    normalized = normalized.strip(" \t\r\n.,!?;:\"'()[]{}")
-    normalized = _TRAILING_POSSESSIVE_RE.sub("", normalized)
-    normalized = normalized.strip(" \t\r\n.,!?;:\"'()[]{}")
-    normalized = " ".join(normalized.split())
-    return normalized.casefold()
-
-
 def _exact_name_affix_tolerant_match(a: CanonicalSpan, b: CanonicalSpan) -> bool:
     if a.label != b.label:
         return False
@@ -77,8 +64,8 @@ def _exact_name_affix_tolerant_match(a: CanonicalSpan, b: CanonicalSpan) -> bool
         return a.start == b.start and a.end == b.end
     if _overlap(a, b) == 0:
         return False
-    left = _canonicalize_name_affix_text(a.text)
-    right = _canonicalize_name_affix_text(b.text)
+    left = canonicalize_name_affix_text(a.text)
+    right = canonicalize_name_affix_text(b.text)
     return bool(left) and left == right
 
 

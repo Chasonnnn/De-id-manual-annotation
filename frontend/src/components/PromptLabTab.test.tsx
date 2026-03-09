@@ -226,9 +226,9 @@ describe("PromptLabTab", () => {
     clientMocks.stopPromptLabRun.mockReset();
     clientMocks.getAgentMethods.mockResolvedValue([]);
     clientMocks.getExperimentLimits.mockResolvedValue({
-      prompt_lab_default_concurrency: 4,
+      prompt_lab_default_concurrency: 10,
       prompt_lab_max_concurrency: 16,
-      methods_lab_default_concurrency: 4,
+      methods_lab_default_concurrency: 10,
       methods_lab_max_concurrency: 16,
     });
   });
@@ -283,9 +283,9 @@ describe("PromptLabTab", () => {
   it("loads experiment limits and passes the prompt concurrency max to the form", async () => {
     clientMocks.listPromptLabRuns.mockResolvedValue([]);
     clientMocks.getExperimentLimits.mockResolvedValue({
-      prompt_lab_default_concurrency: 4,
+      prompt_lab_default_concurrency: 10,
       prompt_lab_max_concurrency: 12,
-      methods_lab_default_concurrency: 4,
+      methods_lab_default_concurrency: 10,
       methods_lab_max_concurrency: 16,
     });
 

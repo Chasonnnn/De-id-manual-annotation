@@ -29,6 +29,7 @@ describe("PromptLabRunForm", () => {
 
     const concurrencyInput = screen.getByLabelText("Concurrency") as HTMLInputElement;
     expect(concurrencyInput.max).toBe("12");
+    expect(concurrencyInput.value).toBe("10");
 
     fireEvent.change(concurrencyInput, { target: { value: "13" } });
     fireEvent.click(screen.getByRole("button", { name: "Run Prompt Lab" }));

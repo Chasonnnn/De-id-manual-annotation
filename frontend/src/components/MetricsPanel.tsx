@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import type { AnnotationSource, MatchMode, MetricsResult } from "../types";
 import { getLabelColor } from "../types";
+import { getPrimaryMetricLabel, getPrimaryMetrics } from "../metricPresentation";
 
 interface Props {
   reference: AnnotationSource;
@@ -32,6 +33,7 @@ export default function MetricsPanel({
   const fmt = (v: number) => (v * 100).toFixed(1) + "%";
   const confusion = metrics?.confusion_matrix;
   const confidence = metrics?.llm_confidence ?? null;
+  const { primary, exact, usingNameTolerant } = getPrimaryMetrics(metrics, matchMode);
   const confidencePct =
     confidence?.confidence != null ? `${(confidence.confidence * 100).toFixed(1)}%` : "N/A";
   const confidenceBand = confidence?.band.toUpperCase() ?? "N/A";
@@ -146,30 +148,48 @@ export default function MetricsPanel({
                   <span style={{ marginLeft: 8 }}>perplexity={perplexity}</span>
                 </div>
               )}
+              {usingNameTolerant && exact && (
+                <div className="metrics-diagnostic-note">
+                  Exact diagnostic: P {fmt(exact.micro.precision)} · R {fmt(exact.micro.recall)} · F1{" "}
+                  {fmt(exact.micro.f1)}
+                </div>
+              )}
               <div className="metric-cards">
                 <div className="metric-card">
-                  <div className="card-label">Micro P</div>
-                  <div className="card-value">{fmt(metrics.micro.precision)}</div>
+                  <div className="card-label">
+                    {getPrimaryMetricLabel("Micro P", usingNameTolerant)}
+                  </div>
+                  <div className="card-value">{fmt(primary?.micro.precision ?? 0)}</div>
                 </div>
                 <div className="metric-card">
-                  <div className="card-label">Micro R</div>
-                  <div className="card-value">{fmt(metrics.micro.recall)}</div>
+                  <div className="card-label">
+                    {getPrimaryMetricLabel("Micro R", usingNameTolerant)}
+                  </div>
+                  <div className="card-value">{fmt(primary?.micro.recall ?? 0)}</div>
                 </div>
                 <div className="metric-card">
-                  <div className="card-label">Micro F1</div>
-                  <div className="card-value">{fmt(metrics.micro.f1)}</div>
+                  <div className="card-label">
+                    {getPrimaryMetricLabel("Micro F1", usingNameTolerant)}
+                  </div>
+                  <div className="card-value">{fmt(primary?.micro.f1 ?? 0)}</div>
                 </div>
                 <div className="metric-card">
-                  <div className="card-label">Macro P</div>
-                  <div className="card-value">{fmt(metrics.macro.precision)}</div>
+                  <div className="card-label">
+                    {getPrimaryMetricLabel("Macro P", usingNameTolerant)}
+                  </div>
+                  <div className="card-value">{fmt(primary?.macro.precision ?? 0)}</div>
                 </div>
                 <div className="metric-card">
-                  <div className="card-label">Macro R</div>
-                  <div className="card-value">{fmt(metrics.macro.recall)}</div>
+                  <div className="card-label">
+                    {getPrimaryMetricLabel("Macro R", usingNameTolerant)}
+                  </div>
+                  <div className="card-value">{fmt(primary?.macro.recall ?? 0)}</div>
                 </div>
                 <div className="metric-card">
-                  <div className="card-label">Macro F1</div>
-                  <div className="card-value">{fmt(metrics.macro.f1)}</div>
+                  <div className="card-label">
+                    {getPrimaryMetricLabel("Macro F1", usingNameTolerant)}
+                  </div>
+                  <div className="card-value">{fmt(primary?.macro.f1 ?? 0)}</div>
                 </div>
               </div>
 
@@ -184,7 +204,7 @@ export default function MetricsPanel({
                   </tr>
                 </thead>
                 <tbody>
-                  {Object.entries(metrics.per_label).map(([label, m]) => (
+                  {Object.entries(primary?.per_label ?? metrics.per_label).map(([label, m]) => (
                     <tr key={label}>
                       <td>
                         <span

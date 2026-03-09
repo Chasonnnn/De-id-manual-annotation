@@ -88,7 +88,7 @@ export default function PromptLabRunForm({
       return "";
     }
   });
-  const [concurrency, setConcurrency] = useState(4);
+  const [concurrency, setConcurrency] = useState(10);
   const [labelProfile, setLabelProfile] = useState<"simple" | "advanced">("simple");
   const [labelProjection, setLabelProjection] = useState<"native" | "coarse_simple">(
     "native",

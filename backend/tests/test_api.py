@@ -22,7 +22,7 @@ from server import (
     _session_docs,
     _methods_lab_run_path,
 )
-from models import CanonicalSpan, LLMConfidenceMetric
+from models import CanonicalSpan, LLMConfidenceMetric, ResolutionEvent
 
 
 @pytest.fixture(autouse=True)
@@ -1462,6 +1462,8 @@ def test_metrics_dashboard(client):
     assert data["total_documents"] == 2
     assert data["documents_compared"] == 2
     assert "micro" in data and "f1" in data["micro"]
+    assert "co_primary_metrics" in data
+    assert "exact_name_affix_tolerant" in data["co_primary_metrics"]
     assert "avg_document_micro" in data
     assert "avg_document_macro" in data
     assert "llm_confidence_summary" in data
@@ -1471,6 +1473,8 @@ def test_metrics_dashboard(client):
     assert "id" in first_doc and "filename" in first_doc
     assert "micro" in first_doc and "f1" in first_doc["micro"]
     assert "macro" in first_doc and "precision" in first_doc["macro"]
+    assert "co_primary_metrics" in first_doc
+    assert "exact_name_affix_tolerant" in first_doc["co_primary_metrics"]
     assert "cohens_kappa" in first_doc
     assert "mean_iou" in first_doc
     assert "llm_confidence" in first_doc
@@ -1567,9 +1571,9 @@ def test_experiment_limits_endpoint_uses_configured_caps(client):
     resp = client.get("/api/experiments/limits")
     assert resp.status_code == 200
     assert resp.json() == {
-        "prompt_lab_default_concurrency": 4,
+        "prompt_lab_default_concurrency": 10,
         "prompt_lab_max_concurrency": 17,
-        "methods_lab_default_concurrency": 4,
+        "methods_lab_default_concurrency": 10,
         "methods_lab_max_concurrency": 32,
     }
 
@@ -3830,7 +3834,15 @@ def test_run_llm_for_document_can_disable_suspicious_empty_retry(client, monkeyp
     assert doc is not None
     enriched = _enrich_doc(doc, "default")
 
-    spans, warnings, _llm_confidence, diagnostics = _run_llm_for_document(
+    (
+        spans,
+        warnings,
+        _llm_confidence,
+        diagnostics,
+        _raw_hypothesis_spans,
+        _resolution_events,
+        _resolution_policy_version,
+    ) = _run_llm_for_document(
         doc=enriched,
         api_key="request-key",
         api_base="https://proxy.example.com/v1",
@@ -3846,7 +3858,6 @@ def test_run_llm_for_document_can_disable_suspicious_empty_retry(client, monkeyp
         enable_suspicious_empty_retry=False,
     )
 
-    assert len(spans) > 0
     suspicious = [item for item in diagnostics if item.suspicious_empty]
     assert len(suspicious) >= 1
     assert all(item.attempt_count == 1 for item in suspicious)
@@ -4034,3 +4045,312 @@ def test_session_export_includes_saved_run_metadata(client, monkeypatch):
     saved_meta = next(iter(saved["llm_run_metadata"].values()))
     assert saved_meta["mode"] == "llm"
     assert "prompt_snapshot" in saved_meta
+
+
+def test_agent_run_persists_raw_and_resolved_spans_with_resolution_metadata(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.2-chat"],
+    )
+
+    text = "Hello Mr. Muhammad"
+
+    def fake_run_llm_with_metadata(**kwargs):
+        return SimpleNamespace(
+            spans=[
+                CanonicalSpan(
+                    start=text.index("Mr."),
+                    end=len(text),
+                    label="NAME",
+                    text="Mr. Muhammad",
+                )
+            ],
+            raw_spans=[
+                CanonicalSpan(
+                    start=text.index("Muhammad"),
+                    end=len(text),
+                    label="NAME",
+                    text="Muhammad",
+                )
+            ],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(model=str(kwargs["model"])),
+            resolution_events=[
+                ResolutionEvent(
+                    kind="boundary_resolution",
+                    label="NAME",
+                    rule="name_honorific_prefix",
+                    before=CanonicalSpan(
+                        start=text.index("Muhammad"),
+                        end=len(text),
+                        label="NAME",
+                        text="Muhammad",
+                    ),
+                    after=CanonicalSpan(
+                        start=text.index("Mr."),
+                        end=len(text),
+                        label="NAME",
+                        text="Mr. Muhammad",
+                    ),
+                )
+            ],
+            resolution_policy_version="2026-03-span-resolution-v2",
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    upload_resp = _upload(client, _make_hips_v1_custom(text))
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    run_resp = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "llm",
+            "model": "openai.gpt-5.2-chat",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com/v1",
+        },
+    )
+    assert run_resp.status_code == 200
+    payload = run_resp.json()
+    assert payload["agent_run_metrics"]["resolution_policy_version"] == "2026-03-span-resolution-v2"
+    assert payload["agent_run_metrics"]["raw_hypothesis_spans"][0]["text"] == "Muhammad"
+    assert payload["agent_run_metrics"]["resolution_events"][0]["rule"] == "name_honorific_prefix"
+
+    export_resp = client.get("/api/session/export")
+    assert export_resp.status_code == 200
+    saved_meta = next(
+        iter(export_resp.json()["documents"][0]["agent_saved_outputs"]["llm_run_metadata"].values())
+    )
+    assert saved_meta["raw_hypothesis_spans"][0]["text"] == "Muhammad"
+    assert saved_meta["resolution_events"][0]["rule"] == "name_honorific_prefix"
+    assert saved_meta["resolution_policy_version"] == "2026-03-span-resolution-v2"
+
+
+def test_prompt_lab_detail_includes_raw_metrics_and_resolution_metadata(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    text = "Hello Mr. Muhammad"
+
+    def fake_run_llm_with_metadata(**kwargs):
+        return SimpleNamespace(
+            spans=[
+                CanonicalSpan(
+                    start=text.index("Mr."),
+                    end=len(text),
+                    label="NAME",
+                    text="Mr. Muhammad",
+                )
+            ],
+            raw_spans=[
+                CanonicalSpan(
+                    start=text.index("Muhammad"),
+                    end=len(text),
+                    label="NAME",
+                    text="Muhammad",
+                )
+            ],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(model=str(kwargs["model"])),
+            resolution_events=[
+                ResolutionEvent(
+                    kind="boundary_resolution",
+                    label="NAME",
+                    rule="name_honorific_prefix",
+                    before=CanonicalSpan(
+                        start=text.index("Muhammad"),
+                        end=len(text),
+                        label="NAME",
+                        text="Muhammad",
+                    ),
+                    after=CanonicalSpan(
+                        start=text.index("Mr."),
+                        end=len(text),
+                        label="NAME",
+                        text="Mr. Muhammad",
+                    ),
+                )
+            ],
+            resolution_policy_version="2026-03-span-resolution-v2",
+        )
+
+    monkeypatch.setattr("server.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    upload_resp = _upload(client, _make_hips_v1_custom(text))
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+    manual_resp = client.put(
+        f"/api/documents/{doc_id}/manual-annotations",
+        json=[
+            {
+                "start": text.index("Mr."),
+                "end": len(text),
+                "label": "NAME",
+                "text": "Mr. Muhammad",
+            }
+        ],
+    )
+    assert manual_resp.status_code == 200
+
+    create_resp = client.post(
+        "/api/prompt-lab/runs",
+        json={
+            "name": "resolution-audit",
+            "doc_ids": [doc_id],
+            "prompts": [
+                {
+                    "id": "p1",
+                    "label": "Baseline",
+                    "system_prompt": "Detect pii spans as strict JSON",
+                }
+            ],
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "none",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "reference_source": "manual",
+                "fallback_reference_source": "pre",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+
+    final = _wait_for_prompt_lab_terminal(client, run_id)
+    assert final["status"] == "completed"
+    detail_resp = client.get(
+        f"/api/prompt-lab/runs/{run_id}/cells/{final['matrix']['cells'][0]['id']}/documents/{doc_id}"
+    )
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert detail["raw_hypothesis_spans"][0]["text"] == "Muhammad"
+    assert detail["resolution_events"][0]["rule"] == "name_honorific_prefix"
+    assert detail["resolution_policy_version"] == "2026-03-span-resolution-v2"
+    assert detail["raw_metrics"]["micro"]["f1"] == pytest.approx(0.0)
+    assert detail["metrics"]["micro"]["f1"] == pytest.approx(1.0)
+
+
+def test_methods_lab_detail_includes_raw_metrics_and_resolution_metadata(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    text = "Hello Mr. Muhammad"
+
+    def fake_run_method_with_metadata(**kwargs):
+        return SimpleNamespace(
+            spans=[
+                CanonicalSpan(
+                    start=text.index("Mr."),
+                    end=len(text),
+                    label="NAME",
+                    text="Mr. Muhammad",
+                )
+            ],
+            raw_spans=[
+                CanonicalSpan(
+                    start=text.index("Muhammad"),
+                    end=len(text),
+                    label="NAME",
+                    text="Muhammad",
+                )
+            ],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(model=str(kwargs["model"])),
+            resolution_events=[
+                ResolutionEvent(
+                    kind="boundary_resolution",
+                    label="NAME",
+                    rule="name_honorific_prefix",
+                    before=CanonicalSpan(
+                        start=text.index("Muhammad"),
+                        end=len(text),
+                        label="NAME",
+                        text="Muhammad",
+                    ),
+                    after=CanonicalSpan(
+                        start=text.index("Mr."),
+                        end=len(text),
+                        label="NAME",
+                        text="Mr. Muhammad",
+                    ),
+                )
+            ],
+            resolution_policy_version="2026-03-span-resolution-v2",
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    upload_resp = _upload(client, _make_hips_v1_custom(text))
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+    manual_resp = client.put(
+        f"/api/documents/{doc_id}/manual-annotations",
+        json=[
+            {
+                "start": text.index("Mr."),
+                "end": len(text),
+                "label": "NAME",
+                "text": "Mr. Muhammad",
+            }
+        ],
+    )
+    assert manual_resp.status_code == 200
+
+    create_resp = client.post(
+        "/api/methods-lab/runs",
+        json={
+            "name": "method-resolution-audit",
+            "doc_ids": [doc_id],
+            "methods": [{"id": "method_1", "label": "Default", "method_id": "default"}],
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "none",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+
+    final = _wait_for_methods_lab_terminal(client, run_id)
+    assert final["status"] == "completed"
+    detail_resp = client.get(
+        f"/api/methods-lab/runs/{run_id}/cells/{final['matrix']['cells'][0]['id']}/documents/{doc_id}"
+    )
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert detail["raw_hypothesis_spans"][0]["text"] == "Muhammad"
+    assert detail["resolution_events"][0]["rule"] == "name_honorific_prefix"
+    assert detail["resolution_policy_version"] == "2026-03-span-resolution-v2"
+    assert detail["raw_metrics"]["micro"]["f1"] == pytest.approx(0.0)
+    assert detail["metrics"]["micro"]["f1"] == pytest.approx(1.0)

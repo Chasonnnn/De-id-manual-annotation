@@ -29,6 +29,7 @@ from models import (
     CanonicalDocument,
     CanonicalSpan,
     LLMConfidenceMetric,
+    ResolutionEvent,
     SavedRunMetadata,
 )
 from normalizer import parse_file
@@ -36,14 +37,17 @@ from agent import (
     METHOD_DEFINITION_BY_ID,
     MODEL_PRESETS,
     SYSTEM_PROMPT,
+    _drop_implausible_name_spans,
     build_extraction_system_prompt,
     list_agent_methods,
+    merge_method_spans,
     normalize_method_spans,
     run_llm_with_metadata,
     run_method_with_metadata,
     run_regex,
 )
 from metrics import compute_metrics
+from span_resolution import RESOLUTION_POLICY_VERSION, resolve_spans, summarize_resolution_events
 
 app = FastAPI(title="Annotation Tool")
 
@@ -67,10 +71,10 @@ TOOL_VERSION = "2026.03.03"
 PROMPT_LAB_DIR_NAME = "prompt_lab"
 METHODS_LAB_DIR_NAME = "methods_lab"
 PROMPT_LAB_MAX_VARIANTS = 6
-PROMPT_LAB_DEFAULT_CONCURRENCY = 4
+PROMPT_LAB_DEFAULT_CONCURRENCY = 10
 PROMPT_LAB_DEFAULT_MAX_CONCURRENCY = 16
 METHODS_LAB_MAX_METHOD_VARIANTS = max(12, len(METHOD_DEFINITION_BY_ID))
-METHODS_LAB_DEFAULT_CONCURRENCY = 4
+METHODS_LAB_DEFAULT_CONCURRENCY = 10
 METHODS_LAB_DEFAULT_MAX_CONCURRENCY = 16
 EXPERIMENT_HARD_MAX_CONCURRENCY = 32
 DEFAULT_CHUNK_SIZE_CHARS = 10_000
@@ -1286,6 +1290,21 @@ def _enrich_doc(
         if latest_run_metadata is not None
         else []
     )
+    raw_hypothesis_spans = (
+        list(latest_run_metadata.raw_hypothesis_spans)
+        if latest_run_metadata is not None
+        else []
+    )
+    resolution_events = (
+        list(latest_run_metadata.resolution_events)
+        if latest_run_metadata is not None
+        else []
+    )
+    resolution_policy_version = (
+        latest_run_metadata.resolution_policy_version
+        if latest_run_metadata is not None
+        else None
+    )
 
     doc.manual_annotations = manual or []
     doc.agent_outputs = AgentOutputs(
@@ -1304,6 +1323,9 @@ def _enrich_doc(
         llm_confidence=llm_confidence,
         label_profile=label_profile,
         chunk_diagnostics=chunk_diagnostics,
+        raw_hypothesis_spans=raw_hypothesis_spans,
+        resolution_events=resolution_events,
+        resolution_policy_version=resolution_policy_version,
     )
 
     if manual:
@@ -2212,6 +2234,7 @@ class _ChunkExecutionResult:
     start: int
     end: int
     shifted_spans: list[CanonicalSpan]
+    raw_shifted_spans: list[CanonicalSpan]
     warnings: list[str]
     llm_confidence: LLMConfidenceMetric | None
     finish_reason: str | None = None
@@ -2278,7 +2301,15 @@ def _run_llm_for_document(
     chunk_size_chars: int,
     enable_suspicious_empty_retry: bool = True,
     progress_callback: Callable[[int, int], None] | None = None,
-) -> tuple[list[CanonicalSpan], list[str], LLMConfidenceMetric, list[AgentChunkDiagnostic]]:
+) -> tuple[
+    list[CanonicalSpan],
+    list[str],
+    LLMConfidenceMetric,
+    list[AgentChunkDiagnostic],
+    list[CanonicalSpan],
+    list[ResolutionEvent],
+    str | None,
+]:
     if not _should_use_chunking(len(doc.raw_text), chunk_mode, chunk_size_chars):
         llm_result = run_llm_with_metadata(
             text=doc.raw_text,
@@ -2296,13 +2327,28 @@ def _run_llm_for_document(
             normalize_method_spans(llm_result.spans, label_profile=label_profile),
             doc.raw_text,
         )
+        raw_spans = _normalize_and_validate_spans(
+            normalize_method_spans(
+                getattr(llm_result, "raw_spans", llm_result.spans),
+                label_profile=label_profile,
+            ),
+            doc.raw_text,
+        )
         if progress_callback is not None:
             progress_callback(1, 1)
-        return spans, llm_result.warnings, llm_result.llm_confidence, []
+        return (
+            spans,
+            llm_result.warnings,
+            llm_result.llm_confidence,
+            [],
+            raw_spans,
+            list(getattr(llm_result, "resolution_events", [])),
+            getattr(llm_result, "resolution_policy_version", None),
+        )
 
     chunks = _build_text_chunks(doc, chunk_size_chars)
     warnings: list[str] = []
-    all_spans: list[CanonicalSpan] = []
+    all_raw_spans: list[CanonicalSpan] = []
     chunk_metrics: list[LLMConfidenceMetric] = []
     chunk_count = len(chunks)
     chunk_workers = _resolve_chunk_parallel_workers(chunk_count)
@@ -2325,11 +2371,19 @@ def _run_llm_for_document(
             normalize_method_spans(llm_result.spans, label_profile=label_profile),
             start,
         )
+        raw_shifted = _shift_spans(
+            normalize_method_spans(
+                getattr(llm_result, "raw_spans", llm_result.spans),
+                label_profile=label_profile,
+            ),
+            start,
+        )
         return _ChunkExecutionResult(
             idx=idx,
             start=start,
             end=end,
             shifted_spans=shifted,
+            raw_shifted_spans=raw_shifted,
             warnings=list(llm_result.warnings),
             llm_confidence=llm_result.llm_confidence,
             finish_reason=getattr(llm_result, "finish_reason", None),
@@ -2376,6 +2430,7 @@ def _run_llm_for_document(
                 start=chunk_outcomes[idx].start,
                 end=chunk_outcomes[idx].end,
                 shifted_spans=chunk_outcomes[idx].shifted_spans,
+                raw_shifted_spans=chunk_outcomes[idx].raw_shifted_spans,
                 warnings=[
                     "suspicious empty first pass returned 0 spans; retry disabled.",
                     *chunk_outcomes[idx].warnings,
@@ -2399,6 +2454,7 @@ def _run_llm_for_document(
             start=selected_result.start,
             end=selected_result.end,
             shifted_spans=selected_result.shifted_spans,
+            raw_shifted_spans=selected_result.raw_shifted_spans,
             warnings=[
                 _summarize_suspicious_empty_retry(
                     recovered_span_count=recovered_span_count,
@@ -2416,7 +2472,7 @@ def _run_llm_for_document(
         retry_used = (
             enable_suspicious_empty_retry and suspicious_empty and len(result.shifted_spans) > 0
         )
-        all_spans.extend(result.shifted_spans)
+        all_raw_spans.extend(result.raw_shifted_spans)
         warnings.extend(_format_chunk_warnings(idx, chunk_count, result.warnings))
         if result.llm_confidence is not None:
             chunk_metrics.append(result.llm_confidence)
@@ -2429,7 +2485,30 @@ def _run_llm_for_document(
             )
         )
 
-    normalized = _normalize_and_validate_spans(_dedup_spans(all_spans), doc.raw_text)
+    raw_spans = _normalize_and_validate_spans(
+        merge_method_spans(all_raw_spans),
+        doc.raw_text,
+    )
+    resolved_spans, resolution_events = resolve_spans(
+        doc.raw_text,
+        raw_spans,
+        label_profile=label_profile,
+        enable_augmentation=True,
+    )
+    normalized = _normalize_and_validate_spans(
+        merge_method_spans(resolved_spans),
+        doc.raw_text,
+    )
+    normalized, dropped_name_spans = _drop_implausible_name_spans(
+        doc.raw_text,
+        normalized,
+        label_profile=label_profile,
+    )
+    if dropped_name_spans > 0:
+        target_label = "NAME" if label_profile == "simple" else "PERSON"
+        warnings.append(
+            f"Dropped {dropped_name_spans} implausible {target_label} span(s) after shared resolution."
+        )
     warnings.insert(
         0,
         (
@@ -2437,7 +2516,15 @@ def _run_llm_for_document(
             f"(mode={chunk_mode}, workers={chunk_workers})."
         ),
     )
-    return normalized, warnings, _aggregate_llm_confidence(chunk_metrics), chunk_diagnostics
+    return (
+        normalized,
+        warnings,
+        _aggregate_llm_confidence(chunk_metrics),
+        chunk_diagnostics,
+        raw_spans,
+        resolution_events,
+        RESOLUTION_POLICY_VERSION,
+    )
 
 
 def _run_method_for_document(
@@ -2464,6 +2551,9 @@ def _run_method_for_document(
     list[str],
     LLMConfidenceMetric | None,
     list[AgentChunkDiagnostic],
+    list[CanonicalSpan],
+    list[ResolutionEvent],
+    str | None,
 ]:
     def _emit_runtime_progress(
         *,
@@ -2523,13 +2613,29 @@ def _run_method_for_document(
             normalize_method_spans(method_result.spans, label_profile=label_profile),
             doc.raw_text,
         )
+        raw_spans = _normalize_and_validate_spans(
+            normalize_method_spans(
+                getattr(method_result, "raw_spans", method_result.spans),
+                label_profile=label_profile,
+            ),
+            doc.raw_text,
+        )
         if progress_callback is not None:
             progress_callback(1, 1)
-        return spans, method_result.warnings, getattr(method_result, "llm_confidence", None), []
+        return (
+            spans,
+            method_result.warnings,
+            getattr(method_result, "llm_confidence", None),
+            [],
+            raw_spans,
+            list(getattr(method_result, "resolution_events", [])),
+            getattr(method_result, "resolution_policy_version", None),
+        )
 
     chunks = _build_text_chunks(doc, chunk_size_chars)
     warnings: list[str] = []
     all_spans: list[CanonicalSpan] = []
+    all_raw_spans: list[CanonicalSpan] = []
     chunk_count = len(chunks)
     chunk_workers = _resolve_chunk_parallel_workers(chunk_count)
 
@@ -2574,11 +2680,19 @@ def _run_method_for_document(
             normalize_method_spans(method_result.spans, label_profile=label_profile),
             start,
         )
+        raw_shifted = _shift_spans(
+            normalize_method_spans(
+                getattr(method_result, "raw_spans", method_result.spans),
+                label_profile=label_profile,
+            ),
+            start,
+        )
         return _ChunkExecutionResult(
             idx=idx,
             start=start,
             end=end,
             shifted_spans=shifted,
+            raw_shifted_spans=raw_shifted,
             warnings=list(method_result.warnings),
             llm_confidence=getattr(method_result, "llm_confidence", None),
             finish_reason=None,
@@ -2615,12 +2729,36 @@ def _run_method_for_document(
     for idx in range(chunk_count):
         result = chunk_results[idx]
         all_spans.extend(result.shifted_spans)
+        all_raw_spans.extend(result.raw_shifted_spans)
         warnings.extend(_format_chunk_warnings(idx, chunk_count, result.warnings))
         if result.llm_confidence is not None:
             chunk_confidence_metrics.append(result.llm_confidence)
         chunk_diagnostics.append(_build_chunk_diagnostic(result=result))
 
-    normalized = _normalize_and_validate_spans(_dedup_spans(all_spans), doc.raw_text)
+    raw_spans = _normalize_and_validate_spans(
+        merge_method_spans(all_raw_spans),
+        doc.raw_text,
+    )
+    resolved_spans, resolution_events = resolve_spans(
+        doc.raw_text,
+        merge_method_spans(all_spans),
+        label_profile=label_profile,
+        enable_augmentation=True,
+    )
+    normalized = _normalize_and_validate_spans(
+        merge_method_spans(resolved_spans),
+        doc.raw_text,
+    )
+    normalized, dropped_name_spans = _drop_implausible_name_spans(
+        doc.raw_text,
+        normalized,
+        label_profile=label_profile,
+    )
+    if dropped_name_spans > 0:
+        target_label = "NAME" if label_profile == "simple" else "PERSON"
+        warnings.append(
+            f"Dropped {dropped_name_spans} implausible {target_label} span(s) after shared resolution."
+        )
     warnings.insert(
         0,
         (
@@ -2633,7 +2771,15 @@ def _run_method_for_document(
         if chunk_confidence_metrics
         else None
     )
-    return normalized, warnings, aggregated_confidence, chunk_diagnostics
+    return (
+        normalized,
+        warnings,
+        aggregated_confidence,
+        chunk_diagnostics,
+        raw_spans,
+        resolution_events,
+        RESOLUTION_POLICY_VERSION,
+    )
 
 
 # --- Routes ---
@@ -3119,6 +3265,9 @@ def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                     warnings,
                     llm_confidence,
                     _chunk_diagnostics,
+                    raw_hypothesis_spans,
+                    resolution_events,
+                    resolution_policy_version,
                 ) = _run_method_for_document(
                     doc=enriched,
                     method_id=preset_method_id,
@@ -3144,6 +3293,9 @@ def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                     warnings,
                     llm_confidence,
                     _chunk_diagnostics,
+                    raw_hypothesis_spans,
+                    resolution_events,
+                    resolution_policy_version,
                 ) = _run_llm_for_document(
                     doc=enriched,
                     api_key=api_key,
@@ -3169,17 +3321,32 @@ def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                 hypothesis_spans,
                 label_projection=label_projection,  # type: ignore[arg-type]
             )
+            projected_reference_raw, projected_hypothesis_raw = _apply_label_projection(
+                reference_spans,
+                raw_hypothesis_spans,
+                label_projection=label_projection,  # type: ignore[arg-type]
+            )
             metrics = _serialize_metrics_payload(
                 compute_metrics(projected_reference, projected_hypothesis, match_mode)
+            )
+            raw_metrics = _serialize_metrics_payload(
+                compute_metrics(projected_reference_raw, projected_hypothesis_raw, match_mode)
             )
             return cell_id, doc_id, {
                 "status": "completed",
                 "reference_source_used": resolved_reference_source,
                 "reference_spans": [span.model_dump() for span in reference_spans],
+                "raw_hypothesis_spans": [
+                    span.model_dump() for span in raw_hypothesis_spans
+                ],
                 "hypothesis_spans": [span.model_dump() for span in hypothesis_spans],
+                "raw_metrics": raw_metrics,
                 "metrics": metrics,
                 "warnings": warnings,
                 "llm_confidence": llm_confidence.model_dump() if llm_confidence else None,
+                "resolution_events": [event.model_dump() for event in resolution_events],
+                "resolution_policy_version": resolution_policy_version,
+                "resolution_summary": summarize_resolution_events(resolution_events),
                 "updated_at": _now_iso(),
                 "filename": enriched.filename,
             }
@@ -3553,6 +3720,9 @@ def _run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object
                 warnings,
                 llm_confidence,
                 _chunk_diagnostics,
+                raw_hypothesis_spans,
+                resolution_events,
+                resolution_policy_version,
             ) = _run_method_for_document(
                 doc=enriched,
                 method_id=str(method_variant["method_id"]),
@@ -3574,8 +3744,16 @@ def _run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object
                 hypothesis_spans,
                 label_projection=label_projection,  # type: ignore[arg-type]
             )
+            projected_reference_raw, projected_hypothesis_raw = _apply_label_projection(
+                enriched.manual_annotations,
+                raw_hypothesis_spans,
+                label_projection=label_projection,  # type: ignore[arg-type]
+            )
             metrics = _serialize_metrics_payload(
                 compute_metrics(projected_reference, projected_hypothesis, match_mode)
+            )
+            raw_metrics = _serialize_metrics_payload(
+                compute_metrics(projected_reference_raw, projected_hypothesis_raw, match_mode)
             )
             return (
                 method_variant_id,
@@ -3587,12 +3765,19 @@ def _run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object
                     "reference_spans": [
                         span.model_dump() for span in enriched.manual_annotations
                     ],
+                    "raw_hypothesis_spans": [
+                        span.model_dump() for span in raw_hypothesis_spans
+                    ],
                     "hypothesis_spans": [span.model_dump() for span in hypothesis_spans],
+                    "raw_metrics": raw_metrics,
                     "metrics": metrics,
                     "warnings": warnings,
                     "llm_confidence": (
                         llm_confidence.model_dump() if llm_confidence is not None else None
                     ),
+                    "resolution_events": [event.model_dump() for event in resolution_events],
+                    "resolution_policy_version": resolution_policy_version,
+                    "resolution_summary": summarize_resolution_events(resolution_events),
                     "updated_at": _now_iso(),
                     "filename": enriched.filename,
                 },
@@ -3748,7 +3933,15 @@ def run_agent(doc_id: str, body: AgentRunBody):
         )
 
         try:
-            spans, warnings, llm_confidence, chunk_diagnostics = _run_llm_for_document(
+            (
+                spans,
+                warnings,
+                llm_confidence,
+                chunk_diagnostics,
+                raw_hypothesis_spans,
+                resolution_events,
+                resolution_policy_version,
+            ) = _run_llm_for_document(
                 doc=doc,
                 api_key=api_key,
                 api_base=api_base or None,
@@ -3818,6 +4011,9 @@ def run_agent(doc_id: str, body: AgentRunBody):
                 ),
                 llm_confidence=llm_confidence,
                 chunk_diagnostics=chunk_diagnostics,
+                raw_hypothesis_spans=raw_hypothesis_spans,
+                resolution_events=resolution_events,
+                resolution_policy_version=resolution_policy_version,
             ),
             session_id,
         )
@@ -3846,6 +4042,9 @@ def run_agent(doc_id: str, body: AgentRunBody):
             llm_confidence=llm_confidence,
             label_profile=label_profile,  # type: ignore[arg-type]
             chunk_diagnostics=chunk_diagnostics,
+            raw_hypothesis_spans=raw_hypothesis_spans,
+            resolution_events=resolution_events,
+            resolution_policy_version=resolution_policy_version,
         )
         return enriched
 
@@ -3894,7 +4093,15 @@ def run_agent(doc_id: str, body: AgentRunBody):
         )
 
         try:
-            spans, warnings, llm_confidence, chunk_diagnostics = _run_method_for_document(
+            (
+                spans,
+                warnings,
+                llm_confidence,
+                chunk_diagnostics,
+                raw_hypothesis_spans,
+                resolution_events,
+                resolution_policy_version,
+            ) = _run_method_for_document(
                 doc=doc,
                 method_id=method_id,
                 api_key=api_key or None,
@@ -3958,6 +4165,9 @@ def run_agent(doc_id: str, body: AgentRunBody):
                 ),
                 llm_confidence=llm_confidence,
                 chunk_diagnostics=chunk_diagnostics,
+                raw_hypothesis_spans=raw_hypothesis_spans,
+                resolution_events=resolution_events,
+                resolution_policy_version=resolution_policy_version,
             ),
             session_id,
         )
@@ -3981,6 +4191,9 @@ def run_agent(doc_id: str, body: AgentRunBody):
             llm_confidence=llm_confidence,
             label_profile=label_profile,  # type: ignore[arg-type]
             chunk_diagnostics=chunk_diagnostics,
+            raw_hypothesis_spans=raw_hypothesis_spans,
+            resolution_events=resolution_events,
+            resolution_policy_version=resolution_policy_version,
         )
         return enriched
 
@@ -4077,9 +4290,14 @@ async def get_prompt_lab_document_detail(run_id: str, cell_id: str, doc_id: str)
         "runtime_diagnostics": stored.get("runtime_diagnostics"),
         "reference_source_used": stored.get("reference_source_used"),
         "reference_spans": stored.get("reference_spans", []),
+        "raw_hypothesis_spans": stored.get("raw_hypothesis_spans", []),
         "hypothesis_spans": stored.get("hypothesis_spans", []),
+        "raw_metrics": stored.get("raw_metrics"),
         "metrics": stored.get("metrics"),
         "llm_confidence": stored.get("llm_confidence"),
+        "resolution_events": stored.get("resolution_events", []),
+        "resolution_policy_version": stored.get("resolution_policy_version"),
+        "resolution_summary": stored.get("resolution_summary"),
         "transcript_text": enriched.raw_text if enriched is not None else None,
         "document": {
             "id": doc_id,
@@ -4188,9 +4406,14 @@ async def get_methods_lab_document_detail(run_id: str, cell_id: str, doc_id: str
         "runtime_diagnostics": stored.get("runtime_diagnostics"),
         "reference_source_used": stored.get("reference_source_used"),
         "reference_spans": stored.get("reference_spans", []),
+        "raw_hypothesis_spans": stored.get("raw_hypothesis_spans", []),
         "hypothesis_spans": stored.get("hypothesis_spans", []),
+        "raw_metrics": stored.get("raw_metrics"),
         "metrics": stored.get("metrics"),
         "llm_confidence": stored.get("llm_confidence"),
+        "resolution_events": stored.get("resolution_events", []),
+        "resolution_policy_version": stored.get("resolution_policy_version"),
+        "resolution_summary": stored.get("resolution_summary"),
         "transcript_text": enriched.raw_text if enriched is not None else None,
         "document": {
             "id": doc_id,
@@ -4704,6 +4927,7 @@ async def get_dashboard_metrics(
     sum_macro_p = 0.0
     sum_macro_r = 0.0
     sum_macro_f1 = 0.0
+    co_primary_aggregates: dict[str, dict[str, float | int]] = {}
     confidence_sum = 0.0
     documents_with_confidence = 0
     band_counts = {"high": 0, "medium": 0, "low": 0, "na": 0}
@@ -4723,6 +4947,7 @@ async def get_dashboard_metrics(
         result = compute_metrics(eval_ref_spans, eval_hyp_spans, normalized_match_mode)
         micro = result["micro"]
         macro = result["macro"]
+        co_primary = result.get("co_primary_metrics", {})
 
         tp = int(micro.get("tp", 0))
         fp = int(micro.get("fp", 0))
@@ -4737,6 +4962,39 @@ async def get_dashboard_metrics(
         sum_macro_p += float(macro.get("precision", 0.0))
         sum_macro_r += float(macro.get("recall", 0.0))
         sum_macro_f1 += float(macro.get("f1", 0.0))
+        if isinstance(co_primary, dict):
+            for metric_name, metric_payload in co_primary.items():
+                if not isinstance(metric_payload, dict):
+                    continue
+                aggregate = co_primary_aggregates.setdefault(
+                    str(metric_name),
+                    {
+                        "tp": 0,
+                        "fp": 0,
+                        "fn": 0,
+                        "sum_micro_p": 0.0,
+                        "sum_micro_r": 0.0,
+                        "sum_micro_f1": 0.0,
+                        "sum_macro_p": 0.0,
+                        "sum_macro_r": 0.0,
+                        "sum_macro_f1": 0.0,
+                        "doc_count": 0,
+                    },
+                )
+                nested_micro = metric_payload.get("micro", {})
+                nested_macro = metric_payload.get("macro", {})
+                if isinstance(nested_micro, dict):
+                    aggregate["tp"] += int(nested_micro.get("tp", 0))
+                    aggregate["fp"] += int(nested_micro.get("fp", 0))
+                    aggregate["fn"] += int(nested_micro.get("fn", 0))
+                    aggregate["sum_micro_p"] += float(nested_micro.get("precision", 0.0))
+                    aggregate["sum_micro_r"] += float(nested_micro.get("recall", 0.0))
+                    aggregate["sum_micro_f1"] += float(nested_micro.get("f1", 0.0))
+                if isinstance(nested_macro, dict):
+                    aggregate["sum_macro_p"] += float(nested_macro.get("precision", 0.0))
+                    aggregate["sum_macro_r"] += float(nested_macro.get("recall", 0.0))
+                    aggregate["sum_macro_f1"] += float(nested_macro.get("f1", 0.0))
+                aggregate["doc_count"] += 1
         llm_confidence = _resolve_metrics_llm_confidence(enriched, reference, hypothesis)
         if llm_confidence is not None:
             band_counts[llm_confidence.band] += 1
@@ -4765,6 +5023,11 @@ async def get_dashboard_metrics(
                     "recall": float(macro.get("recall", 0.0)),
                     "f1": float(macro.get("f1", 0.0)),
                 },
+                "co_primary_metrics": (
+                    _serialize_metrics_value(copy.deepcopy(co_primary))
+                    if isinstance(co_primary, dict)
+                    else {}
+                ),
                 "cohens_kappa": float(result.get("cohens_kappa", 0.0)),
                 "mean_iou": float(result.get("mean_iou", 0.0)),
                 "llm_confidence": (
@@ -4784,8 +5047,40 @@ async def get_dashboard_metrics(
         "recall": (sum_macro_r / compared) if compared else 0.0,
         "f1": (sum_macro_f1 / compared) if compared else 0.0,
     }
+    co_primary_summary: dict[str, dict[str, Any]] = {}
+    for metric_name, aggregate in co_primary_aggregates.items():
+        metric_doc_count = int(aggregate["doc_count"])
+        metric_tp = int(aggregate["tp"])
+        metric_fp = int(aggregate["fp"])
+        metric_fn = int(aggregate["fn"])
+        metric_prf = _prf_from_counts(metric_tp, metric_fp, metric_fn)
+        co_primary_summary[metric_name] = {
+            "micro": {
+                "precision": float(metric_prf["precision"]),
+                "recall": float(metric_prf["recall"]),
+                "f1": float(metric_prf["f1"]),
+                "tp": metric_tp,
+                "fp": metric_fp,
+                "fn": metric_fn,
+            },
+            "avg_document_micro": {
+                "precision": float(aggregate["sum_micro_p"]) / metric_doc_count if metric_doc_count else 0.0,
+                "recall": float(aggregate["sum_micro_r"]) / metric_doc_count if metric_doc_count else 0.0,
+                "f1": float(aggregate["sum_micro_f1"]) / metric_doc_count if metric_doc_count else 0.0,
+            },
+            "avg_document_macro": {
+                "precision": float(aggregate["sum_macro_p"]) / metric_doc_count if metric_doc_count else 0.0,
+                "recall": float(aggregate["sum_macro_r"]) / metric_doc_count if metric_doc_count else 0.0,
+                "f1": float(aggregate["sum_macro_f1"]) / metric_doc_count if metric_doc_count else 0.0,
+            },
+        }
 
-    documents.sort(key=lambda item: item["micro"]["f1"])
+    documents.sort(
+        key=lambda item: item.get("co_primary_metrics", {})
+        .get("exact_name_affix_tolerant", {})
+        .get("micro", {})
+        .get("f1", item["micro"]["f1"])
+    )
     return {
         "reference": reference,
         "hypothesis": hypothesis,
@@ -4796,6 +5091,7 @@ async def get_dashboard_metrics(
         "micro": _prf_from_counts(total_tp, total_fp, total_fn),
         "avg_document_micro": avg_doc_micro,
         "avg_document_macro": avg_doc_macro,
+        "co_primary_metrics": co_primary_summary,
         "llm_confidence_summary": {
             "documents_with_confidence": documents_with_confidence,
             "mean_confidence": (

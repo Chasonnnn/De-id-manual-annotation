@@ -393,6 +393,146 @@ def initialize_prompt_lab_run(
     }
 
 
+def _accumulate_metrics(
+    metrics: object,
+    *,
+    counts: dict[str, int],
+    per_label_counts: dict[str, dict[str, int]],
+    co_primary_counts: dict[str, dict[str, Any]],
+) -> None:
+    if not isinstance(metrics, dict):
+        return
+    micro = metrics.get("micro", {})
+    if isinstance(micro, dict):
+        counts["tp"] += int(micro.get("tp", 0))
+        counts["fp"] += int(micro.get("fp", 0))
+        counts["fn"] += int(micro.get("fn", 0))
+    per_label = metrics.get("per_label", {})
+    if isinstance(per_label, dict):
+        for label, label_metrics in per_label.items():
+            if not isinstance(label_metrics, dict):
+                continue
+            aggregate = per_label_counts.setdefault(
+                str(label),
+                {"tp": 0, "fp": 0, "fn": 0, "support": 0},
+            )
+            label_tp = int(label_metrics.get("tp", 0))
+            label_fp = int(label_metrics.get("fp", 0))
+            label_fn = int(label_metrics.get("fn", 0))
+            aggregate["tp"] += label_tp
+            aggregate["fp"] += label_fp
+            aggregate["fn"] += label_fn
+            aggregate["support"] += int(label_metrics.get("support", label_tp + label_fn))
+    co_primary_metrics = metrics.get("co_primary_metrics", {})
+    if isinstance(co_primary_metrics, dict):
+        for metric_name, metric_payload in co_primary_metrics.items():
+            if not isinstance(metric_payload, dict):
+                continue
+            aggregate_metric = co_primary_counts.setdefault(
+                str(metric_name),
+                {
+                    "tp": 0,
+                    "fp": 0,
+                    "fn": 0,
+                    "per_label": {},
+                },
+            )
+            nested_micro = metric_payload.get("micro", {})
+            if isinstance(nested_micro, dict):
+                aggregate_metric["tp"] += int(nested_micro.get("tp", 0))
+                aggregate_metric["fp"] += int(nested_micro.get("fp", 0))
+                aggregate_metric["fn"] += int(nested_micro.get("fn", 0))
+            nested_per_label = metric_payload.get("per_label", {})
+            if isinstance(nested_per_label, dict):
+                for label, label_metrics in nested_per_label.items():
+                    if not isinstance(label_metrics, dict):
+                        continue
+                    aggregate_label = aggregate_metric["per_label"].setdefault(
+                        str(label),
+                        {"tp": 0, "fp": 0, "fn": 0, "support": 0},
+                    )
+                    label_tp = int(label_metrics.get("tp", 0))
+                    label_fp = int(label_metrics.get("fp", 0))
+                    label_fn = int(label_metrics.get("fn", 0))
+                    aggregate_label["tp"] += label_tp
+                    aggregate_label["fp"] += label_fp
+                    aggregate_label["fn"] += label_fn
+                    aggregate_label["support"] += int(
+                        label_metrics.get("support", label_tp + label_fn)
+                    )
+
+
+def _build_metric_summary(
+    *,
+    counts: dict[str, int],
+    per_label_counts: dict[str, dict[str, int]],
+    co_primary_counts: dict[str, dict[str, Any]],
+) -> tuple[dict[str, float | int], dict[str, dict[str, float | int]], dict[str, dict[str, Any]]]:
+    srv = _server()
+    micro = srv._prf_from_counts(counts["tp"], counts["fp"], counts["fn"])
+    per_label_summary: dict[str, dict[str, float | int]] = {}
+    for label, label_counts in sorted(per_label_counts.items()):
+        label_prf = srv._prf_from_counts(
+            label_counts["tp"],
+            label_counts["fp"],
+            label_counts["fn"],
+        )
+        per_label_summary[label] = {
+            **label_prf,
+            "support": label_counts["support"],
+        }
+    co_primary_summary: dict[str, dict[str, Any]] = {}
+    for metric_name, metric_counts in sorted(co_primary_counts.items()):
+        metric_per_label: dict[str, dict[str, float | int]] = {}
+        for label, label_counts in sorted(metric_counts["per_label"].items()):
+            label_prf = srv._prf_from_counts(
+                label_counts["tp"],
+                label_counts["fp"],
+                label_counts["fn"],
+            )
+            metric_per_label[label] = {
+                **label_prf,
+                "support": label_counts["support"],
+            }
+        co_primary_summary[metric_name] = {
+            "micro": srv._prf_from_counts(
+                metric_counts["tp"],
+                metric_counts["fp"],
+                metric_counts["fn"],
+            ),
+            "per_label": metric_per_label,
+        }
+    return micro, per_label_summary, co_primary_summary
+
+
+def _accumulate_resolution_summary(
+    summary: object,
+    *,
+    totals: dict[str, int],
+    by_label_totals: dict[str, dict[str, int]],
+) -> None:
+    if not isinstance(summary, dict):
+        return
+    totals["boundary_fix_count"] += int(summary.get("boundary_fix_count", 0))
+    totals["augmentation_count"] += int(summary.get("augmentation_count", 0))
+    boundary_by_label = summary.get("boundary_fix_count_by_label", {})
+    if isinstance(boundary_by_label, dict):
+        for label, value in boundary_by_label.items():
+            bucket = by_label_totals.setdefault(
+                str(label),
+                {"boundary_fix_count": 0, "augmentation_count": 0},
+            )
+            bucket["boundary_fix_count"] += int(value)
+    augmentation_by_label = summary.get("augmentation_count_by_label", {})
+    if isinstance(augmentation_by_label, dict):
+        for label, value in augmentation_by_label.items():
+            bucket = by_label_totals.setdefault(
+                str(label),
+                {"boundary_fix_count": 0, "augmentation_count": 0},
+            )
+            bucket["augmentation_count"] += int(value)
+
+
 def _build_prompt_lab_cell_summary(cell: dict, total_docs: int, run_status: str) -> dict:
     srv = _server()
     docs_raw = cell.get("documents", {})
@@ -400,13 +540,16 @@ def _build_prompt_lab_cell_summary(cell: dict, total_docs: int, run_status: str)
     completed_docs = 0
     failed_docs = 0
     pending_docs = 0
-    tp = 0
-    fp = 0
-    fn = 0
+    metric_counts = {"tp": 0, "fp": 0, "fn": 0}
+    raw_metric_counts = {"tp": 0, "fp": 0, "fn": 0}
     confidence_values: list[float] = []
     per_label_counts: dict[str, dict[str, int]] = {}
+    raw_per_label_counts: dict[str, dict[str, int]] = {}
     co_primary_counts: dict[str, dict[str, Any]] = {}
+    raw_co_primary_counts: dict[str, dict[str, Any]] = {}
     error_families: dict[str, int] = {}
+    resolution_totals = {"boundary_fix_count": 0, "augmentation_count": 0}
+    resolution_by_label_totals: dict[str, dict[str, int]] = {}
 
     for result in documents.values():
         if not isinstance(result, dict):
@@ -414,68 +557,23 @@ def _build_prompt_lab_cell_summary(cell: dict, total_docs: int, run_status: str)
         status = str(result.get("status", "pending"))
         if status == "completed":
             completed_docs += 1
-            metrics = result.get("metrics", {})
-            if isinstance(metrics, dict):
-                micro = metrics.get("micro", {})
-                if isinstance(micro, dict):
-                    tp += int(micro.get("tp", 0))
-                    fp += int(micro.get("fp", 0))
-                    fn += int(micro.get("fn", 0))
-                per_label = metrics.get("per_label", {})
-                if isinstance(per_label, dict):
-                    for label, label_metrics in per_label.items():
-                        if not isinstance(label_metrics, dict):
-                            continue
-                        aggregate = per_label_counts.setdefault(
-                            str(label),
-                            {"tp": 0, "fp": 0, "fn": 0, "support": 0},
-                        )
-                        label_tp = int(label_metrics.get("tp", 0))
-                        label_fp = int(label_metrics.get("fp", 0))
-                        label_fn = int(label_metrics.get("fn", 0))
-                        aggregate["tp"] += label_tp
-                        aggregate["fp"] += label_fp
-                        aggregate["fn"] += label_fn
-                        aggregate["support"] += int(
-                            label_metrics.get("support", label_tp + label_fn)
-                        )
-                co_primary_metrics = metrics.get("co_primary_metrics", {})
-                if isinstance(co_primary_metrics, dict):
-                    for metric_name, metric_payload in co_primary_metrics.items():
-                        if not isinstance(metric_payload, dict):
-                            continue
-                        aggregate_metric = co_primary_counts.setdefault(
-                            str(metric_name),
-                            {
-                                "tp": 0,
-                                "fp": 0,
-                                "fn": 0,
-                                "per_label": {},
-                            },
-                        )
-                        nested_micro = metric_payload.get("micro", {})
-                        if isinstance(nested_micro, dict):
-                            aggregate_metric["tp"] += int(nested_micro.get("tp", 0))
-                            aggregate_metric["fp"] += int(nested_micro.get("fp", 0))
-                            aggregate_metric["fn"] += int(nested_micro.get("fn", 0))
-                        nested_per_label = metric_payload.get("per_label", {})
-                        if isinstance(nested_per_label, dict):
-                            for label, label_metrics in nested_per_label.items():
-                                if not isinstance(label_metrics, dict):
-                                    continue
-                                aggregate_label = aggregate_metric["per_label"].setdefault(
-                                    str(label),
-                                    {"tp": 0, "fp": 0, "fn": 0, "support": 0},
-                                )
-                                label_tp = int(label_metrics.get("tp", 0))
-                                label_fp = int(label_metrics.get("fp", 0))
-                                label_fn = int(label_metrics.get("fn", 0))
-                                aggregate_label["tp"] += label_tp
-                                aggregate_label["fp"] += label_fp
-                                aggregate_label["fn"] += label_fn
-                                aggregate_label["support"] += int(
-                                    label_metrics.get("support", label_tp + label_fn)
-                                )
+            _accumulate_metrics(
+                result.get("metrics"),
+                counts=metric_counts,
+                per_label_counts=per_label_counts,
+                co_primary_counts=co_primary_counts,
+            )
+            _accumulate_metrics(
+                result.get("raw_metrics"),
+                counts=raw_metric_counts,
+                per_label_counts=raw_per_label_counts,
+                co_primary_counts=raw_co_primary_counts,
+            )
+            _accumulate_resolution_summary(
+                result.get("resolution_summary"),
+                totals=resolution_totals,
+                by_label_totals=resolution_by_label_totals,
+            )
             llm_confidence = result.get("llm_confidence")
             if isinstance(llm_confidence, dict):
                 conf = srv._safe_float(llm_confidence.get("confidence"))
@@ -494,7 +592,24 @@ def _build_prompt_lab_cell_summary(cell: dict, total_docs: int, run_status: str)
             pending_docs += 1
 
     processed = completed_docs + failed_docs
-    micro = srv._prf_from_counts(tp, fp, fn) if completed_docs > 0 else srv._prf_from_counts(0, 0, 0)
+    if completed_docs > 0:
+        micro, per_label_summary, co_primary_summary = _build_metric_summary(
+            counts=metric_counts,
+            per_label_counts=per_label_counts,
+            co_primary_counts=co_primary_counts,
+        )
+        raw_micro, raw_per_label_summary, raw_co_primary_summary = _build_metric_summary(
+            counts=raw_metric_counts,
+            per_label_counts=raw_per_label_counts,
+            co_primary_counts=raw_co_primary_counts,
+        )
+    else:
+        micro = srv._prf_from_counts(0, 0, 0)
+        raw_micro = srv._prf_from_counts(0, 0, 0)
+        per_label_summary = {}
+        raw_per_label_summary = {}
+        co_primary_summary = {}
+        raw_co_primary_summary = {}
     if run_status == "cancelled" and processed < total_docs:
         status = "cancelled"
     elif run_status == "cancelling" and processed < total_docs:
@@ -507,30 +622,16 @@ def _build_prompt_lab_cell_summary(cell: dict, total_docs: int, run_status: str)
         status = "completed_with_errors"
     else:
         status = "completed"
-
-    per_label_summary: dict[str, dict[str, float | int]] = {}
-    for label, counts in sorted(per_label_counts.items()):
-        label_prf = srv._prf_from_counts(counts["tp"], counts["fp"], counts["fn"])
-        per_label_summary[label] = {
-            **label_prf,
-            "support": counts["support"],
-        }
-
-    co_primary_summary: dict[str, dict[str, Any]] = {}
-    for metric_name, counts in sorted(co_primary_counts.items()):
-        metric_per_label: dict[str, dict[str, float | int]] = {}
-        for label, label_counts in sorted(counts["per_label"].items()):
-            label_prf = srv._prf_from_counts(
-                label_counts["tp"], label_counts["fp"], label_counts["fn"]
-            )
-            metric_per_label[label] = {
-                **label_prf,
-                "support": label_counts["support"],
-            }
-        co_primary_summary[metric_name] = {
-            "micro": srv._prf_from_counts(counts["tp"], counts["fp"], counts["fn"]),
-            "per_label": metric_per_label,
-        }
+    tolerant_micro = (
+        co_primary_summary.get("exact_name_affix_tolerant", {}).get("micro", {})
+        if isinstance(co_primary_summary.get("exact_name_affix_tolerant"), dict)
+        else {}
+    )
+    raw_tolerant_micro = (
+        raw_co_primary_summary.get("exact_name_affix_tolerant", {}).get("micro", {})
+        if isinstance(raw_co_primary_summary.get("exact_name_affix_tolerant"), dict)
+        else {}
+    )
 
     return {
         "id": cell.get("id"),
@@ -546,8 +647,28 @@ def _build_prompt_lab_cell_summary(cell: dict, total_docs: int, run_status: str)
         "error_count": failed_docs,
         "error_families": error_families,
         "micro": micro,
+        "raw_micro": raw_micro,
         "co_primary_metrics": co_primary_summary,
+        "raw_co_primary_metrics": raw_co_primary_summary,
         "per_label": per_label_summary,
+        "raw_per_label": raw_per_label_summary,
+        "exact_name_affix_gap_f1": float(tolerant_micro.get("f1", 0.0)) - float(micro.get("f1", 0.0)),
+        "raw_exact_name_affix_gap_f1": float(raw_tolerant_micro.get("f1", 0.0))
+        - float(raw_micro.get("f1", 0.0)),
+        "resolution_summary": {
+            "boundary_fix_count": resolution_totals["boundary_fix_count"],
+            "augmentation_count": resolution_totals["augmentation_count"],
+            "boundary_fix_count_by_label": {
+                label: bucket["boundary_fix_count"]
+                for label, bucket in sorted(resolution_by_label_totals.items())
+                if bucket["boundary_fix_count"] > 0
+            },
+            "augmentation_count_by_label": {
+                label: bucket["augmentation_count"]
+                for label, bucket in sorted(resolution_by_label_totals.items())
+                if bucket["augmentation_count"] > 0
+            },
+        },
         "mean_confidence": (
             sum(confidence_values) / len(confidence_values) if confidence_values else None
         ),
@@ -785,6 +906,9 @@ def run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object])
                     warnings,
                     llm_confidence,
                     _chunk_diagnostics,
+                    raw_hypothesis_spans,
+                    resolution_events,
+                    resolution_policy_version,
                 ) = srv._run_method_for_document(
                     doc=enriched,
                     method_id=preset_method_id,
@@ -810,6 +934,9 @@ def run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object])
                     warnings,
                     llm_confidence,
                     _chunk_diagnostics,
+                    raw_hypothesis_spans,
+                    resolution_events,
+                    resolution_policy_version,
                 ) = srv._run_llm_for_document(
                     doc=enriched,
                     api_key=api_key,
@@ -835,17 +962,32 @@ def run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object])
                 hypothesis_spans,
                 label_projection=label_projection,  # type: ignore[arg-type]
             )
+            projected_reference_raw, projected_hypothesis_raw = srv._apply_label_projection(
+                reference_spans,
+                raw_hypothesis_spans,
+                label_projection=label_projection,  # type: ignore[arg-type]
+            )
             metrics = srv._serialize_metrics_payload(
                 srv.compute_metrics(projected_reference, projected_hypothesis, match_mode)
+            )
+            raw_metrics = srv._serialize_metrics_payload(
+                srv.compute_metrics(projected_reference_raw, projected_hypothesis_raw, match_mode)
             )
             return cell_id, doc_id, {
                 "status": "completed",
                 "reference_source_used": resolved_reference_source,
                 "reference_spans": [span.model_dump() for span in reference_spans],
+                "raw_hypothesis_spans": [
+                    span.model_dump() for span in raw_hypothesis_spans
+                ],
                 "hypothesis_spans": [span.model_dump() for span in hypothesis_spans],
+                "raw_metrics": raw_metrics,
                 "metrics": metrics,
                 "warnings": warnings,
                 "llm_confidence": llm_confidence.model_dump() if llm_confidence else None,
+                "resolution_events": [event.model_dump() for event in resolution_events],
+                "resolution_policy_version": resolution_policy_version,
+                "resolution_summary": srv.summarize_resolution_events(resolution_events),
                 "updated_at": srv._now_iso(),
                 "filename": enriched.filename,
             }
@@ -1191,13 +1333,16 @@ def _build_methods_lab_cell_summary(cell: dict, total_docs: int, run_status: str
     completed_docs = 0
     failed_docs = 0
     pending_docs = 0
-    tp = 0
-    fp = 0
-    fn = 0
+    metric_counts = {"tp": 0, "fp": 0, "fn": 0}
+    raw_metric_counts = {"tp": 0, "fp": 0, "fn": 0}
     confidence_values: list[float] = []
     per_label_counts: dict[str, dict[str, int]] = {}
+    raw_per_label_counts: dict[str, dict[str, int]] = {}
     co_primary_counts: dict[str, dict[str, Any]] = {}
+    raw_co_primary_counts: dict[str, dict[str, Any]] = {}
     error_families: dict[str, int] = {}
+    resolution_totals = {"boundary_fix_count": 0, "augmentation_count": 0}
+    resolution_by_label_totals: dict[str, dict[str, int]] = {}
 
     for result in documents.values():
         if not isinstance(result, dict):
@@ -1205,68 +1350,23 @@ def _build_methods_lab_cell_summary(cell: dict, total_docs: int, run_status: str
         status = str(result.get("status", "pending"))
         if status == "completed":
             completed_docs += 1
-            metrics = result.get("metrics", {})
-            if isinstance(metrics, dict):
-                micro = metrics.get("micro", {})
-                if isinstance(micro, dict):
-                    tp += int(micro.get("tp", 0))
-                    fp += int(micro.get("fp", 0))
-                    fn += int(micro.get("fn", 0))
-                per_label = metrics.get("per_label", {})
-                if isinstance(per_label, dict):
-                    for label, label_metrics in per_label.items():
-                        if not isinstance(label_metrics, dict):
-                            continue
-                        aggregate = per_label_counts.setdefault(
-                            str(label),
-                            {"tp": 0, "fp": 0, "fn": 0, "support": 0},
-                        )
-                        label_tp = int(label_metrics.get("tp", 0))
-                        label_fp = int(label_metrics.get("fp", 0))
-                        label_fn = int(label_metrics.get("fn", 0))
-                        aggregate["tp"] += label_tp
-                        aggregate["fp"] += label_fp
-                        aggregate["fn"] += label_fn
-                        aggregate["support"] += int(
-                            label_metrics.get("support", label_tp + label_fn)
-                        )
-                co_primary_metrics = metrics.get("co_primary_metrics", {})
-                if isinstance(co_primary_metrics, dict):
-                    for metric_name, metric_payload in co_primary_metrics.items():
-                        if not isinstance(metric_payload, dict):
-                            continue
-                        aggregate_metric = co_primary_counts.setdefault(
-                            str(metric_name),
-                            {
-                                "tp": 0,
-                                "fp": 0,
-                                "fn": 0,
-                                "per_label": {},
-                            },
-                        )
-                        nested_micro = metric_payload.get("micro", {})
-                        if isinstance(nested_micro, dict):
-                            aggregate_metric["tp"] += int(nested_micro.get("tp", 0))
-                            aggregate_metric["fp"] += int(nested_micro.get("fp", 0))
-                            aggregate_metric["fn"] += int(nested_micro.get("fn", 0))
-                        nested_per_label = metric_payload.get("per_label", {})
-                        if isinstance(nested_per_label, dict):
-                            for label, label_metrics in nested_per_label.items():
-                                if not isinstance(label_metrics, dict):
-                                    continue
-                                aggregate_label = aggregate_metric["per_label"].setdefault(
-                                    str(label),
-                                    {"tp": 0, "fp": 0, "fn": 0, "support": 0},
-                                )
-                                label_tp = int(label_metrics.get("tp", 0))
-                                label_fp = int(label_metrics.get("fp", 0))
-                                label_fn = int(label_metrics.get("fn", 0))
-                                aggregate_label["tp"] += label_tp
-                                aggregate_label["fp"] += label_fp
-                                aggregate_label["fn"] += label_fn
-                                aggregate_label["support"] += int(
-                                    label_metrics.get("support", label_tp + label_fn)
-                                )
+            _accumulate_metrics(
+                result.get("metrics"),
+                counts=metric_counts,
+                per_label_counts=per_label_counts,
+                co_primary_counts=co_primary_counts,
+            )
+            _accumulate_metrics(
+                result.get("raw_metrics"),
+                counts=raw_metric_counts,
+                per_label_counts=raw_per_label_counts,
+                co_primary_counts=raw_co_primary_counts,
+            )
+            _accumulate_resolution_summary(
+                result.get("resolution_summary"),
+                totals=resolution_totals,
+                by_label_totals=resolution_by_label_totals,
+            )
             llm_confidence = result.get("llm_confidence")
             if isinstance(llm_confidence, dict):
                 conf = srv._safe_float(llm_confidence.get("confidence"))
@@ -1285,7 +1385,24 @@ def _build_methods_lab_cell_summary(cell: dict, total_docs: int, run_status: str
             pending_docs += 1
 
     processed = completed_docs + failed_docs
-    micro = srv._prf_from_counts(tp, fp, fn) if completed_docs > 0 else srv._prf_from_counts(0, 0, 0)
+    if completed_docs > 0:
+        micro, per_label_summary, co_primary_summary = _build_metric_summary(
+            counts=metric_counts,
+            per_label_counts=per_label_counts,
+            co_primary_counts=co_primary_counts,
+        )
+        raw_micro, raw_per_label_summary, raw_co_primary_summary = _build_metric_summary(
+            counts=raw_metric_counts,
+            per_label_counts=raw_per_label_counts,
+            co_primary_counts=raw_co_primary_counts,
+        )
+    else:
+        micro = srv._prf_from_counts(0, 0, 0)
+        raw_micro = srv._prf_from_counts(0, 0, 0)
+        per_label_summary = {}
+        raw_per_label_summary = {}
+        co_primary_summary = {}
+        raw_co_primary_summary = {}
     if run_status == "cancelled" and processed < total_docs:
         status = "cancelled"
     elif run_status == "cancelling" and processed < total_docs:
@@ -1298,30 +1415,16 @@ def _build_methods_lab_cell_summary(cell: dict, total_docs: int, run_status: str
         status = "completed_with_errors"
     else:
         status = "completed"
-
-    per_label_summary: dict[str, dict[str, float | int]] = {}
-    for label, counts in sorted(per_label_counts.items()):
-        label_prf = srv._prf_from_counts(counts["tp"], counts["fp"], counts["fn"])
-        per_label_summary[label] = {
-            **label_prf,
-            "support": counts["support"],
-        }
-
-    co_primary_summary: dict[str, dict[str, Any]] = {}
-    for metric_name, counts in sorted(co_primary_counts.items()):
-        metric_per_label: dict[str, dict[str, float | int]] = {}
-        for label, label_counts in sorted(counts["per_label"].items()):
-            label_prf = srv._prf_from_counts(
-                label_counts["tp"], label_counts["fp"], label_counts["fn"]
-            )
-            metric_per_label[label] = {
-                **label_prf,
-                "support": label_counts["support"],
-            }
-        co_primary_summary[metric_name] = {
-            "micro": srv._prf_from_counts(counts["tp"], counts["fp"], counts["fn"]),
-            "per_label": metric_per_label,
-        }
+    tolerant_micro = (
+        co_primary_summary.get("exact_name_affix_tolerant", {}).get("micro", {})
+        if isinstance(co_primary_summary.get("exact_name_affix_tolerant"), dict)
+        else {}
+    )
+    raw_tolerant_micro = (
+        raw_co_primary_summary.get("exact_name_affix_tolerant", {}).get("micro", {})
+        if isinstance(raw_co_primary_summary.get("exact_name_affix_tolerant"), dict)
+        else {}
+    )
 
     return {
         "id": cell.get("id"),
@@ -1337,8 +1440,28 @@ def _build_methods_lab_cell_summary(cell: dict, total_docs: int, run_status: str
         "error_count": failed_docs,
         "error_families": error_families,
         "micro": micro,
+        "raw_micro": raw_micro,
         "co_primary_metrics": co_primary_summary,
+        "raw_co_primary_metrics": raw_co_primary_summary,
         "per_label": per_label_summary,
+        "raw_per_label": raw_per_label_summary,
+        "exact_name_affix_gap_f1": float(tolerant_micro.get("f1", 0.0)) - float(micro.get("f1", 0.0)),
+        "raw_exact_name_affix_gap_f1": float(raw_tolerant_micro.get("f1", 0.0))
+        - float(raw_micro.get("f1", 0.0)),
+        "resolution_summary": {
+            "boundary_fix_count": resolution_totals["boundary_fix_count"],
+            "augmentation_count": resolution_totals["augmentation_count"],
+            "boundary_fix_count_by_label": {
+                label: bucket["boundary_fix_count"]
+                for label, bucket in sorted(resolution_by_label_totals.items())
+                if bucket["boundary_fix_count"] > 0
+            },
+            "augmentation_count_by_label": {
+                label: bucket["augmentation_count"]
+                for label, bucket in sorted(resolution_by_label_totals.items())
+                if bucket["augmentation_count"] > 0
+            },
+        },
         "mean_confidence": (
             sum(confidence_values) / len(confidence_values) if confidence_values else None
         ),
@@ -1708,6 +1831,9 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                     warnings,
                     llm_confidence,
                     _chunk_diagnostics,
+                    raw_hypothesis_spans,
+                    resolution_events,
+                    resolution_policy_version,
                 ) = _run_document()
             else:
                 task_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -1719,6 +1845,9 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                         warnings,
                         llm_confidence,
                         _chunk_diagnostics,
+                        raw_hypothesis_spans,
+                        resolution_events,
+                        resolution_policy_version,
                     ) = task_future.result(timeout=task_timeout_seconds)
                 except concurrent.futures.TimeoutError as exc:
                     timed_out = True
@@ -1746,8 +1875,16 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                 hypothesis_spans,
                 label_projection=label_projection,  # type: ignore[arg-type]
             )
+            projected_reference_raw, projected_hypothesis_raw = srv._apply_label_projection(
+                enriched.manual_annotations,
+                raw_hypothesis_spans,
+                label_projection=label_projection,  # type: ignore[arg-type]
+            )
             metrics = srv._serialize_metrics_payload(
                 srv.compute_metrics(projected_reference, projected_hypothesis, match_mode)
+            )
+            raw_metrics = srv._serialize_metrics_payload(
+                srv.compute_metrics(projected_reference_raw, projected_hypothesis_raw, match_mode)
             )
             return (
                 method_variant_id,
@@ -1759,12 +1896,19 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                     "reference_spans": [
                         span.model_dump() for span in enriched.manual_annotations
                     ],
+                    "raw_hypothesis_spans": [
+                        span.model_dump() for span in raw_hypothesis_spans
+                    ],
                     "hypothesis_spans": [span.model_dump() for span in hypothesis_spans],
+                    "raw_metrics": raw_metrics,
                     "metrics": metrics,
                     "warnings": warnings,
                     "llm_confidence": (
                         llm_confidence.model_dump() if llm_confidence is not None else None
                     ),
+                    "resolution_events": [event.model_dump() for event in resolution_events],
+                    "resolution_policy_version": resolution_policy_version,
+                    "resolution_summary": srv.summarize_resolution_events(resolution_events),
                     "runtime_diagnostics": _runtime_snapshot(),
                     "updated_at": srv._now_iso(),
                     "filename": enriched.filename,

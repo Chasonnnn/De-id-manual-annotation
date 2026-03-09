@@ -303,7 +303,7 @@ class TestRunLLM:
         assert all("offset mismatch" not in warning for warning in result.warnings)
 
     @patch("agent.completion")
-    def test_snaps_name_span_to_include_honorific_prefix(self, mock_completion):
+    def test_preserves_name_span_in_official_output_when_honorific_is_missing(self, mock_completion):
         text = "Hello Mr. Muhammad"
         muhammad_start = text.index("Muhammad")
         payload = _spans_payload(
@@ -325,11 +325,11 @@ class TestRunLLM:
         )
 
         assert [(span.start, span.end, span.text) for span in result.spans] == [
-            (6, 18, "Mr. Muhammad")
+            (muhammad_start, muhammad_start + len("Muhammad"), "Muhammad")
         ]
 
     @patch("agent.completion")
-    def test_snaps_name_span_to_include_trailing_possessive_suffix(self, mock_completion):
+    def test_preserves_name_span_in_official_output_when_possessive_is_missing(self, mock_completion):
         text = "Sebastian's notebook"
         sebastian_start = text.index("Sebastian")
         payload = _spans_payload(
@@ -351,7 +351,7 @@ class TestRunLLM:
         )
 
         assert [(span.start, span.end, span.text) for span in result.spans] == [
-            (0, 11, "Sebastian's")
+            (sebastian_start, sebastian_start + len("Sebastian"), "Sebastian")
         ]
 
     @patch("agent.completion")

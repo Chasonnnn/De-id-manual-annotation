@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 import importlib.util
 import json
@@ -11,7 +11,8 @@ from typing import Any, Callable, Literal
 
 from litellm import completion
 
-from models import CanonicalSpan, LLMConfidenceMetric
+from models import CanonicalSpan, LLMConfidenceMetric, ResolutionEvent
+from span_resolution import RESOLUTION_POLICY_VERSION, resolve_spans
 
 # Regex patterns for rule-based detection
 DOMAIN_LABEL_PATTERN = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
@@ -681,6 +682,9 @@ class LLMRunResult:
     warnings: list[str]
     llm_confidence: LLMConfidenceMetric
     finish_reason: str | None = None
+    raw_spans: list[CanonicalSpan] = field(default_factory=list)
+    resolution_events: list[ResolutionEvent] = field(default_factory=list)
+    resolution_policy_version: str | None = None
 
 
 @dataclass
@@ -688,6 +692,9 @@ class MethodRunResult:
     spans: list[CanonicalSpan]
     warnings: list[str]
     llm_confidence: LLMConfidenceMetric | None = None
+    raw_spans: list[CanonicalSpan] = field(default_factory=list)
+    resolution_events: list[ResolutionEvent] = field(default_factory=list)
+    resolution_policy_version: str | None = None
 
 
 def _strip_code_fences(content: str) -> str:
@@ -1986,7 +1993,7 @@ def run_method_with_metadata(
         )
 
     warnings: list[str] = []
-    all_spans: list[CanonicalSpan] = []
+    all_raw_spans: list[CanonicalSpan] = []
     llm_metrics: list[LLMConfidenceMetric] = []
 
     for idx, method_pass in enumerate(method["passes"]):
@@ -1999,7 +2006,13 @@ def run_method_with_metadata(
                 text=text,
                 entity_types=method_pass.get("entity_types"),
             )
-            all_spans.extend(normalize_method_spans(pass_spans, label_profile=label_profile))
+            all_raw_spans.extend(
+                _filter_method_pass_spans(
+                    normalize_method_spans(pass_spans, label_profile=label_profile),
+                    method_pass.get("entity_types"),
+                    label_profile=label_profile,
+                )
+            )
             continue
 
         prompt = str(method_pass.get("prompt") or SYSTEM_PROMPT)
@@ -2018,18 +2031,29 @@ def run_method_with_metadata(
             anthropic_thinking_budget_tokens=anthropic_thinking_budget_tokens,
             label_profile=label_profile,
             timeout_seconds=timeout_seconds,
+            enable_deterministic_augmentation=False,
         )
         llm_metrics.append(llm_result.llm_confidence)
-        pass_spans = _filter_method_pass_spans(
-            normalize_method_spans(llm_result.spans, label_profile=label_profile),
+        raw_pass_spans = _filter_method_pass_spans(
+            normalize_method_spans(
+                getattr(llm_result, "raw_spans", llm_result.spans),
+                label_profile=label_profile,
+            ),
             method_pass.get("entity_types"),
             label_profile=label_profile,
         )
-        all_spans.extend(pass_spans)
+        all_raw_spans.extend(raw_pass_spans)
         for warning in llm_result.warnings:
             warnings.append(f"Pass {idx + 1}: {warning}")
 
-    merged = merge_method_spans(all_spans)
+    raw_spans = merge_method_spans(all_raw_spans)
+    pre_verify_resolved, pre_verify_events = resolve_spans(
+        text,
+        raw_spans,
+        label_profile=label_profile,
+        enable_augmentation=False,
+    )
+    merged = merge_method_spans(pre_verify_resolved)
 
     if should_verify:
         try:
@@ -2050,10 +2074,31 @@ def run_method_with_metadata(
         except Exception as exc:
             raise ValueError(f"Method '{method_id}' verifier failed: {exc}") from exc
 
+    merged, post_verify_events = resolve_spans(
+        text,
+        merged,
+        label_profile=label_profile,
+        enable_augmentation=True,
+    )
+    merged = merge_method_spans(merged)
+    merged, dropped_name_spans = _drop_implausible_name_spans(
+        text,
+        merged,
+        label_profile=label_profile,
+    )
+    if dropped_name_spans > 0:
+        target_label = "NAME" if label_profile == "simple" else "PERSON"
+        warnings.append(
+            f"Dropped {dropped_name_spans} implausible {target_label} span(s) from method output."
+        )
+
     return MethodRunResult(
         spans=merged,
         warnings=warnings,
         llm_confidence=_aggregate_llm_confidence_metrics(llm_metrics),
+        raw_spans=raw_spans,
+        resolution_events=[*pre_verify_events, *post_verify_events],
+        resolution_policy_version=RESOLUTION_POLICY_VERSION,
     )
 
 
@@ -2069,6 +2114,7 @@ def run_llm_with_metadata(
     anthropic_thinking_budget_tokens: int | None = None,
     label_profile: Literal["simple", "advanced"] = "simple",
     timeout_seconds: float | None = None,
+    enable_deterministic_augmentation: bool = True,
 ) -> LLMRunResult:
     """Run LLM-based PII detection with provider-aware advanced parameters."""
     provider = _infer_provider(model)
@@ -2193,16 +2239,14 @@ def run_llm_with_metadata(
                 label_profile=label_profile,
             )
             warnings.extend(repair_warnings)
-            spans, snapped_name_spans = _snap_name_boundary_affixes(
+            raw_spans = normalize_method_spans(spans, label_profile=label_profile)
+            spans, resolution_events = resolve_spans(
                 text,
-                spans,
+                raw_spans,
                 label_profile=label_profile,
+                enable_augmentation=enable_deterministic_augmentation,
             )
-            if snapped_name_spans > 0:
-                target_label = "NAME" if label_profile == "simple" else "PERSON"
-                warnings.append(
-                    f"Expanded {snapped_name_spans} {target_label} span(s) to include supported boundary affixes."
-                )
+            spans = merge_method_spans(spans)
             spans, dropped_name_spans = _drop_implausible_name_spans(
                 text,
                 spans,
@@ -2213,7 +2257,21 @@ def run_llm_with_metadata(
                 warnings.append(
                     f"Dropped {dropped_name_spans} implausible {target_label} span(s) from LLM output."
                 )
-            spans = normalize_method_spans(spans, label_profile=label_profile)
+            boundary_fix_count = sum(
+                1 for event in resolution_events if event.kind == "boundary_resolution"
+            )
+            if boundary_fix_count > 0:
+                target_label = "NAME" if label_profile == "simple" else "PERSON"
+                warnings.append(
+                    f"Resolved {boundary_fix_count} supported boundary issue(s) including {target_label} affixes."
+                )
+            augmentation_count = sum(
+                1 for event in resolution_events if event.kind == "augmentation"
+            )
+            if augmentation_count > 0:
+                warnings.append(
+                    f"Recovered {augmentation_count} deterministic span(s) from context-aware augmentation."
+                )
             finish_reason = _extract_finish_reason(parsed_resp)
             if finish_reason == "length":
                 warnings.append(
@@ -2234,6 +2292,9 @@ def run_llm_with_metadata(
                 warnings=warnings,
                 llm_confidence=llm_confidence,
                 finish_reason=finish_reason,
+                raw_spans=raw_spans,
+                resolution_events=resolution_events,
+                resolution_policy_version=RESOLUTION_POLICY_VERSION,
             )
         except Exception as exc:
             last_exc = exc

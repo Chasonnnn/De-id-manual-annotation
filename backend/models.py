@@ -12,6 +12,14 @@ class CanonicalSpan(BaseModel):
     text: str
 
 
+class ResolutionEvent(BaseModel):
+    kind: Literal["boundary_resolution", "augmentation"]
+    label: str
+    rule: str
+    before: CanonicalSpan | None = None
+    after: CanonicalSpan
+
+
 class UtteranceRow(BaseModel):
     speaker: str
     text: str
@@ -51,6 +59,9 @@ class SavedRunMetadata(BaseModel):
     prompt_snapshot: dict[str, Any] | None = None
     llm_confidence: "LLMConfidenceMetric | None" = None
     chunk_diagnostics: list[AgentChunkDiagnostic] = Field(default_factory=list)
+    raw_hypothesis_spans: list[CanonicalSpan] = Field(default_factory=list)
+    resolution_events: list[ResolutionEvent] = Field(default_factory=list)
+    resolution_policy_version: str | None = None
 
 
 class LLMConfidenceMetric(BaseModel):
@@ -73,6 +84,9 @@ class AgentRunMetrics(BaseModel):
     llm_confidence: LLMConfidenceMetric | None = None
     label_profile: Literal["simple", "advanced"] | None = None
     chunk_diagnostics: list[AgentChunkDiagnostic] = Field(default_factory=list)
+    raw_hypothesis_spans: list[CanonicalSpan] = Field(default_factory=list)
+    resolution_events: list[ResolutionEvent] = Field(default_factory=list)
+    resolution_policy_version: str | None = None
 
 
 class CanonicalDocument(BaseModel):

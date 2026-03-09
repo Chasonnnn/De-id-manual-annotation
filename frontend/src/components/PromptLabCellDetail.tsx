@@ -6,6 +6,7 @@ import type {
   PromptLabMatrixCellSummary,
   PromptLabRunDetail,
 } from "../types";
+import { getPrimaryMetricLabel, getPrimaryMetrics } from "../metricPresentation";
 
 interface Props {
   run: PromptLabRunDetail;
@@ -73,6 +74,7 @@ export default function PromptLabCellDetail({
   const chunkWarnings = allWarnings.filter(isChunkWarning);
   const nonChunkWarnings = allWarnings.filter((message) => !isChunkWarning(message));
   const processedWithChunking = chunkWarnings.length > 0;
+  const { primary, exact, usingNameTolerant } = getPrimaryMetrics(detail?.metrics ?? null, run.runtime.match_mode);
 
   return (
     <section className="prompt-lab-detail">
@@ -81,7 +83,9 @@ export default function PromptLabCellDetail({
           Cell Detail: {cell.model_label} × {cell.prompt_label}
         </h3>
         <div className="prompt-lab-detail-meta">
-          F1 {fmtPct(cell.micro.f1)} · Completed {cell.completed_docs}/{cell.total_docs} · Errors {cell.error_count}
+          {getPrimaryMetricLabel("F1", usingNameTolerant)} {fmtPct((cell.co_primary_metrics?.exact_name_affix_tolerant?.micro.f1 ?? cell.micro.f1))} ·{" "}
+          {getPrimaryMetricLabel("Recall", usingNameTolerant)} {fmtPct((cell.co_primary_metrics?.exact_name_affix_tolerant?.micro.recall ?? cell.micro.recall))} · Completed{" "}
+          {cell.completed_docs}/{cell.total_docs} · Errors {cell.error_count}
         </div>
       </div>
 
@@ -131,7 +135,13 @@ export default function PromptLabCellDetail({
           <div className="prompt-lab-detail-summary">
             <span>Status: {detail.status}</span>
             <span>Reference used: {detail.reference_source_used ?? "n/a"}</span>
-            {detail.metrics && <span>Micro F1: {fmtPct(detail.metrics.micro.f1)}</span>}
+            {primary && (
+              <span>{getPrimaryMetricLabel("Micro F1", usingNameTolerant)}: {fmtPct(primary.micro.f1)}</span>
+            )}
+            {primary && (
+              <span>{getPrimaryMetricLabel("Micro Recall", usingNameTolerant)}: {fmtPct(primary.micro.recall)}</span>
+            )}
+            {usingNameTolerant && exact && <span>Exact F1: {fmtPct(exact.micro.f1)}</span>}
             {processedWithChunking && <span className="chunk-badge">Processed with chunking</span>}
           </div>
 
@@ -141,23 +151,23 @@ export default function PromptLabCellDetail({
             <div className="prompt-lab-warning">{nonChunkWarnings.join(" | ")}</div>
           )}
 
-          {detail.metrics && (
+          {primary && (
             <div className="metric-cards">
               <div className="metric-card">
-                <div className="card-label">Micro P</div>
-                <div className="card-value">{fmtPct(detail.metrics.micro.precision)}</div>
+                <div className="card-label">{getPrimaryMetricLabel("Micro P", usingNameTolerant)}</div>
+                <div className="card-value">{fmtPct(primary.micro.precision)}</div>
               </div>
               <div className="metric-card">
-                <div className="card-label">Micro R</div>
-                <div className="card-value">{fmtPct(detail.metrics.micro.recall)}</div>
+                <div className="card-label">{getPrimaryMetricLabel("Micro R", usingNameTolerant)}</div>
+                <div className="card-value">{fmtPct(primary.micro.recall)}</div>
               </div>
               <div className="metric-card">
-                <div className="card-label">Micro F1</div>
-                <div className="card-value">{fmtPct(detail.metrics.micro.f1)}</div>
+                <div className="card-label">{getPrimaryMetricLabel("Micro F1", usingNameTolerant)}</div>
+                <div className="card-value">{fmtPct(primary.micro.f1)}</div>
               </div>
               <div className="metric-card">
-                <div className="card-label">Macro F1</div>
-                <div className="card-value">{fmtPct(detail.metrics.macro.f1)}</div>
+                <div className="card-label">{getPrimaryMetricLabel("Macro F1", usingNameTolerant)}</div>
+                <div className="card-value">{fmtPct(primary.macro.f1)}</div>
               </div>
             </div>
           )}

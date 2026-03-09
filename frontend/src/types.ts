@@ -156,6 +156,27 @@ export interface MetricsResult {
   false_positives?: CanonicalSpan[];
   false_negatives?: CanonicalSpan[];
   llm_confidence?: LLMConfidenceMetric | null;
+  co_primary_metrics?: Record<
+    string,
+    {
+      micro: { precision: number; recall: number; f1: number; tp?: number; fp?: number; fn?: number };
+      macro: { precision: number; recall: number; f1: number };
+      per_label: Record<
+        string,
+        {
+          precision: number;
+          recall: number;
+          f1: number;
+          support: number;
+          tp?: number;
+          fp?: number;
+          fn?: number;
+        }
+      >;
+      false_positives?: CanonicalSpan[];
+      false_negatives?: CanonicalSpan[];
+    }
+  >;
 }
 
 export interface DashboardDocumentMetrics {
@@ -172,6 +193,20 @@ export interface DashboardDocumentMetrics {
     fn: number;
   };
   macro: { precision: number; recall: number; f1: number };
+  co_primary_metrics?: Record<
+    string,
+    {
+      micro: {
+        precision: number;
+        recall: number;
+        f1: number;
+        tp?: number;
+        fp?: number;
+        fn?: number;
+      };
+      macro: { precision: number; recall: number; f1: number };
+    }
+  >;
   cohens_kappa: number;
   mean_iou: number;
   llm_confidence?: LLMConfidenceMetric | null;
@@ -194,6 +229,21 @@ export interface DashboardMetricsResult {
   };
   avg_document_micro: { precision: number; recall: number; f1: number };
   avg_document_macro: { precision: number; recall: number; f1: number };
+  co_primary_metrics?: Record<
+    string,
+    {
+      micro: {
+        precision: number;
+        recall: number;
+        f1: number;
+        tp?: number;
+        fp?: number;
+        fn?: number;
+      };
+      avg_document_micro?: { precision: number; recall: number; f1: number };
+      avg_document_macro?: { precision: number; recall: number; f1: number };
+    }
+  >;
   llm_confidence_summary: {
     documents_with_confidence: number;
     mean_confidence: number | null;
@@ -305,9 +355,9 @@ export interface ExperimentLimits {
 }
 
 export const DEFAULT_EXPERIMENT_LIMITS: ExperimentLimits = {
-  prompt_lab_default_concurrency: 4,
+  prompt_lab_default_concurrency: 10,
   prompt_lab_max_concurrency: 16,
-  methods_lab_default_concurrency: 4,
+  methods_lab_default_concurrency: 10,
   methods_lab_max_concurrency: 16,
 };
 
@@ -432,6 +482,25 @@ export interface PromptLabMatrixCellSummary {
       support: number;
     }
   >;
+  co_primary_metrics?: Record<
+    string,
+    {
+      micro: PromptLabCellMicro;
+      macro: { precision: number; recall: number; f1: number };
+      per_label: Record<
+        string,
+        {
+          precision: number;
+          recall: number;
+          f1: number;
+          tp: number;
+          fp: number;
+          fn: number;
+          support: number;
+        }
+      >;
+    }
+  >;
   mean_confidence: number | null;
 }
 
@@ -517,6 +586,25 @@ export interface MethodsLabMatrixCellSummary {
       fp: number;
       fn: number;
       support: number;
+    }
+  >;
+  co_primary_metrics?: Record<
+    string,
+    {
+      micro: PromptLabCellMicro;
+      macro: { precision: number; recall: number; f1: number };
+      per_label: Record<
+        string,
+        {
+          precision: number;
+          recall: number;
+          f1: number;
+          tp: number;
+          fp: number;
+          fn: number;
+          support: number;
+        }
+      >;
     }
   >;
   mean_confidence: number | null;

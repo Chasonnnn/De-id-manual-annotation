@@ -198,9 +198,25 @@ def _matrix_rows(kind: str, detail: dict[str, Any]) -> list[dict[str, Any]]:
             "total_docs": cell.get("total_docs"),
             "completed_docs": cell.get("completed_docs"),
             "failed_docs": cell.get("failed_docs"),
+            "pending_docs": cell.get("pending_docs"),
             "precision": cell.get("micro", {}).get("precision"),
             "recall": cell.get("micro", {}).get("recall"),
             "f1": cell.get("micro", {}).get("f1"),
+            "raw_precision": cell.get("raw_micro", {}).get("precision"),
+            "raw_recall": cell.get("raw_micro", {}).get("recall"),
+            "raw_f1": cell.get("raw_micro", {}).get("f1"),
+            "exact_name_affix_tolerant_f1": cell.get("co_primary_metrics", {})
+            .get("exact_name_affix_tolerant", {})
+            .get("micro", {})
+            .get("f1"),
+            "raw_exact_name_affix_tolerant_f1": cell.get("raw_co_primary_metrics", {})
+            .get("exact_name_affix_tolerant", {})
+            .get("micro", {})
+            .get("f1"),
+            "exact_name_affix_gap_f1": cell.get("exact_name_affix_gap_f1"),
+            "raw_exact_name_affix_gap_f1": cell.get("raw_exact_name_affix_gap_f1"),
+            "boundary_fix_count": cell.get("resolution_summary", {}).get("boundary_fix_count"),
+            "augmentation_count": cell.get("resolution_summary", {}).get("augmentation_count"),
             "mean_confidence": cell.get("mean_confidence"),
         }
         if kind == "prompt_lab":
@@ -228,9 +244,19 @@ def _write_output_csv(path_value: str | None, *, kind: str, detail: dict[str, An
             "total_docs",
             "completed_docs",
             "failed_docs",
+            "pending_docs",
             "precision",
             "recall",
             "f1",
+            "raw_precision",
+            "raw_recall",
+            "raw_f1",
+            "exact_name_affix_tolerant_f1",
+            "raw_exact_name_affix_tolerant_f1",
+            "exact_name_affix_gap_f1",
+            "raw_exact_name_affix_gap_f1",
+            "boundary_fix_count",
+            "augmentation_count",
             "mean_confidence",
         ]
     else:
@@ -244,9 +270,19 @@ def _write_output_csv(path_value: str | None, *, kind: str, detail: dict[str, An
             "total_docs",
             "completed_docs",
             "failed_docs",
+            "pending_docs",
             "precision",
             "recall",
             "f1",
+            "raw_precision",
+            "raw_recall",
+            "raw_f1",
+            "exact_name_affix_tolerant_f1",
+            "raw_exact_name_affix_tolerant_f1",
+            "exact_name_affix_gap_f1",
+            "raw_exact_name_affix_gap_f1",
+            "boundary_fix_count",
+            "augmentation_count",
             "mean_confidence",
         ]
     with Path(path_value).open("w", newline="") as handle:
@@ -398,7 +434,7 @@ def _add_runtime_args(parser: argparse.ArgumentParser, *, prompt_mode: bool) -> 
         default="auto",
     )
     parser.add_argument("--chunk-size-chars", type=int, default=10_000)
-    parser.add_argument("--concurrency", type=int, default=4)
+    parser.add_argument("--concurrency", type=int, default=10)
     parser.add_argument(
         "--reasoning-effort",
         choices=["none", "low", "medium", "high", "xhigh"],

@@ -1,0 +1,90 @@
+import { render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+
+import MethodsLabMatrix from "./MethodsLabMatrix";
+import type { MethodsLabRunDetail } from "../types";
+
+describe("MethodsLabMatrix", () => {
+  it("defaults to NAME-tolerant metrics when available and keeps exact as a diagnostic", () => {
+    const run: MethodsLabRunDetail = {
+      id: "run_1",
+      name: "methods_run",
+      status: "completed",
+      cancellable: false,
+      created_at: "2026-03-09T00:00:00Z",
+      started_at: "2026-03-09T00:00:00Z",
+      finished_at: "2026-03-09T00:01:00Z",
+      doc_count: 1,
+      method_count: 1,
+      model_count: 1,
+      total_tasks: 1,
+      completed_tasks: 1,
+      failed_tasks: 0,
+      doc_ids: ["doc-1"],
+      methods: [{ id: "method_1", label: "Default", method_id: "default", method_verify_override: null }],
+      models: [
+        {
+          id: "gemini_pro",
+          label: "gemini_pro",
+          model: "google.gemini-3.1-pro-preview",
+          reasoning_effort: "none",
+          anthropic_thinking: false,
+          anthropic_thinking_budget_tokens: null,
+        },
+      ],
+      runtime: {
+        temperature: 0,
+        match_mode: "exact",
+        label_profile: "simple",
+        label_projection: "native",
+        chunk_mode: "auto",
+        chunk_size_chars: 10000,
+      },
+      concurrency: 1,
+      warnings: [],
+      errors: [],
+      matrix: {
+        models: [{ id: "gemini_pro", label: "gemini_pro" }],
+        methods: [{ id: "method_1", label: "Default" }],
+        available_labels: [],
+        cells: [
+          {
+            id: "gemini_pro__method_1",
+            model_id: "gemini_pro",
+            model_label: "gemini_pro",
+            method_id: "method_1",
+            method_label: "Default",
+            status: "completed",
+            total_docs: 1,
+            completed_docs: 1,
+            failed_docs: 0,
+            error_count: 0,
+            micro: { precision: 0.5, recall: 0.3, f1: 0.4, tp: 2, fp: 2, fn: 4 },
+            per_label: {},
+            co_primary_metrics: {
+              exact_name_affix_tolerant: {
+                micro: { precision: 1, recall: 0.8, f1: 0.9, tp: 6, fp: 0, fn: 1 },
+                macro: { precision: 1, recall: 0.8, f1: 0.9 },
+                per_label: {},
+              },
+            },
+            mean_confidence: null,
+          },
+        ],
+      },
+      progress: {
+        total_tasks: 1,
+        completed_tasks: 1,
+        failed_tasks: 0,
+      },
+    };
+
+    render(
+      <MethodsLabMatrix run={run} selectedCellId={null} onSelectCell={vi.fn()} />,
+    );
+
+    expect(screen.getByText("NAME-Tolerant Overall F1")).not.toBeNull();
+    expect(screen.getByText("90.0%")).not.toBeNull();
+    expect(screen.getByText("Exact F1 40.0% · Exact R 30.0%")).not.toBeNull();
+  });
+});

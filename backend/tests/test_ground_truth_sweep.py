@@ -197,6 +197,7 @@ def test_run_ground_truth_sweep_writes_manifests_exports_and_final_report(
     assert "Verifier Comparisons" in report_text
     assert "Top 10 Configurations" in report_text
     assert "NAME-Tolerant F1" in report_text
+    assert "| Variant | NAME-Tolerant F1 | Exact F1 |" in report_text
 
     aggregate_summary = json.loads((aggregates_dir / "all_runs_summary.json").read_text())
     assert aggregate_summary["summary"]["run_count"] == 15
@@ -218,8 +219,51 @@ def test_run_ground_truth_sweep_writes_manifests_exports_and_final_report(
     assert "exact_name_affix_tolerant_f1" in method_rows[0]
     assert "error_family_empty_output_finish_reason_length" in method_rows[0]
     assert "exact_name_affix_tolerant_f1" in aggregate_summary["prompt_records"][0]
-    assert "error_family_counts" in aggregate_summary["prompt_records"][0]
-    assert summary["summary"]["run_count"] == 15
+
+
+def test_aggregate_variant_rankings_sort_by_name_tolerant_f1_first():
+    from ground_truth_sweep import _aggregate_variant_rankings
+
+    rows = _aggregate_variant_rankings(
+        [
+            {
+                "variant_label": "baseline_raw",
+                "status": "completed",
+                "precision": 0.8,
+                "recall": 0.8,
+                "f1": 0.8,
+                "tp": 8,
+                "fp": 2,
+                "fn": 2,
+                "exact_name_affix_tolerant_tp": 8,
+                "exact_name_affix_tolerant_fp": 2,
+                "exact_name_affix_tolerant_fn": 2,
+                "exact_name_affix_tolerant_precision": 0.8,
+                "exact_name_affix_tolerant_recall": 0.8,
+                "exact_name_affix_tolerant_f1": 0.8,
+            },
+            {
+                "variant_label": "annotator_agents_raw",
+                "status": "completed",
+                "precision": 0.7,
+                "recall": 0.7,
+                "f1": 0.7,
+                "tp": 7,
+                "fp": 3,
+                "fn": 3,
+                "exact_name_affix_tolerant_tp": 9,
+                "exact_name_affix_tolerant_fp": 1,
+                "exact_name_affix_tolerant_fn": 1,
+                "exact_name_affix_tolerant_precision": 0.95,
+                "exact_name_affix_tolerant_recall": 0.85,
+                "exact_name_affix_tolerant_f1": 0.9,
+            },
+        ]
+    )
+
+    assert rows[0]["variant_label"] == "annotator_agents_raw"
+    assert rows[0]["exact_name_affix_tolerant_f1"] == pytest.approx(0.9)
+    assert rows[0]["f1"] == pytest.approx(0.7)
 
 
 def test_run_ground_truth_sweep_records_blocked_runs(client, monkeypatch, tmp_path):

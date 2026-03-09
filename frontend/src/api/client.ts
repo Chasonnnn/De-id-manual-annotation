@@ -344,22 +344,42 @@ export async function getMetricsDashboard(
 }
 
 function normalizeMetrics(raw: Record<string, unknown>): MetricsResult {
-  const rawPerLabel = (raw.per_label ?? {}) as Record<
-    string,
-    { precision: number; recall: number; f1: number; support?: number; tp?: number; fn?: number }
-  >;
-  const perLabel: MetricsResult["per_label"] = {};
-  for (const [label, value] of Object.entries(rawPerLabel)) {
-    perLabel[label] = {
-      precision: value.precision,
-      recall: value.recall,
-      f1: value.f1,
-      support: typeof value.support === "number" ? value.support : (value.tp ?? 0) + (value.fn ?? 0),
-      tp: value.tp,
-      fp: (value as { fp?: number }).fp,
-      fn: value.fn,
+  const normalizeMetricBundle = (
+    bundle: Record<string, unknown>,
+  ): {
+    micro: MetricsResult["micro"];
+    macro: MetricsResult["macro"];
+    per_label: MetricsResult["per_label"];
+    false_positives: CanonicalSpan[];
+    false_negatives: CanonicalSpan[];
+  } => {
+    const rawPerLabel = (bundle.per_label ?? {}) as Record<
+      string,
+      { precision: number; recall: number; f1: number; support?: number; tp?: number; fn?: number }
+    >;
+    const perLabel: MetricsResult["per_label"] = {};
+    for (const [label, value] of Object.entries(rawPerLabel)) {
+      perLabel[label] = {
+        precision: value.precision,
+        recall: value.recall,
+        f1: value.f1,
+        support:
+          typeof value.support === "number" ? value.support : (value.tp ?? 0) + (value.fn ?? 0),
+        tp: value.tp,
+        fp: (value as { fp?: number }).fp,
+        fn: value.fn,
+      };
+    }
+    return {
+      micro: bundle.micro as MetricsResult["micro"],
+      macro: bundle.macro as MetricsResult["macro"],
+      per_label: perLabel,
+      false_positives: (bundle.false_positives as CanonicalSpan[] | undefined) ?? [],
+      false_negatives: (bundle.false_negatives as CanonicalSpan[] | undefined) ?? [],
     };
-  }
+  };
+
+  const normalized = normalizeMetricBundle(raw);
 
   let confusionMatrix = raw.confusion_matrix as
     | { labels: string[]; matrix: number[][] }
@@ -378,16 +398,26 @@ function normalizeMetrics(raw: Record<string, unknown>): MetricsResult {
     };
   }
 
+  const coPrimaryRaw = isRecord(raw.co_primary_metrics)
+    ? (raw.co_primary_metrics as Record<string, unknown>)
+    : {};
+  const coPrimaryMetrics = Object.fromEntries(
+    Object.entries(coPrimaryRaw)
+      .filter(([, value]) => isRecord(value))
+      .map(([key, value]) => [key, normalizeMetricBundle(value as Record<string, unknown>)]),
+  );
+
   return {
-    micro: raw.micro as MetricsResult["micro"],
-    macro: raw.macro as MetricsResult["macro"],
+    micro: normalized.micro,
+    macro: normalized.macro,
     label_projection:
       raw.label_projection === "coarse_simple" ? "coarse_simple" : "native",
-    per_label: perLabel,
+    per_label: normalized.per_label,
     confusion_matrix: confusionMatrix,
-    false_positives: (raw.false_positives as CanonicalSpan[] | undefined) ?? [],
-    false_negatives: (raw.false_negatives as CanonicalSpan[] | undefined) ?? [],
+    false_positives: normalized.false_positives,
+    false_negatives: normalized.false_negatives,
     llm_confidence: normalizeLLMConfidence(raw.llm_confidence),
+    co_primary_metrics: Object.keys(coPrimaryMetrics).length > 0 ? coPrimaryMetrics : undefined,
   };
 }
 
@@ -515,7 +545,7 @@ function normalizePromptLabRunDetail(raw: Record<string, unknown>): PromptLabRun
           : "auto",
       chunk_size_chars: toNumber(runtimeRaw.chunk_size_chars, 10000),
     },
-    concurrency: toNumber(raw.concurrency, 4),
+    concurrency: toNumber(raw.concurrency, DEFAULT_EXPERIMENT_LIMITS.prompt_lab_default_concurrency),
     warnings: Array.isArray(raw.warnings)
       ? raw.warnings.filter((x): x is string => typeof x === "string")
       : [],
@@ -596,7 +626,7 @@ function normalizeMethodsLabRunDetail(raw: Record<string, unknown>): MethodsLabR
           : "auto",
       chunk_size_chars: toNumber(runtimeRaw.chunk_size_chars, 10000),
     },
-    concurrency: toNumber(raw.concurrency, 4),
+    concurrency: toNumber(raw.concurrency, DEFAULT_EXPERIMENT_LIMITS.methods_lab_default_concurrency),
     warnings: Array.isArray(raw.warnings)
       ? raw.warnings.filter((x): x is string => typeof x === "string")
       : [],
@@ -707,6 +737,52 @@ function normalizePromptLabCellSummary(
       support: toNumber(value.support, 0),
     };
   }
+  const coPrimaryMetrics = isRecord(raw.co_primary_metrics)
+    ? Object.fromEntries(
+        Object.entries(raw.co_primary_metrics)
+          .filter(([, value]) => isRecord(value))
+          .map(([metricName, value]) => {
+            const metricValue = value as Record<string, unknown>;
+            const metricPerLabelRaw = isRecord(metricValue.per_label)
+              ? (metricValue.per_label as Record<string, unknown>)
+              : {};
+            const metricPerLabel: PromptLabRunDetail["matrix"]["cells"][number]["per_label"] = {};
+            for (const [label, labelValue] of Object.entries(metricPerLabelRaw)) {
+              if (!isRecord(labelValue)) continue;
+              metricPerLabel[label] = {
+                precision: toNumber(labelValue.precision, 0),
+                recall: toNumber(labelValue.recall, 0),
+                f1: toNumber(labelValue.f1, 0),
+                tp: toNumber(labelValue.tp, 0),
+                fp: toNumber(labelValue.fp, 0),
+                fn: toNumber(labelValue.fn, 0),
+                support: toNumber(labelValue.support, 0),
+              };
+            }
+            const metricMicro = isRecord(metricValue.micro) ? metricValue.micro : {};
+            const metricMacro = isRecord(metricValue.macro) ? metricValue.macro : {};
+            return [
+              metricName,
+              {
+                micro: {
+                  precision: toNumber(metricMicro.precision, 0),
+                  recall: toNumber(metricMicro.recall, 0),
+                  f1: toNumber(metricMicro.f1, 0),
+                  tp: toNumber(metricMicro.tp, 0),
+                  fp: toNumber(metricMicro.fp, 0),
+                  fn: toNumber(metricMicro.fn, 0),
+                },
+                macro: {
+                  precision: toNumber(metricMacro.precision, 0),
+                  recall: toNumber(metricMacro.recall, 0),
+                  f1: toNumber(metricMacro.f1, 0),
+                },
+                per_label: metricPerLabel,
+              },
+            ];
+          }),
+      )
+    : undefined;
   return {
     id: String(raw.id ?? `cell_${index + 1}`),
     model_id: String(raw.model_id ?? ""),
@@ -727,6 +803,8 @@ function normalizePromptLabCellSummary(
       fn: toNumber(microRaw.fn, 0),
     },
     per_label: perLabel,
+    co_primary_metrics:
+      coPrimaryMetrics && Object.keys(coPrimaryMetrics).length > 0 ? coPrimaryMetrics : undefined,
     mean_confidence: typeof raw.mean_confidence === "number" ? raw.mean_confidence : null,
   };
 }
@@ -753,6 +831,52 @@ function normalizeMethodsLabCellSummary(
       support: toNumber(value.support, 0),
     };
   }
+  const coPrimaryMetrics = isRecord(raw.co_primary_metrics)
+    ? Object.fromEntries(
+        Object.entries(raw.co_primary_metrics)
+          .filter(([, value]) => isRecord(value))
+          .map(([metricName, value]) => {
+            const metricValue = value as Record<string, unknown>;
+            const metricPerLabelRaw = isRecord(metricValue.per_label)
+              ? (metricValue.per_label as Record<string, unknown>)
+              : {};
+            const metricPerLabel: MethodsLabRunDetail["matrix"]["cells"][number]["per_label"] = {};
+            for (const [label, labelValue] of Object.entries(metricPerLabelRaw)) {
+              if (!isRecord(labelValue)) continue;
+              metricPerLabel[label] = {
+                precision: toNumber(labelValue.precision, 0),
+                recall: toNumber(labelValue.recall, 0),
+                f1: toNumber(labelValue.f1, 0),
+                tp: toNumber(labelValue.tp, 0),
+                fp: toNumber(labelValue.fp, 0),
+                fn: toNumber(labelValue.fn, 0),
+                support: toNumber(labelValue.support, 0),
+              };
+            }
+            const metricMicro = isRecord(metricValue.micro) ? metricValue.micro : {};
+            const metricMacro = isRecord(metricValue.macro) ? metricValue.macro : {};
+            return [
+              metricName,
+              {
+                micro: {
+                  precision: toNumber(metricMicro.precision, 0),
+                  recall: toNumber(metricMicro.recall, 0),
+                  f1: toNumber(metricMicro.f1, 0),
+                  tp: toNumber(metricMicro.tp, 0),
+                  fp: toNumber(metricMicro.fp, 0),
+                  fn: toNumber(metricMicro.fn, 0),
+                },
+                macro: {
+                  precision: toNumber(metricMacro.precision, 0),
+                  recall: toNumber(metricMacro.recall, 0),
+                  f1: toNumber(metricMacro.f1, 0),
+                },
+                per_label: metricPerLabel,
+              },
+            ];
+          }),
+      )
+    : undefined;
   return {
     id: String(raw.id ?? `cell_${index + 1}`),
     model_id: String(raw.model_id ?? ""),
@@ -775,6 +899,8 @@ function normalizeMethodsLabCellSummary(
       fn: toNumber(microRaw.fn, 0),
     },
     per_label: perLabel,
+    co_primary_metrics:
+      coPrimaryMetrics && Object.keys(coPrimaryMetrics).length > 0 ? coPrimaryMetrics : undefined,
     mean_confidence: typeof raw.mean_confidence === "number" ? raw.mean_confidence : null,
   };
 }
@@ -809,6 +935,36 @@ function normalizeDashboardMetrics(
   const rawDocs = Array.isArray(raw.documents) ? raw.documents : [];
   const documents = rawDocs.map((item) => {
     const row = isRecord(item) ? item : {};
+    const coPrimaryRaw = isRecord(row.co_primary_metrics)
+      ? (row.co_primary_metrics as Record<string, unknown>)
+      : {};
+    const coPrimaryMetrics = Object.fromEntries(
+      Object.entries(coPrimaryRaw)
+        .filter(([, value]) => isRecord(value))
+        .map(([key, value]) => {
+          const payload = value as Record<string, unknown>;
+          const micro = isRecord(payload.micro) ? payload.micro : {};
+          const macro = isRecord(payload.macro) ? payload.macro : {};
+          return [
+            key,
+            {
+              micro: {
+                precision: toNumber(micro.precision, 0),
+                recall: toNumber(micro.recall, 0),
+                f1: toNumber(micro.f1, 0),
+                tp: toNumber(micro.tp, 0),
+                fp: toNumber(micro.fp, 0),
+                fn: toNumber(micro.fn, 0),
+              },
+              macro: {
+                precision: toNumber(macro.precision, 0),
+                recall: toNumber(macro.recall, 0),
+                f1: toNumber(macro.f1, 0),
+              },
+            },
+          ];
+        }),
+    );
     return {
       id: String(row.id ?? ""),
       filename: String(row.filename ?? ""),
@@ -823,11 +979,50 @@ function normalizeDashboardMetrics(
         fn: 0,
       }) as DashboardMetricsResult["documents"][number]["micro"],
       macro: (row.macro ?? { precision: 0, recall: 0, f1: 0 }) as DashboardMetricsResult["documents"][number]["macro"],
+      co_primary_metrics:
+        Object.keys(coPrimaryMetrics).length > 0 ? coPrimaryMetrics : undefined,
       cohens_kappa: toNumber(row.cohens_kappa, 0),
       mean_iou: toNumber(row.mean_iou, 0),
       llm_confidence: normalizeLLMConfidence(row.llm_confidence),
     };
   });
+
+  const coPrimaryRaw = isRecord(raw.co_primary_metrics)
+    ? (raw.co_primary_metrics as Record<string, unknown>)
+    : {};
+  const coPrimaryMetrics = Object.fromEntries(
+    Object.entries(coPrimaryRaw)
+      .filter(([, value]) => isRecord(value))
+      .map(([key, value]) => {
+        const payload = value as Record<string, unknown>;
+        const micro = isRecord(payload.micro) ? payload.micro : {};
+        const avgDocumentMicro = isRecord(payload.avg_document_micro) ? payload.avg_document_micro : {};
+        const avgDocumentMacro = isRecord(payload.avg_document_macro) ? payload.avg_document_macro : {};
+        return [
+          key,
+          {
+            micro: {
+              precision: toNumber(micro.precision, 0),
+              recall: toNumber(micro.recall, 0),
+              f1: toNumber(micro.f1, 0),
+              tp: toNumber(micro.tp, 0),
+              fp: toNumber(micro.fp, 0),
+              fn: toNumber(micro.fn, 0),
+            },
+            avg_document_micro: {
+              precision: toNumber(avgDocumentMicro.precision, 0),
+              recall: toNumber(avgDocumentMicro.recall, 0),
+              f1: toNumber(avgDocumentMicro.f1, 0),
+            },
+            avg_document_macro: {
+              precision: toNumber(avgDocumentMacro.precision, 0),
+              recall: toNumber(avgDocumentMacro.recall, 0),
+              f1: toNumber(avgDocumentMacro.f1, 0),
+            },
+          },
+        ];
+      }),
+  );
 
   return {
     reference: (raw.reference as AnnotationSource | undefined) ?? reference,
@@ -862,6 +1057,7 @@ function normalizeDashboardMetrics(
       recall: 0,
       f1: 0,
     }) as DashboardMetricsResult["avg_document_macro"],
+    co_primary_metrics: Object.keys(coPrimaryMetrics).length > 0 ? coPrimaryMetrics : undefined,
     llm_confidence_summary: {
       documents_with_confidence: toNumber(
         rawSummary.documents_with_confidence,
