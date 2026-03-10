@@ -5,6 +5,7 @@ import type {
   DocumentSummary,
   FolderSummary,
   MatchMode,
+  MethodBundle,
   PromptLabModelInput,
   PromptLabPromptInput,
   PromptLabRunCreateRequest,
@@ -40,6 +41,7 @@ type PromptLabRuntimeState = {
   concurrency: number;
   labelProfile: "simple" | "advanced";
   labelProjection: "native" | "coarse_simple";
+  methodBundle: MethodBundle;
   chunkMode: "auto" | "off" | "force";
   chunkSizeChars: number;
 };
@@ -273,6 +275,22 @@ function PromptLabConfigGrid({
           <option value="native">Native</option>
           <option value="coarse_simple">Coarse (advanced→simple)</option>
         </select>
+      </div>
+
+      <div className="prompt-lab-field prompt-lab-inline">
+        <label htmlFor="prompt-lab-method-bundle">Preset Bundle</label>
+        <select
+          id="prompt-lab-method-bundle"
+          value={runtime.methodBundle}
+          onChange={(e) =>
+            onRuntimeChange({ methodBundle: e.target.value as MethodBundle })
+          }
+        >
+          <option value="audited">Audited</option>
+          <option value="test">Test</option>
+          <option value="legacy">Legacy</option>
+        </select>
+        <div className="prompt-lab-config-note">Applies only to Experiment Preset variants.</div>
       </div>
 
       <div className="prompt-lab-field prompt-lab-inline">
@@ -650,6 +668,7 @@ function usePromptLabRunFormController({
     concurrency: 10,
     labelProfile: "simple",
     labelProjection: "native",
+    methodBundle: "audited",
     chunkMode: "off",
     chunkSizeChars: 10000,
   });
@@ -923,6 +942,7 @@ function usePromptLabRunFormController({
         fallback_reference_source: runtimeState.fallbackSource,
         label_profile: runtimeState.labelProfile,
         label_projection: runtimeState.labelProjection,
+        method_bundle: runtimeState.methodBundle,
         chunk_mode: runtimeState.chunkMode,
         chunk_size_chars: runtimeState.chunkSizeChars,
       },

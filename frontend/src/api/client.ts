@@ -14,6 +14,7 @@ import type {
   LLMConfidenceBand,
   LLMConfidenceMetric,
   MatchMode,
+  MethodBundle,
   DocumentSummary,
   ExperimentDiagnostics,
   ExperimentLimits,
@@ -529,10 +530,18 @@ function normalizeExperimentDiagnostics(raw: Record<string, unknown>): Experimen
 }
 
 function normalizePromptLabRunSummary(raw: Record<string, unknown>): PromptLabRunSummary {
+  const runtimeRaw = isRecord(raw.runtime) ? raw.runtime : {};
+  const methodBundleRaw =
+    raw.method_bundle === "legacy" ||
+    raw.method_bundle === "audited" ||
+    raw.method_bundle === "test"
+      ? raw.method_bundle
+      : runtimeRaw.method_bundle;
   return {
     id: String(raw.id ?? ""),
     name: String(raw.name ?? ""),
     status: (raw.status as PromptLabRunSummary["status"] | undefined) ?? "queued",
+    method_bundle: normalizeMethodBundle(methodBundleRaw),
     cancellable: Boolean(raw.cancellable),
     created_at: String(raw.created_at ?? ""),
     started_at: typeof raw.started_at === "string" ? raw.started_at : null,
@@ -547,10 +556,18 @@ function normalizePromptLabRunSummary(raw: Record<string, unknown>): PromptLabRu
 }
 
 function normalizeMethodsLabRunSummary(raw: Record<string, unknown>): MethodsLabRunSummary {
+  const runtimeRaw = isRecord(raw.runtime) ? raw.runtime : {};
+  const methodBundleRaw =
+    raw.method_bundle === "legacy" ||
+    raw.method_bundle === "audited" ||
+    raw.method_bundle === "test"
+      ? raw.method_bundle
+      : runtimeRaw.method_bundle;
   return {
     id: String(raw.id ?? ""),
     name: String(raw.name ?? ""),
     status: (raw.status as MethodsLabRunSummary["status"] | undefined) ?? "queued",
+    method_bundle: normalizeMethodBundle(methodBundleRaw),
     cancellable: Boolean(raw.cancellable),
     created_at: String(raw.created_at ?? ""),
     started_at: typeof raw.started_at === "string" ? raw.started_at : null,
@@ -630,6 +647,7 @@ function normalizePromptLabRunDetail(raw: Record<string, unknown>): PromptLabRun
         runtimeRaw.label_projection === "coarse_simple"
           ? "coarse_simple"
           : "native",
+      method_bundle: normalizeMethodBundle(runtimeRaw.method_bundle),
       chunk_mode:
         runtimeRaw.chunk_mode === "off" || runtimeRaw.chunk_mode === "force"
           ? runtimeRaw.chunk_mode
@@ -743,6 +761,7 @@ function normalizeMethodsLabRunDetail(raw: Record<string, unknown>): MethodsLabR
       label_profile: runtimeRaw.label_profile === "advanced" ? "advanced" : "simple",
       label_projection:
         runtimeRaw.label_projection === "coarse_simple" ? "coarse_simple" : "native",
+      method_bundle: normalizeMethodBundle(runtimeRaw.method_bundle),
       chunk_mode:
         runtimeRaw.chunk_mode === "off" || runtimeRaw.chunk_mode === "force"
           ? runtimeRaw.chunk_mode
@@ -1312,6 +1331,12 @@ function toConfidenceBand(value: unknown): LLMConfidenceBand | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
+}
+
+function normalizeMethodBundle(value: unknown): MethodBundle {
+  return value === "legacy" || value === "audited" || value === "test"
+    ? value
+    : "audited";
 }
 
 function toNumber(value: unknown, fallback: number): number {

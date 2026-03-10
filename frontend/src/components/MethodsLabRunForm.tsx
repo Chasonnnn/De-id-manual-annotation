@@ -5,6 +5,7 @@ import type {
   DocumentSummary,
   FolderSummary,
   MatchMode,
+  MethodBundle,
   MethodsLabMethodInput,
   MethodsLabRunCreateRequest,
   PromptLabModelInput,
@@ -39,6 +40,7 @@ type MethodsLabRuntimeState = {
   concurrency: number;
   labelProfile: "simple" | "advanced";
   labelProjection: "native" | "coarse_simple";
+  methodBundle: MethodBundle;
   chunkMode: "auto" | "off" | "force";
   chunkSizeChars: number;
 };
@@ -257,6 +259,21 @@ function MethodsLabConfigGrid({
         >
           <option value="native">Native</option>
           <option value="coarse_simple">Coarse (advanced→simple)</option>
+        </select>
+      </div>
+
+      <div className="prompt-lab-field prompt-lab-inline">
+        <label htmlFor="methods-lab-method-bundle">Method Bundle</label>
+        <select
+          id="methods-lab-method-bundle"
+          value={runtime.methodBundle}
+          onChange={(e) =>
+            onRuntimeChange({ methodBundle: e.target.value as MethodBundle })
+          }
+        >
+          <option value="audited">Audited</option>
+          <option value="test">Test</option>
+          <option value="legacy">Legacy</option>
         </select>
       </div>
 
@@ -641,6 +658,7 @@ function useMethodsLabRunFormController({
     concurrency: 10,
     labelProfile: "simple",
     labelProjection: "native",
+    methodBundle: "audited",
     chunkMode: "off",
     chunkSizeChars: 10000,
   });
@@ -908,6 +926,7 @@ function useMethodsLabRunFormController({
         fallback_reference_source: runtimeState.referenceSource,
         label_profile: runtimeState.labelProfile,
         label_projection: runtimeState.labelProjection,
+        method_bundle: runtimeState.methodBundle,
         chunk_mode: runtimeState.chunkMode,
         chunk_size_chars: runtimeState.chunkSizeChars,
       },

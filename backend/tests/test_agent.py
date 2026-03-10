@@ -570,6 +570,35 @@ class TestRunLLM:
         assert call_kwargs.kwargs["timeout"] == pytest.approx(12.5)
 
     @patch("agent.completion")
+    def test_extraction_defaults_timeout_and_max_tokens(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
+
+        run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            model="openai/gpt-4o",
+        )
+
+        call_kwargs = mock_completion.call_args
+        assert call_kwargs.kwargs["timeout"] == pytest.approx(60.0)
+        assert call_kwargs.kwargs["max_tokens"] == 4096
+
+    @patch("agent.completion")
+    def test_extraction_clamps_timeout_to_explicit_budget(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
+
+        run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            model="openai/gpt-4o",
+            timeout_seconds=15.0,
+        )
+
+        call_kwargs = mock_completion.call_args
+        assert call_kwargs.kwargs["timeout"] == pytest.approx(15.0)
+        assert call_kwargs.kwargs["max_tokens"] == 4096
+
+    @patch("agent.completion")
     def test_default_model_uses_litellm_prefix(self, mock_completion):
         """Default model should use the provider/model format."""
         mock_completion.return_value = _mock_completion_response('{"spans":[]}')
@@ -1047,6 +1076,96 @@ class TestRunLLM:
         assert any("repair retry" in warning for warning in result.warnings)
 
     @patch("agent.completion")
+    def test_parse_failure_repair_retry_uses_repair_limits(self, mock_completion):
+        calls: list[dict[str, object]] = []
+
+        def side_effect(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return _mock_completion_response("not valid json")
+            return _mock_completion_response('{"spans":[]}')
+
+        mock_completion.side_effect = side_effect
+
+        run_llm_with_metadata(
+            text="Hi John!",
+            api_key="k",
+            model="openai/gpt-4o",
+        )
+
+        assert calls[0]["timeout"] == pytest.approx(60.0)
+        assert calls[0]["max_tokens"] == 4096
+        assert calls[1]["timeout"] == pytest.approx(30.0)
+        assert calls[1]["max_tokens"] == 1024
+
+    @patch("agent.completion")
+    def test_parse_failure_repair_retry_scales_budget_for_large_truncated_output(
+        self, mock_completion
+    ):
+        calls: list[dict[str, object]] = []
+        items = [
+            {
+                "start": idx * 10,
+                "end": idx * 10 + 4,
+                "label": "NAME",
+                "text": f"N{idx:02d}",
+            }
+            for idx in range(96)
+        ]
+        truncated_payload = _spans_payload(items)[:-24]
+
+        def side_effect(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return _mock_completion_response(truncated_payload, finish_reason="length")
+            return _mock_completion_response('{"spans":[]}')
+
+        mock_completion.side_effect = side_effect
+
+        run_llm_with_metadata(
+            text=" ".join(f"name{idx}" for idx in range(200)),
+            api_key="k",
+            model="openai/gpt-4o",
+        )
+
+        assert calls[0]["max_tokens"] == 4096
+        assert calls[1]["timeout"] == pytest.approx(30.0)
+        assert calls[1]["max_tokens"] > 1024
+        repair_messages = calls[1]["messages"]
+        assert "INVALID_OUTPUT:" in repair_messages[1]["content"]
+        assert "TRANSCRIPT:" not in repair_messages[1]["content"]
+
+    @patch("agent.completion")
+    def test_truncated_output_repair_failure_recovers_partial_spans(self, mock_completion):
+        text = "John met Mary yesterday."
+        truncated_payload = (
+            '{"spans":['
+            '{"start":0,"end":4,"label":"NAME","text":"John"},'
+            '{"start":9,"end":13,"label":"NAME","text":"Mary"},'
+            '{"start":14'
+        )
+        mock_completion.side_effect = [
+            _mock_completion_response(truncated_payload, finish_reason="length"),
+            _mock_completion_response(None, finish_reason="length"),
+        ]
+
+        result = run_llm_with_metadata(
+            text=text,
+            api_key="k",
+            model="openai/gpt-4o",
+        )
+
+        assert [(span.label, span.text) for span in result.spans] == [
+            ("NAME", "John"),
+            ("NAME", "Mary"),
+        ]
+        assert any(
+            "Recovered 2 span(s) from truncated LLM output after repair retry failed."
+            in warning
+            for warning in result.warnings
+        )
+
+    @patch("agent.completion")
     def test_parse_failure_after_repair_raises_clear_error(self, mock_completion):
         mock_completion.side_effect = [
             _mock_completion_response("not valid json"),
@@ -1112,44 +1231,63 @@ class TestRunLLM:
             ("DATE", "January 5, 2026"),
         ]
 
-    def test_run_method_with_metadata_emits_dual_pass_progress(self, monkeypatch):
-        progress_events: list[tuple[int, str]] = []
+def test_run_method_with_metadata_emits_dual_pass_progress(monkeypatch):
+    progress_events: list[tuple[int, str]] = []
 
-        def fake_run_llm_with_metadata(**kwargs):
-            return types.SimpleNamespace(
-                spans=[CanonicalSpan(start=0, end=4, label="NAME", text="Anna")],
-                warnings=[],
-                llm_confidence=LLMConfidenceMetric(
-                    available=False,
-                    provider="gemini",
-                    model="google.gemini-3.1-pro-preview",
-                    reason="unsupported_provider",
-                    token_count=0,
-                    band="na",
-                ),
-            )
-
-        monkeypatch.setattr("agent.run_llm_with_metadata", fake_run_llm_with_metadata)
-
-        result = run_method_with_metadata(
-            text="Anna emailed anna@example.com",
-            method_id="dual",
-            api_key="k",
-            api_base="https://proxy.example.com/v1",
-            model="google.gemini-3.1-pro-preview",
-            system_prompt="",
-            temperature=0.0,
-            reasoning_effort="none",
-            anthropic_thinking=False,
-            anthropic_thinking_budget_tokens=None,
-            method_verify=False,
-            progress_callback=lambda pass_index, pass_label: progress_events.append(
-                (pass_index, pass_label)
+    def fake_run_llm_with_metadata(**kwargs):
+        return types.SimpleNamespace(
+            spans=[CanonicalSpan(start=0, end=4, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=LLMConfidenceMetric(
+                available=False,
+                provider="gemini",
+                model="google.gemini-3.1-pro-preview",
+                reason="unsupported_provider",
+                token_count=0,
+                band="na",
             ),
         )
 
-        assert result.spans
-        assert progress_events == [(1, "dual:names"), (2, "dual:identifiers")]
+    monkeypatch.setattr("agent.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    result = run_method_with_metadata(
+        text="Anna emailed anna@example.com",
+        method_id="dual",
+        api_key="k",
+        api_base="https://proxy.example.com/v1",
+        model="google.gemini-3.1-pro-preview",
+        system_prompt="",
+        temperature=0.0,
+        reasoning_effort="none",
+        anthropic_thinking=False,
+        anthropic_thinking_budget_tokens=None,
+        method_verify=False,
+        progress_callback=lambda pass_index, pass_label: progress_events.append(
+            (pass_index, pass_label)
+        ),
+    )
+
+    assert result.spans
+    assert progress_events == [(1, "dual:names"), (2, "dual:identifiers")]
+
+
+@patch("agent.completion")
+def test_run_llm_verifier_defaults_timeout_and_max_tokens(mock_completion):
+    mock_completion.return_value = _mock_completion_response('{"decisions":[]}')
+
+    spans, warnings = agent._run_llm_verifier(
+        "Hello Anna",
+        [CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+        api_key="k",
+        api_base=None,
+        model="openai/gpt-4o",
+    )
+
+    assert spans == [CanonicalSpan(start=6, end=10, label="NAME", text="Anna")]
+    assert warnings == []
+    call_kwargs = mock_completion.call_args
+    assert call_kwargs.kwargs["timeout"] == pytest.approx(30.0)
+    assert call_kwargs.kwargs["max_tokens"] == 1024
 
 
 def test_model_presets_include_requested_options():
@@ -1173,6 +1311,132 @@ def test_method_prompts_are_migrated_from_experiment_presets():
 
     split_prompt = METHOD_DEFINITION_BY_ID["presidio+llm-split"]["passes"][1]["prompt"]
     assert "reasonably identify an individual" in split_prompt
+
+
+def test_audited_method_contracts_validate_cleanly():
+    assert agent.validate_method_contracts(method_bundle="audited") == []
+
+
+def test_test_method_contracts_validate_cleanly():
+    assert agent.validate_method_contracts(method_bundle="test") == []
+
+
+def test_test_bundle_prompt_wrapper_includes_examples_and_label_catalog():
+    prompt = build_extraction_system_prompt(
+        "Base prompt",
+        label_profile="simple",
+        method_bundle="test",
+    )
+
+    assert "Use only these exact label strings" in prompt
+    assert '{"spans":[]}' in prompt
+    assert '"label":"NAME"' in prompt
+    assert "ages over 89" in prompt
+    assert "geographic locations smaller than a state" in prompt
+
+
+def test_list_agent_methods_reports_profile_metadata_for_audited_bundle():
+    methods = agent.list_agent_methods(method_bundle="audited")
+    dual_split = next(item for item in methods if item["id"] == "dual-split")
+
+    assert dual_split["supported_label_profiles"] == ["advanced", "simple"]
+    assert "SCHOOL" in dual_split["output_labels_by_profile"]["simple"]
+    assert "SCHOOL" in dual_split["output_labels_by_profile"]["advanced"]
+    assert isinstance(dual_split["known_limitations"], list)
+
+
+def test_audited_presidio_default_uses_residual_llm_scope():
+    definition = agent.get_method_definition_by_id(
+        "presidio+default",
+        method_bundle="audited",
+    )
+    assert definition is not None
+
+    llm_pass = definition["passes"][1]
+    assert llm_pass["entity_types_by_profile"]["simple"] == [
+        "NAME",
+        "LOCATION",
+        "SCHOOL",
+        "DATE",
+        "AGE",
+        "MISC_ID",
+    ]
+    assert set(llm_pass["entity_types_by_profile"]["advanced"]) == {
+        "AGE",
+        "COURSE",
+        "DATE",
+        "GRADE_LEVEL",
+        "LOCATION",
+        "NRP",
+        "PERSON",
+        "SCHOOL",
+        "SOCIAL_HANDLE",
+        "US_DRIVER_LICENSE",
+        "US_PASSPORT",
+    }
+
+
+def test_audited_presidio_llm_split_advanced_labels_stay_within_schema():
+    definition = agent.get_method_definition_by_id(
+        "presidio+llm-split",
+        method_bundle="audited",
+    )
+    assert definition is not None
+
+    llm_pass = definition["passes"][1]
+    advanced_labels = set(llm_pass["entity_types_by_profile"]["advanced"])
+    assert "DEVICE_IDENTIFIER" not in advanced_labels
+    assert "BIOMETRIC_IDENTIFIER" not in advanced_labels
+    assert "IMAGE" not in advanced_labels
+    assert "IDENTIFYING_NUMBER" not in advanced_labels
+    assert advanced_labels <= set(agent.ADVANCED_LABELS)
+
+
+def test_run_method_with_metadata_audited_dual_split_keeps_school_output(monkeypatch):
+    llm_calls: list[dict[str, object]] = []
+
+    def fake_run_llm_with_metadata(**kwargs):
+        llm_calls.append(kwargs)
+        if len(llm_calls) == 1:
+            spans = [CanonicalSpan(start=0, end=4, label="SCHOOL", text="Yale")]
+        else:
+            spans = []
+        return types.SimpleNamespace(
+            spans=spans,
+            raw_spans=spans,
+            warnings=[],
+            llm_confidence=LLMConfidenceMetric(
+                available=False,
+                provider="gemini",
+                model="google.gemini-3.1-pro-preview",
+                reason="unsupported_provider",
+                token_count=0,
+                band="na",
+            ),
+            response_debug=[],
+            resolution_events=[],
+            resolution_policy_version=None,
+        )
+
+    monkeypatch.setattr("agent.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    result = run_method_with_metadata(
+        text="Yale",
+        method_id="dual-split",
+        api_key="k",
+        api_base="https://proxy.example.com/v1",
+        model="google.gemini-3.1-pro-preview",
+        system_prompt="",
+        temperature=0.0,
+        reasoning_effort="none",
+        anthropic_thinking=False,
+        anthropic_thinking_budget_tokens=None,
+        method_verify=False,
+        label_profile="simple",
+        method_bundle="audited",
+    )
+
+    assert [(span.label, span.text) for span in result.spans] == [("SCHOOL", "Yale")]
 
 
 def test_presidio_runtime_error_caches_success(monkeypatch):

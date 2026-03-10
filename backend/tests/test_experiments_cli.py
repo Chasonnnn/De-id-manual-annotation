@@ -7,7 +7,7 @@ from typing import Literal
 import pytest
 from fastapi.testclient import TestClient
 
-from experiments_cli import main
+from experiments_cli import _build_method_bundle_ab_summary, main
 from models import CanonicalSpan, LLMConfidenceMetric
 from server import (
     _load_methods_lab_index,
@@ -376,6 +376,339 @@ def test_methods_cli_run_accepts_task_timeout_seconds(client, monkeypatch):
     assert saved is not None
     assert saved["status"] == "completed"
     assert saved["runtime"]["task_timeout_seconds"] == pytest.approx(12.5)
+
+
+def test_methods_cli_run_forwards_internal_method_bundle(monkeypatch, capsys):
+    captured: dict[str, object] = {}
+
+    def fake_create_methods_lab_run(
+        body,
+        *,
+        session_id: str = "default",
+        run_async: bool = False,
+        method_bundle: str = "audited",
+    ):
+        captured["session_id"] = session_id
+        captured["run_async"] = run_async
+        captured["method_bundle"] = method_bundle
+        return {
+            "id": "run-1",
+            "status": "completed",
+            "name": "bundle-test",
+            "matrix": {"cells": []},
+        }
+
+    monkeypatch.setattr("experiments_cli.create_methods_lab_run", fake_create_methods_lab_run)
+
+    exit_code = main(
+        [
+            "methods",
+            "--doc-id",
+            "c9c3cf4c",
+            "--method",
+            "Default=default",
+            "--model",
+            "Codex=openai.gpt-5.3-codex",
+            "--api-key",
+            "request-key",
+            "--method-bundle",
+            "legacy",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["session_id"] == "default"
+    assert captured["run_async"] is False
+    assert captured["method_bundle"] == "legacy"
+    assert "bundle-test" in capsys.readouterr().out
+
+
+def test_methods_cli_run_accepts_test_method_bundle(monkeypatch, capsys):
+    captured: dict[str, object] = {}
+
+    def fake_create_methods_lab_run(
+        body,
+        *,
+        session_id: str = "default",
+        run_async: bool = False,
+        method_bundle: str = "audited",
+    ):
+        captured["session_id"] = session_id
+        captured["run_async"] = run_async
+        captured["method_bundle"] = method_bundle
+        return {
+            "id": "run-test",
+            "status": "completed",
+            "name": "bundle-test",
+            "matrix": {"cells": []},
+        }
+
+    monkeypatch.setattr("experiments_cli.create_methods_lab_run", fake_create_methods_lab_run)
+
+    exit_code = main(
+        [
+            "methods",
+            "--doc-id",
+            "c9c3cf4c",
+            "--method",
+            "Default=default",
+            "--model",
+            "Gemini Pro=google.gemini-3.1-pro-preview",
+            "--api-key",
+            "request-key",
+            "--method-bundle",
+            "test",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["session_id"] == "default"
+    assert captured["run_async"] is False
+    assert captured["method_bundle"] == "test"
+    assert "bundle-test" in capsys.readouterr().out
+
+
+def test_manifest_methods_run_forwards_internal_method_bundle(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    def fake_create_methods_lab_run(
+        body,
+        *,
+        session_id: str = "default",
+        run_async: bool = False,
+        method_bundle: str = "audited",
+    ):
+        captured["session_id"] = session_id
+        captured["run_async"] = run_async
+        captured["method_bundle"] = method_bundle
+        return {
+            "id": "run-2",
+            "status": "completed",
+            "name": "manifest-bundle-test",
+            "matrix": {"cells": []},
+        }
+
+    monkeypatch.setattr("experiments_cli.create_methods_lab_run", fake_create_methods_lab_run)
+
+    manifest_path = tmp_path / "methods_manifest_bundle.yaml"
+    manifest_path.write_text(
+        "\n".join(
+            [
+                "kind: methods_lab",
+                "session: default",
+                "method_bundle: legacy",
+                "doc_ids:",
+                "  - c9c3cf4c",
+                "methods:",
+                "  - id: method_1",
+                "    label: Default",
+                "    method_id: default",
+                "models:",
+                "  - id: model_1",
+                "    label: Codex",
+                "    model: openai.gpt-5.3-codex",
+                "runtime:",
+                "  api_key: request-key",
+            ]
+        )
+    )
+
+    exit_code = main(["run", str(manifest_path)])
+
+    assert exit_code == 0
+    assert captured["session_id"] == "default"
+    assert captured["run_async"] is False
+    assert captured["method_bundle"] == "legacy"
+
+
+def test_build_method_bundle_ab_summary_reports_metric_and_stability_deltas():
+    legacy_run = {
+        "id": "legacy-run",
+        "name": "Legacy",
+        "doc_ids": ["doc1", "doc2", "doc3"],
+        "methods": [{"id": "method_1", "label": "Default", "method_id": "default"}],
+        "models": [{"id": "model_1", "label": "Codex", "model": "openai.gpt-5.3-codex"}],
+        "cells": {
+            "model_1__method_1": {
+                "id": "model_1__method_1",
+                "model_id": "model_1",
+                "model_label": "Codex",
+                "method_id": "method_1",
+                "method_label": "Default",
+                "documents": {
+                    "doc1": {
+                        "status": "completed",
+                        "metrics": {"micro": {"tp": 4, "fp": 1, "fn": 1}},
+                        "updated_at": "2026-03-10T12:01:00+00:00",
+                        "runtime_diagnostics": {"started_at": "2026-03-10T12:00:00+00:00"},
+                    },
+                    "doc2": {
+                        "status": "failed",
+                        "error": "Methods Lab task timed out after 180 seconds without progress.",
+                        "error_family": "timeout",
+                        "updated_at": "2026-03-10T12:04:00+00:00",
+                        "runtime_diagnostics": {"started_at": "2026-03-10T12:01:00+00:00"},
+                    },
+                    "doc3": {
+                        "status": "failed",
+                        "error": "LLM returned empty output content (finish_reason=length).",
+                        "error_family": "empty_output_finish_reason_length",
+                        "updated_at": "2026-03-10T12:06:00+00:00",
+                        "runtime_diagnostics": {"started_at": "2026-03-10T12:04:00+00:00"},
+                    },
+                },
+            }
+        },
+    }
+    audited_run = {
+        "id": "audited-run",
+        "name": "Audited",
+        "doc_ids": ["doc1", "doc2", "doc3"],
+        "methods": [{"id": "method_1", "label": "Default", "method_id": "default"}],
+        "models": [{"id": "model_1", "label": "Codex", "model": "openai.gpt-5.3-codex"}],
+        "cells": {
+            "model_1__method_1": {
+                "id": "model_1__method_1",
+                "model_id": "model_1",
+                "model_label": "Codex",
+                "method_id": "method_1",
+                "method_label": "Default",
+                "documents": {
+                    "doc1": {
+                        "status": "completed",
+                        "metrics": {"micro": {"tp": 5, "fp": 0, "fn": 0}},
+                        "updated_at": "2026-03-10T12:01:30+00:00",
+                        "runtime_diagnostics": {"started_at": "2026-03-10T12:00:00+00:00"},
+                    },
+                    "doc2": {
+                        "status": "completed",
+                        "metrics": {"micro": {"tp": 3, "fp": 1, "fn": 1}},
+                        "updated_at": "2026-03-10T12:03:30+00:00",
+                        "runtime_diagnostics": {"started_at": "2026-03-10T12:01:00+00:00"},
+                    },
+                    "doc3": {
+                        "status": "completed",
+                        "metrics": {"micro": {"tp": 2, "fp": 0, "fn": 1}},
+                        "updated_at": "2026-03-10T12:05:00+00:00",
+                        "runtime_diagnostics": {"started_at": "2026-03-10T12:03:30+00:00"},
+                    },
+                },
+            }
+        },
+    }
+
+    summary = _build_method_bundle_ab_summary(
+        legacy_run=legacy_run,
+        audited_run=audited_run,
+    )
+
+    bundle_stats = summary["bundles"]
+    assert bundle_stats["legacy"]["timeout_count"] == 1
+    assert bundle_stats["legacy"]["empty_content_truncation_count"] == 1
+    assert bundle_stats["audited"]["completed_count"] == 3
+    assert bundle_stats["audited"]["failed_count"] == 0
+
+    pair_summary = summary["pairs"][0]
+    assert pair_summary["model"] == "openai.gpt-5.3-codex"
+    assert pair_summary["method_id"] == "default"
+    assert pair_summary["delta_vs_legacy"]["micro_f1"] > 0.0
+    assert pair_summary["delta_vs_legacy"]["failed_count"] < 0
+    assert pair_summary["documents"]["doc2"]["legacy"]["status"] == "failed"
+    assert pair_summary["documents"]["doc2"]["audited"]["status"] == "completed"
+
+
+def test_benchmark_method_bundles_writes_separate_artifacts(monkeypatch, tmp_path):
+    calls: list[str] = []
+    raw_runs = {
+        "legacy-run": {
+            "id": "legacy-run",
+            "name": "Legacy",
+            "doc_ids": ["doc1"],
+            "methods": [{"id": "method_1", "label": "Default", "method_id": "default"}],
+            "models": [{"id": "model_1", "label": "Codex", "model": "openai.gpt-5.3-codex"}],
+            "cells": {
+                "model_1__method_1": {
+                    "id": "model_1__method_1",
+                    "model_id": "model_1",
+                    "method_id": "method_1",
+                    "documents": {
+                        "doc1": {
+                            "status": "completed",
+                            "metrics": {"micro": {"tp": 1, "fp": 1, "fn": 1}},
+                            "updated_at": "2026-03-10T12:01:00+00:00",
+                            "runtime_diagnostics": {"started_at": "2026-03-10T12:00:00+00:00"},
+                        }
+                    },
+                }
+            },
+        },
+        "audited-run": {
+            "id": "audited-run",
+            "name": "Audited",
+            "doc_ids": ["doc1"],
+            "methods": [{"id": "method_1", "label": "Default", "method_id": "default"}],
+            "models": [{"id": "model_1", "label": "Codex", "model": "openai.gpt-5.3-codex"}],
+            "cells": {
+                "model_1__method_1": {
+                    "id": "model_1__method_1",
+                    "model_id": "model_1",
+                    "method_id": "method_1",
+                    "documents": {
+                        "doc1": {
+                            "status": "completed",
+                            "metrics": {"micro": {"tp": 2, "fp": 0, "fn": 0}},
+                            "updated_at": "2026-03-10T12:01:00+00:00",
+                            "runtime_diagnostics": {"started_at": "2026-03-10T12:00:00+00:00"},
+                        }
+                    },
+                }
+            },
+        },
+    }
+
+    def fake_create_methods_lab_run(
+        body,
+        *,
+        session_id: str = "default",
+        run_async: bool = False,
+        method_bundle: str = "audited",
+    ):
+        calls.append(method_bundle)
+        run_id = "legacy-run" if method_bundle == "legacy" else "audited-run"
+        return {"id": run_id, "status": "completed", "name": body.name or "benchmark", "matrix": {"cells": []}}
+
+    monkeypatch.setattr("experiments_cli.create_methods_lab_run", fake_create_methods_lab_run)
+    monkeypatch.setattr(
+        "experiments_cli._load_methods_lab_run",
+        lambda run_id, session_id="default": raw_runs.get(run_id),
+    )
+
+    output_dir = tmp_path / "bundle-benchmark"
+    exit_code = main(
+        [
+            "benchmark-method-bundles",
+            "--name",
+            "Simple Audit",
+            "--doc-id",
+            "c9c3cf4c",
+            "--method",
+            "Default=default",
+            "--model",
+            "Codex=openai.gpt-5.3-codex",
+            "--api-key",
+            "request-key",
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls == ["legacy", "audited"]
+    assert (output_dir / "simple-audit_legacy.json").exists()
+    assert (output_dir / "simple-audit_audited.json").exists()
+    assert (output_dir / "simple-audit_comparison.json").exists()
+    assert (output_dir / "simple-audit_comparison.csv").exists()
+    assert (output_dir / "simple-audit_comparison.md").exists()
 
 
 def test_manifest_prompt_run_accepts_folder_ids(client, monkeypatch, tmp_path):
@@ -1042,11 +1375,12 @@ def test_manifest_doc_ids_are_normalized_to_strings(tmp_path):
 
     from experiments_cli import _load_manifest
 
-    kind, session_id, body, _context_dir = _load_manifest(str(manifest_path))
+    kind, session_id, body, _context_dir, method_bundle = _load_manifest(str(manifest_path))
 
     assert kind == "methods_lab"
     assert session_id == "default"
     assert body.doc_ids == ["26028249"]
+    assert method_bundle == "audited"
 
 
 def test_list_commands_emit_machine_readable_json(client, capsys):

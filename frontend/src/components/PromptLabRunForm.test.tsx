@@ -1,10 +1,14 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import PromptLabRunForm from "./PromptLabRunForm";
 import type { DocumentSummary, FolderSummary } from "../types";
 
 describe("PromptLabRunForm", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
   const documents: DocumentSummary[] = [
     { id: "doc-1", filename: "doc-1.txt", display_name: "doc-1.txt", status: "reviewed" },
   ];
@@ -95,6 +99,26 @@ describe("PromptLabRunForm", () => {
     expect((screen.getByLabelText("Match") as HTMLSelectElement).value).toBe("overlap");
   });
 
+  it("defaults the prompt lab preset method bundle to audited", async () => {
+    render(
+      <PromptLabRunForm
+        documents={documents}
+        folders={[]}
+        selectedDocumentId="doc-1"
+        methods={[]}
+        onRun={vi.fn()}
+        running={false}
+        concurrencyMax={12}
+      />,
+    );
+
+    await waitFor(() => {
+      expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
+    });
+
+    expect((screen.getByLabelText("Preset Bundle") as HTMLSelectElement).value).toBe("audited");
+  });
+
   it("submits selected folder ids separately from explicit doc ids", async () => {
     const onRun = vi.fn().mockResolvedValue(undefined);
 
@@ -123,5 +147,75 @@ describe("PromptLabRunForm", () => {
       );
     });
     expect(scoped.getByText(/Requests:/).textContent).toContain("3");
+  });
+
+  it("submits the selected prompt lab preset method bundle", async () => {
+    const onRun = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <PromptLabRunForm
+        documents={documents}
+        folders={[]}
+        selectedDocumentId="doc-1"
+        methods={[]}
+        onRun={onRun}
+        running={false}
+        concurrencyMax={12}
+      />,
+    );
+
+    await waitFor(() => {
+      expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
+    });
+
+    fireEvent.change(screen.getByLabelText("Preset Bundle"), {
+      target: { value: "legacy" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run Prompt Lab" }));
+
+    await waitFor(() => {
+      expect(onRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtime: expect.objectContaining({
+            method_bundle: "legacy",
+          }),
+        }),
+      );
+    });
+  });
+
+  it("submits the test prompt lab preset method bundle", async () => {
+    const onRun = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <PromptLabRunForm
+        documents={documents}
+        folders={[]}
+        selectedDocumentId="doc-1"
+        methods={[]}
+        onRun={onRun}
+        running={false}
+        concurrencyMax={12}
+      />,
+    );
+
+    await waitFor(() => {
+      expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
+    });
+
+    fireEvent.change(screen.getByLabelText("Preset Bundle"), {
+      target: { value: "test" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run Prompt Lab" }));
+
+    await waitFor(() => {
+      expect(onRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtime: expect.objectContaining({
+            method_bundle: "test",
+          }),
+        }),
+      );
+    });
   });
 });

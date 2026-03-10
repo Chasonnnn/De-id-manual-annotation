@@ -41,8 +41,10 @@ from agent import (
     METHOD_DEFINITION_BY_ID,
     MODEL_PRESETS,
     SYSTEM_PROMPT,
+    _normalize_method_bundle,
     _drop_implausible_name_spans,
     build_extraction_system_prompt,
+    get_method_definition_by_id,
     list_agent_methods,
     merge_method_spans,
     normalize_method_spans,
@@ -1148,8 +1150,6 @@ def _clear_prompt_lab_cancel_event(run_id: str, session_id: str = "default"):
 
 
 def _load_prompt_lab_index(session_id: str = "default") -> list[str]:
-    if session_id in _prompt_lab_runs:
-        return _prompt_lab_runs[session_id]
     index_path = _prompt_lab_index_path(session_id)
     if index_path.exists():
         ids = json.loads(index_path.read_text())
@@ -1238,8 +1238,6 @@ def _clear_methods_lab_cancel_event(run_id: str, session_id: str = "default"):
 
 
 def _load_methods_lab_index(session_id: str = "default") -> list[str]:
-    if session_id in _methods_lab_runs:
-        return _methods_lab_runs[session_id]
     index_path = _methods_lab_index_path(session_id)
     if index_path.exists():
         ids = json.loads(index_path.read_text())
@@ -2634,6 +2632,7 @@ def _build_llm_prompt_snapshot(
     requested_system_prompt: str,
     *,
     label_profile: Literal["simple", "advanced"],
+    method_bundle: str = "audited",
 ) -> dict[str, Any]:
     requested = str(requested_system_prompt or "")
     return {
@@ -2642,6 +2641,7 @@ def _build_llm_prompt_snapshot(
         "effective_system_prompt": build_extraction_system_prompt(
             requested,
             label_profile=label_profile,
+            method_bundle=_normalize_method_bundle(method_bundle),
         ),
     }
 
@@ -2652,8 +2652,13 @@ def _build_method_prompt_snapshot(
     additional_constraints: str,
     method_verify: bool | None,
     label_profile: Literal["simple", "advanced"],
+    method_bundle: str = "audited",
 ) -> dict[str, Any]:
-    method_definition = METHOD_DEFINITION_BY_ID.get(method_id)
+    normalized_method_bundle = _normalize_method_bundle(method_bundle)
+    method_definition = get_method_definition_by_id(
+        method_id,
+        method_bundle=normalized_method_bundle,
+    )
     if method_definition is None:
         return {
             "method_id": method_id,
@@ -2687,6 +2692,7 @@ def _build_method_prompt_snapshot(
                 "effective_system_prompt": build_extraction_system_prompt(
                     resolved_prompt,
                     label_profile=label_profile,
+                    method_bundle=normalized_method_bundle,
                 ),
             }
         )
@@ -2835,6 +2841,7 @@ def _run_llm_for_document(
     chunk_size_chars: int,
     enable_suspicious_empty_retry: bool = True,
     progress_callback: Callable[[int, int], None] | None = None,
+    method_bundle: str = "audited",
 ) -> tuple[
     list[CanonicalSpan],
     list[str],
@@ -2857,6 +2864,7 @@ def _run_llm_for_document(
             anthropic_thinking=anthropic_thinking,
             anthropic_thinking_budget_tokens=anthropic_thinking_budget_tokens,  # type: ignore[arg-type]
             label_profile=label_profile,
+            method_bundle=_normalize_method_bundle(method_bundle),
         )
         spans = _normalize_and_validate_spans(
             normalize_method_spans(llm_result.spans, label_profile=label_profile),
@@ -2903,6 +2911,7 @@ def _run_llm_for_document(
             anthropic_thinking=anthropic_thinking,
             anthropic_thinking_budget_tokens=anthropic_thinking_budget_tokens,  # type: ignore[arg-type]
             label_profile=label_profile,
+            method_bundle=_normalize_method_bundle(method_bundle),
         )
         shifted = _shift_spans(
             normalize_method_spans(llm_result.spans, label_profile=label_profile),
@@ -3090,6 +3099,7 @@ def _run_method_for_document(
     progress_callback: Callable[[int, int], None] | None = None,
     runtime_progress_callback: Callable[[dict[str, object]], None] | None = None,
     timeout_seconds: float | None = None,
+    method_bundle: str = "audited",
 ) -> tuple[
     list[CanonicalSpan],
     list[str],
@@ -3143,6 +3153,7 @@ def _run_method_for_document(
             method_verify=method_verify,
             label_profile=label_profile,
             timeout_seconds=timeout_seconds,
+            method_bundle=method_bundle,  # type: ignore[arg-type]
             progress_callback=(
                 lambda pass_index, pass_label: _emit_runtime_progress(
                     chunk_index=1,
@@ -3212,6 +3223,7 @@ def _run_method_for_document(
             method_verify=method_verify,
             label_profile=label_profile,
             timeout_seconds=timeout_seconds,
+            method_bundle=method_bundle,  # type: ignore[arg-type]
             progress_callback=(
                 lambda pass_index, pass_label: _emit_runtime_progress(
                     chunk_index=idx + 1,
@@ -3689,6 +3701,7 @@ class PromptLabRuntimeInput(BaseModel):
     fallback_reference_source: Literal["manual", "pre"] = "pre"
     label_profile: Literal["simple", "advanced"] = "simple"
     label_projection: Literal["native", "coarse_simple"] = "native"
+    method_bundle: Literal["legacy", "audited", "test"] = "audited"
     chunk_mode: Literal["auto", "off", "force"] = "off"
     chunk_size_chars: int = DEFAULT_CHUNK_SIZE_CHARS
 
@@ -3719,6 +3732,7 @@ class MethodsLabRuntimeInput(BaseModel):
     fallback_reference_source: Literal["manual", "pre"] = "pre"
     label_profile: Literal["simple", "advanced"] = "simple"
     label_projection: Literal["native", "coarse_simple"] = "native"
+    method_bundle: Literal["legacy", "audited", "test"] = "audited"
     chunk_mode: Literal["auto", "off", "force"] = "off"
     chunk_size_chars: int = DEFAULT_CHUNK_SIZE_CHARS
     task_timeout_seconds: float | None = None
@@ -3782,6 +3796,7 @@ def _resolve_prompt_lab_runtime(runtime: PromptLabRuntimeInput) -> dict[str, obj
     chunk_size_chars = _normalize_chunk_size(runtime.chunk_size_chars)
     label_profile = _normalize_label_profile(runtime.label_profile)
     label_projection = _normalize_label_projection(runtime.label_projection)
+    method_bundle = _normalize_method_bundle(runtime.method_bundle)
     return {
         "api_key": api_key,
         "api_base": api_base,
@@ -3793,6 +3808,7 @@ def _resolve_prompt_lab_runtime(runtime: PromptLabRuntimeInput) -> dict[str, obj
         "chunk_size_chars": chunk_size_chars,
         "label_profile": label_profile,
         "label_projection": label_projection,
+        "method_bundle": method_bundle,
     }
 
 
@@ -3823,6 +3839,7 @@ def _validate_prompt_lab_request(body: PromptLabRunCreateBody, session_id: str =
         if doc_id not in known_ids:
             raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
 
+    method_bundle = _normalize_method_bundle(body.runtime.method_bundle)
     prompt_ids_seen: set[str] = set()
     for index, prompt in enumerate(body.prompts):
         if not prompt.label.strip():
@@ -3864,7 +3881,7 @@ def _validate_prompt_lab_request(body: PromptLabRunCreateBody, session_id: str =
                         f"Allowed presets: {allowed}"
                     ),
                 )
-            if method_id not in METHOD_DEFINITION_BY_ID:
+            if get_method_definition_by_id(method_id, method_bundle=method_bundle) is None:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Unknown preset method: {method_id}",
@@ -3996,6 +4013,7 @@ def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
     fallback_reference_source = runtime["fallback_reference_source"]
     label_profile = str(runtime["label_profile"])
     label_projection = _normalize_label_projection(runtime.get("label_projection", "native"))
+    method_bundle = _normalize_method_bundle(runtime.get("method_bundle", "audited"))
     chunk_mode = str(runtime["chunk_mode"])
     chunk_size_chars = int(runtime["chunk_size_chars"])
 
@@ -4065,6 +4083,7 @@ def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                     label_profile=label_profile,  # type: ignore[arg-type]
                     chunk_mode=chunk_mode,
                     chunk_size_chars=chunk_size_chars,
+                    method_bundle=method_bundle,
                 )
             else:
                 requested_system_prompt = str(prompt.get("system_prompt") or "").strip()
@@ -4092,6 +4111,7 @@ def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                     label_profile=label_profile,  # type: ignore[arg-type]
                     chunk_mode=chunk_mode,
                     chunk_size_chars=chunk_size_chars,
+                    method_bundle=method_bundle,
                 )
 
             resolved_reference_source, reference_spans = _resolve_prompt_lab_reference(
@@ -4213,6 +4233,7 @@ def _resolve_methods_lab_runtime(runtime: MethodsLabRuntimeInput) -> dict[str, o
     chunk_size_chars = _normalize_chunk_size(runtime.chunk_size_chars)
     label_profile = _normalize_label_profile(runtime.label_profile)
     label_projection = _normalize_label_projection(runtime.label_projection)
+    method_bundle = _normalize_method_bundle(runtime.method_bundle)
     task_timeout_seconds = _safe_float(runtime.task_timeout_seconds)
     if task_timeout_seconds is not None and task_timeout_seconds <= 0:
         raise HTTPException(status_code=400, detail="task_timeout_seconds must be greater than 0")
@@ -4225,6 +4246,7 @@ def _resolve_methods_lab_runtime(runtime: MethodsLabRuntimeInput) -> dict[str, o
         "chunk_size_chars": chunk_size_chars,
         "label_profile": label_profile,
         "label_projection": label_projection,
+        "method_bundle": method_bundle,
         "task_timeout_seconds": task_timeout_seconds,
     }
 
@@ -4256,6 +4278,7 @@ def _validate_methods_lab_request(body: MethodsLabRunCreateBody, session_id: str
         if doc_id not in known_ids:
             raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
 
+    method_bundle = _normalize_method_bundle(body.runtime.method_bundle)
     method_ids_seen: set[str] = set()
     for index, method in enumerate(body.methods):
         if not method.label.strip():
@@ -4268,7 +4291,7 @@ def _validate_methods_lab_request(body: MethodsLabRunCreateBody, session_id: str
         method_id = (method.method_id or "").strip()
         if not method_id:
             raise HTTPException(status_code=400, detail=f"method_id required at index {index}")
-        definition = METHOD_DEFINITION_BY_ID.get(method_id)
+        definition = get_method_definition_by_id(method_id, method_bundle=method_bundle)
         if definition is None:
             raise HTTPException(status_code=400, detail=f"Unknown method: {method_id}")
         if (

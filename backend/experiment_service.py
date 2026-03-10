@@ -211,6 +211,7 @@ def resolve_prompt_lab_runtime(runtime: Any) -> dict[str, object]:
     chunk_size_chars = srv._normalize_chunk_size(runtime.chunk_size_chars)
     label_profile = srv._normalize_label_profile(runtime.label_profile)
     label_projection = srv._normalize_label_projection(runtime.label_projection)
+    method_bundle = srv._normalize_method_bundle(getattr(runtime, "method_bundle", "audited"))
     return {
         "api_key": api_key,
         "api_base": api_base,
@@ -222,10 +223,16 @@ def resolve_prompt_lab_runtime(runtime: Any) -> dict[str, object]:
         "chunk_size_chars": chunk_size_chars,
         "label_profile": label_profile,
         "label_projection": label_projection,
+        "method_bundle": method_bundle,
     }
 
 
-def validate_prompt_lab_request(body: Any, session_id: str = "default"):
+def validate_prompt_lab_request(
+    body: Any,
+    session_id: str = "default",
+    *,
+    method_bundle: str = "audited",
+):
     srv = _server()
     cfg = srv._load_config()
     prompt_lab_max_concurrency = srv._get_prompt_lab_max_concurrency(cfg)
@@ -311,7 +318,10 @@ def validate_prompt_lab_request(body: Any, session_id: str = "default"):
                         f"Allowed presets: {allowed}"
                     ),
                 )
-            if method_id not in srv.METHOD_DEFINITION_BY_ID:
+            if srv.get_method_definition_by_id(
+                method_id,
+                method_bundle=method_bundle,  # type: ignore[arg-type]
+            ) is None:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Unknown preset method: {method_id}",
@@ -421,6 +431,7 @@ def initialize_prompt_lab_run(
             "fallback_reference_source": runtime["fallback_reference_source"],
             "label_profile": runtime["label_profile"],
             "label_projection": runtime["label_projection"],
+            "method_bundle": runtime["method_bundle"],
             "api_base": runtime["api_base"],
             "chunk_mode": runtime["chunk_mode"],
             "chunk_size_chars": runtime["chunk_size_chars"],
@@ -768,6 +779,9 @@ def build_prompt_lab_run_summary(run: dict) -> dict:
     run_id = str(run.get("id", ""))
     session_id = str(run.get("session_id", "default") or "default")
     status = str(run.get("status", ""))
+    runtime_raw = run.get("runtime", {})
+    runtime = runtime_raw if isinstance(runtime_raw, dict) else {}
+    method_bundle = srv._normalize_method_bundle(runtime.get("method_bundle", "audited"))
     for cell in cells:
         completed += int(cell.get("completed_docs", 0)) + int(cell.get("failed_docs", 0))
         failed += int(cell.get("failed_docs", 0))
@@ -784,6 +798,7 @@ def build_prompt_lab_run_summary(run: dict) -> dict:
         "total_tasks": total,
         "completed_tasks": completed,
         "failed_tasks": failed,
+        "method_bundle": method_bundle,
         "cancellable": (
             status in {"queued", "running", "cancelling"}
             and srv._get_prompt_lab_cancel_event(run_id, session_id) is not None
@@ -811,6 +826,7 @@ def build_prompt_lab_run_detail(run: dict) -> dict:
             "fallback_reference_source": runtime.get("fallback_reference_source", "pre"),
             "label_profile": runtime.get("label_profile", "simple"),
             "label_projection": runtime.get("label_projection", "native"),
+            "method_bundle": runtime.get("method_bundle", "audited"),
             "api_base": runtime.get("api_base", ""),
             "chunk_mode": runtime.get("chunk_mode", "off"),
             "chunk_size_chars": runtime.get("chunk_size_chars", srv.DEFAULT_CHUNK_SIZE_CHARS),
@@ -870,7 +886,12 @@ def _mark_prompt_lab_run_cancelled(run_id: str, session_id: str):
         srv._save_prompt_lab_run(latest, session_id)
 
 
-def run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]):
+def run_prompt_lab_job(
+    run_id: str,
+    session_id: str,
+    runtime: dict[str, object],
+    method_bundle: str = "audited",
+):
     srv = _server()
     cancel_event = srv._get_prompt_lab_cancel_event(run_id, session_id)
     api_key = str(runtime["api_key"])
@@ -881,11 +902,9 @@ def run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object])
     fallback_reference_source = str(runtime["fallback_reference_source"])
     label_profile = str(runtime["label_profile"])
     label_projection = srv._normalize_label_projection(runtime.get("label_projection", "native"))
+    method_bundle = srv._normalize_method_bundle(runtime.get("method_bundle", "audited"))
     chunk_mode = str(runtime["chunk_mode"])
     chunk_size_chars = int(runtime["chunk_size_chars"])
-    task_timeout_seconds = srv._safe_float(runtime.get("task_timeout_seconds"))
-    task_timeout_seconds = srv._safe_float(runtime.get("task_timeout_seconds"))
-
     with srv._prompt_lab_lock:
         run = srv._load_prompt_lab_run(run_id, session_id)
         if run is None:
@@ -968,6 +987,7 @@ def run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object])
                     label_profile=label_profile,  # type: ignore[arg-type]
                     chunk_mode=chunk_mode,
                     chunk_size_chars=chunk_size_chars,
+                    method_bundle=method_bundle,  # type: ignore[arg-type]
                 )
             else:
                 requested_system_prompt = str(prompt.get("system_prompt") or "").strip()
@@ -995,6 +1015,7 @@ def run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object])
                     label_profile=label_profile,  # type: ignore[arg-type]
                     chunk_mode=chunk_mode,
                     chunk_size_chars=chunk_size_chars,
+                    method_bundle=method_bundle,
                 )
 
             resolved_reference_source, reference_spans = _resolve_prompt_lab_reference(
@@ -1137,8 +1158,9 @@ def create_prompt_lab_run(
 ) -> dict:
     srv = _server()
     prepared = prepare_prompt_lab_body(body, session_id=session_id, context_dir=context_dir)
-    validate_prompt_lab_request(prepared, session_id)
     runtime = resolve_prompt_lab_runtime(prepared.runtime)
+    method_bundle = str(runtime["method_bundle"])
+    validate_prompt_lab_request(prepared, session_id, method_bundle=method_bundle)
     api_key = str(runtime["api_key"])
     api_base = str(runtime["api_base"])
     requires_llm = False
@@ -1146,7 +1168,10 @@ def create_prompt_lab_run(
         if prompt.variant_type == "prompt":
             requires_llm = True
             break
-        preset_method = srv.METHOD_DEFINITION_BY_ID.get(str(prompt.preset_method_id or ""))
+        preset_method = srv.get_method_definition_by_id(
+            str(prompt.preset_method_id or ""),
+            method_bundle=method_bundle,  # type: ignore[arg-type]
+        )
         if preset_method and bool(preset_method.get("uses_llm")):
             requires_llm = True
             break
@@ -1174,13 +1199,13 @@ def create_prompt_lab_run(
     if run_async:
         worker = threading.Thread(
             target=run_prompt_lab_job,
-            args=(str(run["id"]), session_id, runtime),
+            args=(str(run["id"]), session_id, runtime, method_bundle),
             daemon=True,
         )
         worker.start()
         return build_prompt_lab_run_detail(run)
 
-    run_prompt_lab_job(str(run["id"]), session_id, runtime)
+    run_prompt_lab_job(str(run["id"]), session_id, runtime, method_bundle)
     latest = srv._load_prompt_lab_run(str(run["id"]), session_id)
     if latest is None:
         raise RuntimeError("Prompt Lab run disappeared before completion.")
@@ -1208,6 +1233,7 @@ def resolve_methods_lab_runtime(runtime: Any) -> dict[str, object]:
     chunk_size_chars = srv._normalize_chunk_size(runtime.chunk_size_chars)
     label_profile = srv._normalize_label_profile(runtime.label_profile)
     label_projection = srv._normalize_label_projection(runtime.label_projection)
+    method_bundle = srv._normalize_method_bundle(getattr(runtime, "method_bundle", "audited"))
     task_timeout_seconds = srv._safe_float(getattr(runtime, "task_timeout_seconds", None))
     if task_timeout_seconds is not None and task_timeout_seconds <= 0:
         raise HTTPException(status_code=400, detail="task_timeout_seconds must be greater than 0")
@@ -1222,11 +1248,17 @@ def resolve_methods_lab_runtime(runtime: Any) -> dict[str, object]:
         "chunk_size_chars": chunk_size_chars,
         "label_profile": label_profile,
         "label_projection": label_projection,
+        "method_bundle": method_bundle,
         "task_timeout_seconds": task_timeout_seconds,
     }
 
 
-def validate_methods_lab_request(body: Any, session_id: str = "default"):
+def validate_methods_lab_request(
+    body: Any,
+    session_id: str = "default",
+    *,
+    method_bundle: str = "audited",
+):
     srv = _server()
     cfg = srv._load_config()
     methods_lab_max_concurrency = srv._get_methods_lab_max_concurrency(cfg)
@@ -1269,7 +1301,10 @@ def validate_methods_lab_request(body: Any, session_id: str = "default"):
         method_id = (method.method_id or "").strip()
         if not method_id:
             raise HTTPException(status_code=400, detail=f"method_id required at index {index}")
-        definition = srv.METHOD_DEFINITION_BY_ID.get(method_id)
+        definition = srv.get_method_definition_by_id(
+            method_id,
+            method_bundle=method_bundle,  # type: ignore[arg-type]
+        )
         if definition is None:
             raise HTTPException(status_code=400, detail=f"Unknown method: {method_id}")
         if (
@@ -1366,6 +1401,7 @@ def initialize_methods_lab_run(
             "fallback_reference_source": runtime["fallback_reference_source"],
             "label_profile": runtime["label_profile"],
             "label_projection": runtime["label_projection"],
+            "method_bundle": runtime["method_bundle"],
             "api_base": runtime["api_base"],
             "chunk_mode": runtime["chunk_mode"],
             "chunk_size_chars": runtime["chunk_size_chars"],
@@ -1574,6 +1610,9 @@ def build_methods_lab_run_summary(run: dict) -> dict:
     run_id = str(run.get("id", ""))
     session_id = str(run.get("session_id", "default") or "default")
     status = str(run.get("status", ""))
+    runtime_raw = run.get("runtime", {})
+    runtime = runtime_raw if isinstance(runtime_raw, dict) else {}
+    method_bundle = srv._normalize_method_bundle(runtime.get("method_bundle", "audited"))
     for cell in cells:
         completed += int(cell.get("completed_docs", 0)) + int(cell.get("failed_docs", 0))
         failed += int(cell.get("failed_docs", 0))
@@ -1590,6 +1629,7 @@ def build_methods_lab_run_summary(run: dict) -> dict:
         "total_tasks": total,
         "completed_tasks": completed,
         "failed_tasks": failed,
+        "method_bundle": method_bundle,
         "cancellable": (
             status in {"queued", "running", "cancelling"}
             and srv._get_methods_lab_cancel_event(run_id, session_id) is not None
@@ -1617,6 +1657,7 @@ def build_methods_lab_run_detail(run: dict) -> dict:
             "fallback_reference_source": runtime.get("fallback_reference_source", "pre"),
             "label_profile": runtime.get("label_profile", "simple"),
             "label_projection": runtime.get("label_projection", "native"),
+            "method_bundle": runtime.get("method_bundle", "audited"),
             "api_base": runtime.get("api_base", ""),
             "chunk_mode": runtime.get("chunk_mode", "off"),
             "chunk_size_chars": runtime.get("chunk_size_chars", srv.DEFAULT_CHUNK_SIZE_CHARS),
@@ -1691,7 +1732,12 @@ def _persist_methods_lab_document_runtime(
         srv._save_methods_lab_run(latest, session_id)
 
 
-def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]):
+def run_methods_lab_job(
+    run_id: str,
+    session_id: str,
+    runtime: dict[str, object],
+    method_bundle: str = "audited",
+):
     srv = _server()
     cancel_event = srv._get_methods_lab_cancel_event(run_id, session_id)
     api_key = str(runtime["api_key"])
@@ -1734,7 +1780,10 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
         if not isinstance(method, dict):
             continue
         method_variant_id = str(method.get("id", ""))
-        method_definition = srv.METHOD_DEFINITION_BY_ID.get(str(method.get("method_id", "")))
+        method_definition = srv.get_method_definition_by_id(
+            str(method.get("method_id", "")),
+            method_bundle=method_bundle,  # type: ignore[arg-type]
+        )
         if method_definition is None:
             continue
         if bool(method_definition.get("uses_llm")):
@@ -1769,7 +1818,10 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                 },
             )
 
-        definition = srv.METHOD_DEFINITION_BY_ID.get(str(method_variant.get("method_id", "")))
+        definition = srv.get_method_definition_by_id(
+            str(method_variant.get("method_id", "")),
+            method_bundle=method_bundle,  # type: ignore[arg-type]
+        )
         if definition is None:
             return (
                 method_variant_id,
@@ -1886,9 +1938,10 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                     label_profile=label_profile,  # type: ignore[arg-type]
                     chunk_mode=chunk_mode,
                     chunk_size_chars=chunk_size_chars,
-                    runtime_progress_callback=_record_runtime_progress,
-                    timeout_seconds=task_timeout_seconds,
-                )
+                runtime_progress_callback=_record_runtime_progress,
+                timeout_seconds=task_timeout_seconds,
+                method_bundle=method_bundle,
+            )
 
             if task_timeout_seconds is None:
                 (
@@ -2112,15 +2165,30 @@ def create_methods_lab_run(
     *,
     session_id: str = "default",
     run_async: bool = False,
+    method_bundle: str | None = None,
 ) -> dict:
     srv = _server()
     prepared = prepare_methods_lab_body(body, session_id=session_id)
-    validate_methods_lab_request(prepared, session_id)
     runtime = resolve_methods_lab_runtime(prepared.runtime)
+    selected_method_bundle = (
+        srv._normalize_method_bundle(method_bundle)
+        if method_bundle is not None
+        else str(runtime["method_bundle"])
+    )
+    runtime["method_bundle"] = selected_method_bundle
+    validate_methods_lab_request(prepared, session_id, method_bundle=selected_method_bundle)
     api_key = str(runtime["api_key"])
     api_base = str(runtime["api_base"])
     requires_llm = any(
-        bool(srv.METHOD_DEFINITION_BY_ID.get(str(method.method_id), {}).get("uses_llm"))
+        bool(
+            (
+                srv.get_method_definition_by_id(
+                    str(method.method_id),
+                    method_bundle=selected_method_bundle,  # type: ignore[arg-type]
+                )
+                or {}
+            ).get("uses_llm")
+        )
         for method in prepared.methods
     )
 
@@ -2147,13 +2215,13 @@ def create_methods_lab_run(
     if run_async:
         worker = threading.Thread(
             target=run_methods_lab_job,
-            args=(str(run["id"]), session_id, runtime),
+            args=(str(run["id"]), session_id, runtime, selected_method_bundle),
             daemon=True,
         )
         worker.start()
         return build_methods_lab_run_detail(run)
 
-    run_methods_lab_job(str(run["id"]), session_id, runtime)
+    run_methods_lab_job(str(run["id"]), session_id, runtime, selected_method_bundle)
     latest = srv._load_methods_lab_run(str(run["id"]), session_id)
     if latest is None:
         raise RuntimeError("Methods Lab run disappeared before completion.")

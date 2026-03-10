@@ -99,6 +99,26 @@ describe("MethodsLabRunForm", () => {
     expect((screen.getByLabelText("Match") as HTMLSelectElement).value).toBe("overlap");
   });
 
+  it("defaults the methods lab method bundle to audited", async () => {
+    render(
+      <MethodsLabRunForm
+        documents={documents}
+        folders={[]}
+        selectedDocumentId="doc-1"
+        methods={[]}
+        onRun={vi.fn()}
+        running={false}
+        concurrencyMax={12}
+      />,
+    );
+
+    await waitFor(() => {
+      expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
+    });
+
+    expect((screen.getByLabelText("Method Bundle") as HTMLSelectElement).value).toBe("audited");
+  });
+
   it("submits selected folder ids separately from explicit doc ids", async () => {
     const onRun = vi.fn().mockResolvedValue(undefined);
 
@@ -194,6 +214,76 @@ describe("MethodsLabRunForm", () => {
           runtime: expect.objectContaining({
             reference_source: "pre",
             fallback_reference_source: "pre",
+          }),
+        }),
+      );
+    });
+  });
+
+  it("submits the selected methods lab method bundle", async () => {
+    const onRun = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <MethodsLabRunForm
+        documents={documents}
+        folders={[]}
+        selectedDocumentId="doc-1"
+        methods={[]}
+        onRun={onRun}
+        running={false}
+        concurrencyMax={12}
+      />,
+    );
+
+    await waitFor(() => {
+      expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
+    });
+
+    fireEvent.change(screen.getByLabelText("Method Bundle"), {
+      target: { value: "legacy" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run Methods Lab" }));
+
+    await waitFor(() => {
+      expect(onRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtime: expect.objectContaining({
+            method_bundle: "legacy",
+          }),
+        }),
+      );
+    });
+  });
+
+  it("submits the test methods lab method bundle", async () => {
+    const onRun = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <MethodsLabRunForm
+        documents={documents}
+        folders={[]}
+        selectedDocumentId="doc-1"
+        methods={[]}
+        onRun={onRun}
+        running={false}
+        concurrencyMax={12}
+      />,
+    );
+
+    await waitFor(() => {
+      expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
+    });
+
+    fireEvent.change(screen.getByLabelText("Method Bundle"), {
+      target: { value: "test" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run Methods Lab" }));
+
+    await waitFor(() => {
+      expect(onRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtime: expect.objectContaining({
+            method_bundle: "test",
           }),
         }),
       );

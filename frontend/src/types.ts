@@ -1,6 +1,7 @@
 export type PIILabel = string;
 export type LabelProfile = "simple" | "advanced";
 export type LabelProjection = "native" | "coarse_simple";
+export type MethodBundle = "legacy" | "audited" | "test";
 export type ImportConflictPolicy = "replace" | "add_new" | "keep_current";
 
 export const PII_LABELS: PIILabel[] = [
@@ -474,6 +475,7 @@ export interface PromptLabRuntimeInput {
   fallback_reference_source: "manual" | "pre";
   label_profile?: LabelProfile;
   label_projection?: LabelProjection;
+  method_bundle?: MethodBundle;
   chunk_mode?: "auto" | "off" | "force";
   chunk_size_chars?: number;
 }
@@ -504,6 +506,7 @@ export interface MethodsLabRuntimeInput {
   fallback_reference_source?: "manual" | "pre";
   label_profile?: LabelProfile;
   label_projection?: LabelProjection;
+  method_bundle?: MethodBundle;
   chunk_mode?: "auto" | "off" | "force";
   chunk_size_chars?: number;
   task_timeout_seconds?: number | null;
@@ -578,6 +581,7 @@ export interface PromptLabRunSummary {
   id: string;
   name: string;
   status: PromptLabRunStatus;
+  method_bundle: MethodBundle;
   cancellable: boolean;
   created_at: string;
   started_at: string | null;
@@ -686,6 +690,7 @@ export interface MethodsLabRunSummary {
   id: string;
   name: string;
   status: PromptLabRunStatus;
+  method_bundle: MethodBundle;
   cancellable: boolean;
   created_at: string;
   started_at: string | null;

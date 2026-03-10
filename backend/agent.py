@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from functools import lru_cache
 import importlib.util
@@ -7,6 +8,7 @@ import json
 import math
 import re
 import threading
+import time
 from typing import Any, Callable, Literal
 
 from litellm import completion
@@ -240,9 +242,17 @@ Output data following the provided JSON schema.
 
 
 ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh"]
+MethodBundleId = Literal["legacy", "audited", "test"]
 
 CONFIDENCE_HIGH_THRESHOLD = 0.9
 CONFIDENCE_MEDIUM_THRESHOLD = 0.75
+DEFAULT_METHOD_BUNDLE: MethodBundleId = "audited"
+DEFAULT_LLM_EXTRACTION_TIMEOUT_SECONDS = 60.0
+DEFAULT_LLM_VERIFIER_TIMEOUT_SECONDS = 30.0
+DEFAULT_LLM_REPAIR_TIMEOUT_SECONDS = 30.0
+DEFAULT_LLM_EXTRACTION_MAX_TOKENS = 4096
+DEFAULT_LLM_VERIFIER_MAX_TOKENS = 1024
+DEFAULT_LLM_REPAIR_MAX_TOKENS = 1024
 
 
 MODEL_PRESETS: list[dict[str, Any]] = [
@@ -402,16 +412,24 @@ def _labels_for_profile(
 def build_extraction_system_prompt(
     base_prompt: str,
     label_profile: Literal["simple", "advanced"] = "simple",
+    method_bundle: MethodBundleId = DEFAULT_METHOD_BUNDLE,
 ) -> str:
     prompt = str(base_prompt or "").strip() or SYSTEM_PROMPT.strip()
     allowed_labels = ", ".join(_labels_for_profile(label_profile))
-    return (
+    bundle = _normalize_method_bundle(method_bundle)
+    formatted_prompt = (
         f"{prompt}\n\n"
         f"{FORMAT_GUARDRAIL}\n"
         f'- Allowed labels for this run: {allowed_labels}.\n'
         '- The "label" field must be one of the allowed labels above.\n'
         '- The "text" field must exactly match transcript[start:end].\n'
     )
+    if bundle == "test":
+        formatted_prompt = (
+            f"{formatted_prompt}"
+            f"{_build_test_bundle_prompt_contract(label_profile)}\n"
+        )
+    return formatted_prompt
 
 ADVANCED_TOOL_LABEL_MAP: dict[str, str] = {
     "AGE": "AGE",
@@ -669,6 +687,725 @@ METHOD_DEFINITIONS: list[dict[str, Any]] = [
 
 METHOD_DEFINITION_BY_ID: dict[str, dict[str, Any]] = {
     method["id"]: method for method in METHOD_DEFINITIONS
+}
+
+LEGACY_METHOD_DEFINITIONS: list[dict[str, Any]] = copy.deepcopy(METHOD_DEFINITIONS)
+LEGACY_METHOD_DEFINITION_BY_ID: dict[str, dict[str, Any]] = {
+    method["id"]: method for method in LEGACY_METHOD_DEFINITIONS
+}
+
+_SIMPLE_PROMPT_LABEL_DESCRIPTIONS: dict[str, str] = {
+    "AGE": "ages over 89 or ages that directly identify an individual [AGE]",
+    "DATE": "dates directly tied to an individual, excluding standalone years [DATE]",
+    "EMAIL": "email addresses [EMAIL]",
+    "LOCATION": (
+        "geographic locations smaller than a state such as street addresses, cities, and "
+        "neighborhood names [LOCATION]"
+    ),
+    "MISC_ID": (
+        "other identifying numbers or codes such as student IDs, account numbers, SSNs, "
+        "device identifiers, license numbers, passport numbers, biometric identifiers, or "
+        "IP addresses [MISC_ID]"
+    ),
+    "NAME": "personal names, nicknames, and pseudonyms used for specific individuals [NAME]",
+    "PHONE": "phone or fax numbers [PHONE]",
+    "SCHOOL": "school names that identify a person or reveal location [SCHOOL]",
+    "URL": "URLs or web domains tied to a person or account [URL]",
+}
+
+_ADVANCED_PROMPT_LABEL_DESCRIPTIONS: dict[str, str] = {
+    "AGE": "ages over 89 or ages that directly identify an individual [AGE]",
+    "COURSE": "course names or codes that identify a student's enrollment context [COURSE]",
+    "DATE": "dates directly tied to an individual, excluding standalone years [DATE]",
+    "EMAIL_ADDRESS": "email addresses [EMAIL_ADDRESS]",
+    "GRADE_LEVEL": "grade levels tied to a specific student [GRADE_LEVEL]",
+    "IP_ADDRESS": "IP addresses [IP_ADDRESS]",
+    "LOCATION": (
+        "geographic locations smaller than a state such as street addresses, cities, and "
+        "neighborhood names [LOCATION]"
+    ),
+    "NRP": (
+        "nationality, religious, or political-group references when they are stated as a "
+        "personal attribute of an individual [NRP]"
+    ),
+    "PERSON": "personal names, nicknames, and pseudonyms used for specific individuals [PERSON]",
+    "PHONE_NUMBER": "phone or fax numbers [PHONE_NUMBER]",
+    "SCHOOL": "school names that identify a person or reveal location [SCHOOL]",
+    "SOCIAL_HANDLE": "social media handles or usernames [SOCIAL_HANDLE]",
+    "URL": "URLs or web domains tied to a person or account [URL]",
+    "US_BANK_NUMBER": "bank account or routing numbers [US_BANK_NUMBER]",
+    "US_DRIVER_LICENSE": "US driver license numbers [US_DRIVER_LICENSE]",
+    "US_PASSPORT": "US passport numbers [US_PASSPORT]",
+    "US_SSN": "US Social Security numbers [US_SSN]",
+}
+
+_METHOD_FALSE_POSITIVE_GUIDANCE = """\
+DO NOT mark any of the following as PII:
+- Historical figures, scientists, mathematicians, or other public figures
+- Fictional characters, brands, products, course titles, project titles, or textbook references
+- Mathematical expressions, equations, formulas, variables, problem numbers, or section references
+- Dates not tied to a specific individual, such as deadlines, schedules, semesters, or publication dates
+- Scores, grades, percentages, and numbers used only in an educational or math context
+- Countries, states, or regions used only as general context rather than a personal location
+- Method or theorem names containing a person's name
+"""
+
+
+def _ordered_difference(values: list[str], excluded: set[str]) -> list[str]:
+    return [value for value in values if value not in excluded]
+
+
+def _label_descriptions_for_profile(
+    label_profile: Literal["simple", "advanced"],
+) -> dict[str, str]:
+    return (
+        _ADVANCED_PROMPT_LABEL_DESCRIPTIONS
+        if label_profile == "advanced"
+        else _SIMPLE_PROMPT_LABEL_DESCRIPTIONS
+    )
+
+
+def _render_prompt_category_catalog(
+    labels: list[str],
+    *,
+    label_profile: Literal["simple", "advanced"],
+) -> str:
+    descriptions = _label_descriptions_for_profile(label_profile)
+    parts = [descriptions[label] for label in labels if label in descriptions]
+    return "; ".join(parts)
+
+
+def _build_test_bundle_prompt_contract(
+    label_profile: Literal["simple", "advanced"],
+) -> str:
+    labels = _labels_for_profile(label_profile)
+    example_label = "PERSON" if label_profile == "advanced" else "NAME"
+    category_catalog = _render_prompt_category_catalog(labels, label_profile=label_profile)
+    example_payload = json.dumps(
+        {
+            "spans": [
+                {
+                    "start": 12,
+                    "end": 20,
+                    "label": example_label,
+                    "text": "John Doe",
+                }
+            ]
+        },
+        separators=(",", ":"),
+    )
+    empty_payload = json.dumps({"spans": []}, separators=(",", ":"))
+    return (
+        "TEST BUNDLE EXTRACTION CONTRACT:\n"
+        f"- Use only these exact label strings: {', '.join(labels)}.\n"
+        f"- Expected categories for this run: {category_catalog}.\n"
+        "- If the text uses a legacy taxonomy name, map it to the closest allowed label above.\n"
+        "- Do not invent new label names or add extra JSON keys.\n"
+        f"- Example valid JSON response: {example_payload}\n"
+        f"- Example empty JSON response: {empty_payload}"
+    )
+
+
+def _build_profile_default_prompt(
+    label_profile: Literal["simple", "advanced"],
+) -> str:
+    categories = _render_prompt_category_catalog(
+        _labels_for_profile(label_profile),
+        label_profile=label_profile,
+    )
+    return (
+        "You are a PII/PHI analyst. Identify all explicit personally identifiable "
+        "information in the text. Extract explicit identifiers only; do not infer missing data. "
+        f"Categories to detect: {categories}. "
+        "Matches should be minimal exact spans of the sensitive value; include partial "
+        "identifiers or identifiers embedded in filenames, URLs, or notes when they are "
+        "explicit in the text. "
+        "Output data following the provided JSON schema."
+    )
+
+
+def _build_profile_extended_prompt(
+    label_profile: Literal["simple", "advanced"],
+) -> str:
+    categories = _render_prompt_category_catalog(
+        _labels_for_profile(label_profile),
+        label_profile=label_profile,
+    )
+    return (
+        "You are a PII/PHI analyst reviewing tutoring chat transcripts. Identify explicit "
+        "personally identifiable information per HIPAA Safe Harbor guidance where applicable. "
+        f"Categories to detect: {categories}. "
+        f"{_METHOD_FALSE_POSITIVE_GUIDANCE} "
+        "Matches should be minimal exact spans of the sensitive value. "
+        "Output data following the provided JSON schema."
+    )
+
+
+def _build_profile_names_prompt(
+    label_profile: Literal["simple", "advanced"],
+) -> str:
+    target_label = "PERSON" if label_profile == "advanced" else "NAME"
+    return (
+        "You are a PII analyst specializing in personal names in tutoring chat transcripts. "
+        f"Identify all personal names and label each one [{target_label}]. "
+        "This includes first names, last names, nicknames, and pseudonyms used to refer to "
+        "specific individuals in the conversation. "
+        "DO NOT mark historical figures, scientists, mathematicians, public figures, book "
+        "authors, fictional characters, or method/theorem names. "
+        "DO NOT mark email addresses, URLs, usernames, or numeric identifiers. "
+        "Matches should be minimal exact spans of just the name. "
+        "Output data following the provided JSON schema."
+    )
+
+
+def _build_profile_remaining_prompt(
+    labels: list[str],
+    *,
+    label_profile: Literal["simple", "advanced"],
+    role: str,
+    exclusions: list[str],
+) -> str:
+    categories = _render_prompt_category_catalog(labels, label_profile=label_profile)
+    exclusion_lines = "\n".join(f"- {line}" for line in exclusions)
+    return (
+        f"You are a PII analyst specializing in {role}. "
+        "The text may contain tutoring dialogue, equations, and educational content mixed with "
+        "personal information. Identify anything in the following categories that could "
+        f"reasonably identify an individual: {categories}. "
+        "DO NOT mark any of the following:\n"
+        f"{exclusion_lines}\n"
+        "Matches should be minimal exact spans. "
+        "Output data following the provided JSON schema."
+    )
+
+
+def _copy_profile_mapping(
+    values: dict[str, list[str] | None],
+) -> dict[str, list[str] | None]:
+    return {
+        str(profile): (None if items is None else list(items))
+        for profile, items in values.items()
+    }
+
+
+def _build_profile_aware_llm_pass(
+    *,
+    prompt_by_profile: dict[str, str],
+    entity_types_by_profile: dict[str, list[str] | None],
+    requested_labels_by_profile: dict[str, list[str]],
+    pass_label: str,
+) -> dict[str, Any]:
+    simple_prompt = prompt_by_profile.get("simple") or next(iter(prompt_by_profile.values()))
+    simple_entity_types = entity_types_by_profile.get("simple")
+    return {
+        "kind": "llm",
+        "prompt": simple_prompt,
+        "prompt_by_profile": dict(prompt_by_profile),
+        "entity_types": None if simple_entity_types is None else list(simple_entity_types),
+        "entity_types_by_profile": _copy_profile_mapping(entity_types_by_profile),
+        "requested_labels_by_profile": {
+            str(profile): list(labels) for profile, labels in requested_labels_by_profile.items()
+        },
+        "pass_label": pass_label,
+    }
+
+
+def _build_profile_aware_presidio_pass(
+    *,
+    presidio_entities_by_profile: dict[str, list[str]],
+    entity_types_by_profile: dict[str, list[str]],
+    pass_label: str,
+) -> dict[str, Any]:
+    simple_entities = presidio_entities_by_profile.get("simple", [])
+    simple_entity_types = entity_types_by_profile.get("simple", [])
+    return {
+        "kind": "presidio",
+        "entity_types": list(simple_entity_types),
+        "entity_types_by_profile": _copy_profile_mapping(entity_types_by_profile),
+        "presidio_entities": list(simple_entities),
+        "presidio_entities_by_profile": {
+            str(profile): list(values) for profile, values in presidio_entities_by_profile.items()
+        },
+        "requested_labels_by_profile": {
+            str(profile): list(values) for profile, values in entity_types_by_profile.items()
+        },
+        "pass_label": pass_label,
+    }
+
+
+_AUDITED_DEFAULT_PROMPTS = {
+    "simple": _build_profile_default_prompt("simple"),
+    "advanced": _build_profile_default_prompt("advanced"),
+}
+_AUDITED_EXTENDED_PROMPTS = {
+    "simple": _build_profile_extended_prompt("simple"),
+    "advanced": _build_profile_extended_prompt("advanced"),
+}
+_AUDITED_NAMES_PROMPTS = {
+    "simple": _build_profile_names_prompt("simple"),
+    "advanced": _build_profile_names_prompt("advanced"),
+}
+_DUAL_SIMPLE_REMAINING_LABELS = _ordered_difference(SIMPLE_LABELS, {"NAME"})
+_DUAL_ADVANCED_REMAINING_LABELS = _ordered_difference(ADVANCED_LABELS, {"PERSON"})
+_DUAL_SPLIT_SIMPLE_PASS_ONE = ["NAME", "LOCATION", "SCHOOL"]
+_DUAL_SPLIT_ADVANCED_PASS_ONE = ["PERSON", "LOCATION", "SCHOOL"]
+_DUAL_SPLIT_SIMPLE_PASS_TWO = _ordered_difference(
+    SIMPLE_LABELS,
+    set(_DUAL_SPLIT_SIMPLE_PASS_ONE),
+)
+_DUAL_SPLIT_ADVANCED_PASS_TWO = _ordered_difference(
+    ADVANCED_LABELS,
+    set(_DUAL_SPLIT_ADVANCED_PASS_ONE),
+)
+_PRESIDIO_DEFAULT_SIMPLE_OUTPUT = ["EMAIL", "PHONE", "URL", "MISC_ID"]
+_PRESIDIO_DEFAULT_ADVANCED_OUTPUT = [
+    "EMAIL_ADDRESS",
+    "PHONE_NUMBER",
+    "URL",
+    "IP_ADDRESS",
+    "US_SSN",
+    "US_BANK_NUMBER",
+]
+_PRESIDIO_DEFAULT_SIMPLE_RESIDUAL = [
+    "NAME",
+    "LOCATION",
+    "SCHOOL",
+    "DATE",
+    "AGE",
+    "MISC_ID",
+]
+_PRESIDIO_DEFAULT_ADVANCED_RESIDUAL = _ordered_difference(
+    ADVANCED_LABELS,
+    set(_PRESIDIO_DEFAULT_ADVANCED_OUTPUT),
+)
+_PRESIDIO_SPLIT_SIMPLE_OUTPUT = ["EMAIL", "PHONE", "URL", "MISC_ID"]
+_PRESIDIO_SPLIT_ADVANCED_OUTPUT = [
+    "EMAIL_ADDRESS",
+    "PHONE_NUMBER",
+    "URL",
+    "IP_ADDRESS",
+]
+_PRESIDIO_SPLIT_SIMPLE_RESIDUAL = [
+    "NAME",
+    "LOCATION",
+    "SCHOOL",
+    "DATE",
+    "AGE",
+    "MISC_ID",
+]
+_PRESIDIO_SPLIT_ADVANCED_RESIDUAL = _ordered_difference(
+    ADVANCED_LABELS,
+    set(_PRESIDIO_SPLIT_ADVANCED_OUTPUT),
+)
+
+_AUDITED_DUAL_REMAINING_PROMPTS = {
+    "simple": _build_profile_remaining_prompt(
+        _DUAL_SIMPLE_REMAINING_LABELS,
+        label_profile="simple",
+        role="non-name identifiers and contact details",
+        exclusions=[
+            "Personal names, nicknames, or pseudonyms",
+            "Mathematical expressions, equations, formulas, variables, or problem numbers",
+            "Course section references, calculator model names, and textbook references",
+        ],
+    ),
+    "advanced": _build_profile_remaining_prompt(
+        _DUAL_ADVANCED_REMAINING_LABELS,
+        label_profile="advanced",
+        role="non-name identifiers and contact details",
+        exclusions=[
+            "Personal names, nicknames, or pseudonyms",
+            "Mathematical expressions, equations, formulas, variables, or problem numbers",
+            "Course section references, calculator model names, and textbook references",
+        ],
+    ),
+}
+_AUDITED_DUAL_SPLIT_PASS_ONE_PROMPTS = {
+    "simple": _build_profile_remaining_prompt(
+        _DUAL_SPLIT_SIMPLE_PASS_ONE,
+        label_profile="simple",
+        role="personal names and location signals",
+        exclusions=[
+            "Historical figures, scientists, mathematicians, or public figures",
+            "Fictional characters, brands, products, or method/theorem names",
+            "Countries, states, or regions used only as general context",
+            "Email addresses, phone numbers, URLs, or numeric identifiers",
+        ],
+    ),
+    "advanced": _build_profile_remaining_prompt(
+        _DUAL_SPLIT_ADVANCED_PASS_ONE,
+        label_profile="advanced",
+        role="personal names and location signals",
+        exclusions=[
+            "Historical figures, scientists, mathematicians, or public figures",
+            "Fictional characters, brands, products, or method/theorem names",
+            "Countries, states, or regions used only as general context",
+            "Email addresses, phone numbers, URLs, or numeric identifiers",
+        ],
+    ),
+}
+_AUDITED_DUAL_SPLIT_PASS_TWO_PROMPTS = {
+    "simple": _build_profile_remaining_prompt(
+        _DUAL_SPLIT_SIMPLE_PASS_TWO,
+        label_profile="simple",
+        role="dates, contact details, and identifying numbers",
+        exclusions=[
+            "Personal names, school names, cities, or neighborhood names",
+            "Mathematical expressions, equations, formulas, variables, or problem numbers",
+            "Course section references, calculator model names, and textbook references",
+        ],
+    ),
+    "advanced": _build_profile_remaining_prompt(
+        _DUAL_SPLIT_ADVANCED_PASS_TWO,
+        label_profile="advanced",
+        role="dates, contact details, and identifying numbers",
+        exclusions=[
+            "Personal names, school names, cities, or neighborhood names",
+            "Mathematical expressions, equations, formulas, variables, or problem numbers",
+            "Course section references, calculator model names, and textbook references",
+        ],
+    ),
+}
+_AUDITED_PRESIDIO_DEFAULT_PROMPTS = {
+    "simple": _build_profile_remaining_prompt(
+        _PRESIDIO_DEFAULT_SIMPLE_RESIDUAL,
+        label_profile="simple",
+        role="the remaining PII not already covered by deterministic identifier detectors",
+        exclusions=[
+            "Email addresses, phone numbers, URLs, IP addresses, SSNs, or bank numbers already covered elsewhere",
+            "Mathematical expressions, equations, formulas, variables, or problem numbers",
+            "Course section references or textbook references",
+        ],
+    ),
+    "advanced": _build_profile_remaining_prompt(
+        _PRESIDIO_DEFAULT_ADVANCED_RESIDUAL,
+        label_profile="advanced",
+        role="the remaining PII not already covered by deterministic identifier detectors",
+        exclusions=[
+            "Email addresses, phone numbers, URLs, IP addresses, US SSNs, or bank numbers already covered elsewhere",
+            "Mathematical expressions, equations, formulas, variables, or problem numbers",
+            "Course section references or textbook references",
+        ],
+    ),
+}
+_AUDITED_SPLIT_LLM_PROMPTS = {
+    "simple": _build_profile_remaining_prompt(
+        _PRESIDIO_SPLIT_SIMPLE_RESIDUAL,
+        label_profile="simple",
+        role="remaining PII after contact identifiers are removed",
+        exclusions=[
+            "Email addresses, phone numbers, URLs, or IP addresses already covered elsewhere",
+            "Mathematical expressions, equations, formulas, variables, or problem numbers",
+            "Course section references or textbook references",
+        ],
+    ),
+    "advanced": _build_profile_remaining_prompt(
+        _PRESIDIO_SPLIT_ADVANCED_RESIDUAL,
+        label_profile="advanced",
+        role="remaining PII after contact identifiers are removed",
+        exclusions=[
+            "Email addresses, phone numbers, URLs, or IP addresses already covered elsewhere",
+            "Mathematical expressions, equations, formulas, variables, or problem numbers",
+            "Course section references or textbook references",
+        ],
+    ),
+}
+
+AUDITED_METHOD_DEFINITIONS: list[dict[str, Any]] = [
+    {
+        "id": "default",
+        "label": "Default",
+        "description": "Single-pass LLM baseline.",
+        "requires_presidio": False,
+        "uses_llm": True,
+        "supports_verify_override": True,
+        "default_verify": False,
+        "supported_label_profiles": ["advanced", "simple"],
+        "known_limitations": [],
+        "passes": [
+            _build_profile_aware_llm_pass(
+                prompt_by_profile=_AUDITED_DEFAULT_PROMPTS,
+                entity_types_by_profile={
+                    "simple": list(SIMPLE_LABELS),
+                    "advanced": list(ADVANCED_LABELS),
+                },
+                requested_labels_by_profile={
+                    "simple": list(SIMPLE_LABELS),
+                    "advanced": list(ADVANCED_LABELS),
+                },
+                pass_label="default:all",
+            )
+        ],
+    },
+    {
+        "id": "extended",
+        "label": "Extended",
+        "description": "Single-pass LLM with stricter false-positive guidance.",
+        "requires_presidio": False,
+        "uses_llm": True,
+        "supports_verify_override": True,
+        "default_verify": False,
+        "supported_label_profiles": ["advanced", "simple"],
+        "known_limitations": [],
+        "passes": [
+            _build_profile_aware_llm_pass(
+                prompt_by_profile=_AUDITED_EXTENDED_PROMPTS,
+                entity_types_by_profile={
+                    "simple": list(SIMPLE_LABELS),
+                    "advanced": list(ADVANCED_LABELS),
+                },
+                requested_labels_by_profile={
+                    "simple": list(SIMPLE_LABELS),
+                    "advanced": list(ADVANCED_LABELS),
+                },
+                pass_label="extended:all",
+            )
+        ],
+    },
+    {
+        "id": "verified",
+        "label": "Verified",
+        "description": "Default LLM pass plus LLM verifier filtering.",
+        "requires_presidio": False,
+        "uses_llm": True,
+        "supports_verify_override": True,
+        "default_verify": True,
+        "supported_label_profiles": ["advanced", "simple"],
+        "known_limitations": [],
+        "passes": [
+            _build_profile_aware_llm_pass(
+                prompt_by_profile=_AUDITED_DEFAULT_PROMPTS,
+                entity_types_by_profile={
+                    "simple": list(SIMPLE_LABELS),
+                    "advanced": list(ADVANCED_LABELS),
+                },
+                requested_labels_by_profile={
+                    "simple": list(SIMPLE_LABELS),
+                    "advanced": list(ADVANCED_LABELS),
+                },
+                pass_label="verified:all",
+            )
+        ],
+    },
+    {
+        "id": "dual",
+        "label": "Dual",
+        "description": "Two-pass LLM (names + remaining explicit identifiers).",
+        "requires_presidio": False,
+        "uses_llm": True,
+        "supports_verify_override": True,
+        "default_verify": False,
+        "supported_label_profiles": ["advanced", "simple"],
+        "known_limitations": [],
+        "passes": [
+            _build_profile_aware_llm_pass(
+                prompt_by_profile=_AUDITED_NAMES_PROMPTS,
+                entity_types_by_profile={"simple": ["NAME"], "advanced": ["PERSON"]},
+                requested_labels_by_profile={"simple": ["NAME"], "advanced": ["PERSON"]},
+                pass_label="dual:names",
+            ),
+            _build_profile_aware_llm_pass(
+                prompt_by_profile=_AUDITED_DUAL_REMAINING_PROMPTS,
+                entity_types_by_profile={
+                    "simple": _DUAL_SIMPLE_REMAINING_LABELS,
+                    "advanced": _DUAL_ADVANCED_REMAINING_LABELS,
+                },
+                requested_labels_by_profile={
+                    "simple": _DUAL_SIMPLE_REMAINING_LABELS,
+                    "advanced": _DUAL_ADVANCED_REMAINING_LABELS,
+                },
+                pass_label="dual:identifiers",
+            ),
+        ],
+    },
+    {
+        "id": "dual-split",
+        "label": "Dual Split",
+        "description": "Two-pass LLM split by names/locations and remaining explicit identifiers.",
+        "requires_presidio": False,
+        "uses_llm": True,
+        "supports_verify_override": True,
+        "default_verify": False,
+        "supported_label_profiles": ["advanced", "simple"],
+        "known_limitations": [],
+        "passes": [
+            _build_profile_aware_llm_pass(
+                prompt_by_profile=_AUDITED_DUAL_SPLIT_PASS_ONE_PROMPTS,
+                entity_types_by_profile={
+                    "simple": _DUAL_SPLIT_SIMPLE_PASS_ONE,
+                    "advanced": _DUAL_SPLIT_ADVANCED_PASS_ONE,
+                },
+                requested_labels_by_profile={
+                    "simple": _DUAL_SPLIT_SIMPLE_PASS_ONE,
+                    "advanced": _DUAL_SPLIT_ADVANCED_PASS_ONE,
+                },
+                pass_label="dual-split:names_locations",
+            ),
+            _build_profile_aware_llm_pass(
+                prompt_by_profile=_AUDITED_DUAL_SPLIT_PASS_TWO_PROMPTS,
+                entity_types_by_profile={
+                    "simple": _DUAL_SPLIT_SIMPLE_PASS_TWO,
+                    "advanced": _DUAL_SPLIT_ADVANCED_PASS_TWO,
+                },
+                requested_labels_by_profile={
+                    "simple": _DUAL_SPLIT_SIMPLE_PASS_TWO,
+                    "advanced": _DUAL_SPLIT_ADVANCED_PASS_TWO,
+                },
+                pass_label="dual-split:numeric_identifiers",
+            ),
+        ],
+    },
+    {
+        "id": "presidio",
+        "label": "Presidio",
+        "description": "Presidio-only analyzer.",
+        "requires_presidio": True,
+        "uses_llm": False,
+        "supports_verify_override": False,
+        "default_verify": False,
+        "supported_label_profiles": ["advanced", "simple"],
+        "known_limitations": ["Requires local Presidio and spaCy setup."],
+        "passes": [
+            _build_profile_aware_presidio_pass(
+                presidio_entities_by_profile={
+                    "simple": [
+                        "PERSON",
+                        "LOCATION",
+                        "EMAIL_ADDRESS",
+                        "URL",
+                        "PHONE_NUMBER",
+                        "IP_ADDRESS",
+                    ],
+                    "advanced": [
+                        "PERSON",
+                        "LOCATION",
+                        "EMAIL_ADDRESS",
+                        "URL",
+                        "PHONE_NUMBER",
+                        "IP_ADDRESS",
+                    ],
+                },
+                entity_types_by_profile={
+                    "simple": ["NAME", "LOCATION", "EMAIL", "URL", "PHONE", "MISC_ID"],
+                    "advanced": [
+                        "PERSON",
+                        "LOCATION",
+                        "EMAIL_ADDRESS",
+                        "URL",
+                        "PHONE_NUMBER",
+                        "IP_ADDRESS",
+                    ],
+                },
+                pass_label="presidio:core",
+            )
+        ],
+    },
+    {
+        "id": "presidio+default",
+        "label": "Presidio + Default",
+        "description": "Presidio identifiers combined with a residual LLM pass.",
+        "requires_presidio": True,
+        "uses_llm": True,
+        "supports_verify_override": True,
+        "default_verify": False,
+        "supported_label_profiles": ["advanced", "simple"],
+        "known_limitations": ["Requires local Presidio and spaCy setup."],
+        "passes": [
+            _build_profile_aware_presidio_pass(
+                presidio_entities_by_profile={
+                    "simple": [
+                        "EMAIL_ADDRESS",
+                        "URL",
+                        "PHONE_NUMBER",
+                        "IP_ADDRESS",
+                        "US_SSN",
+                        "US_BANK_NUMBER",
+                    ],
+                    "advanced": [
+                        "EMAIL_ADDRESS",
+                        "URL",
+                        "PHONE_NUMBER",
+                        "IP_ADDRESS",
+                        "US_SSN",
+                        "US_BANK_NUMBER",
+                    ],
+                },
+                entity_types_by_profile={
+                    "simple": _PRESIDIO_DEFAULT_SIMPLE_OUTPUT,
+                    "advanced": _PRESIDIO_DEFAULT_ADVANCED_OUTPUT,
+                },
+                pass_label="presidio+default:presidio",
+            ),
+            _build_profile_aware_llm_pass(
+                prompt_by_profile=_AUDITED_PRESIDIO_DEFAULT_PROMPTS,
+                entity_types_by_profile={
+                    "simple": _PRESIDIO_DEFAULT_SIMPLE_RESIDUAL,
+                    "advanced": _PRESIDIO_DEFAULT_ADVANCED_RESIDUAL,
+                },
+                requested_labels_by_profile={
+                    "simple": _PRESIDIO_DEFAULT_SIMPLE_RESIDUAL,
+                    "advanced": _PRESIDIO_DEFAULT_ADVANCED_RESIDUAL,
+                },
+                pass_label="presidio+default:llm",
+            ),
+        ],
+    },
+    {
+        "id": "presidio+llm-split",
+        "label": "Presidio + LLM Split",
+        "description": "Presidio for core contact identifiers plus a residual LLM pass.",
+        "requires_presidio": True,
+        "uses_llm": True,
+        "supports_verify_override": True,
+        "default_verify": False,
+        "supported_label_profiles": ["advanced", "simple"],
+        "known_limitations": ["Requires local Presidio and spaCy setup."],
+        "passes": [
+            _build_profile_aware_presidio_pass(
+                presidio_entities_by_profile={
+                    "simple": ["EMAIL_ADDRESS", "URL", "PHONE_NUMBER", "IP_ADDRESS"],
+                    "advanced": ["EMAIL_ADDRESS", "URL", "PHONE_NUMBER", "IP_ADDRESS"],
+                },
+                entity_types_by_profile={
+                    "simple": _PRESIDIO_SPLIT_SIMPLE_OUTPUT,
+                    "advanced": _PRESIDIO_SPLIT_ADVANCED_OUTPUT,
+                },
+                pass_label="presidio+llm-split:presidio",
+            ),
+            _build_profile_aware_llm_pass(
+                prompt_by_profile=_AUDITED_SPLIT_LLM_PROMPTS,
+                entity_types_by_profile={
+                    "simple": _PRESIDIO_SPLIT_SIMPLE_RESIDUAL,
+                    "advanced": _PRESIDIO_SPLIT_ADVANCED_RESIDUAL,
+                },
+                requested_labels_by_profile={
+                    "simple": _PRESIDIO_SPLIT_SIMPLE_RESIDUAL,
+                    "advanced": _PRESIDIO_SPLIT_ADVANCED_RESIDUAL,
+                },
+                pass_label="presidio+llm-split:llm",
+            ),
+        ],
+    },
+]
+
+AUDITED_METHOD_DEFINITION_BY_ID: dict[str, dict[str, Any]] = {
+    method["id"]: method for method in AUDITED_METHOD_DEFINITIONS
+}
+TEST_METHOD_DEFINITIONS: list[dict[str, Any]] = copy.deepcopy(AUDITED_METHOD_DEFINITIONS)
+TEST_METHOD_DEFINITION_BY_ID: dict[str, dict[str, Any]] = {
+    method["id"]: method for method in TEST_METHOD_DEFINITIONS
+}
+METHOD_DEFINITIONS = AUDITED_METHOD_DEFINITIONS
+METHOD_DEFINITION_BY_ID = AUDITED_METHOD_DEFINITION_BY_ID
+METHOD_DEFINITIONS_BY_BUNDLE: dict[MethodBundleId, list[dict[str, Any]]] = {
+    "legacy": LEGACY_METHOD_DEFINITIONS,
+    "audited": METHOD_DEFINITIONS,
+    "test": TEST_METHOD_DEFINITIONS,
+}
+METHOD_DEFINITION_BY_ID_BY_BUNDLE: dict[MethodBundleId, dict[str, dict[str, Any]]] = {
+    "legacy": LEGACY_METHOD_DEFINITION_BY_ID,
+    "audited": METHOD_DEFINITION_BY_ID,
+    "test": TEST_METHOD_DEFINITION_BY_ID,
 }
 
 _presidio_analyzer_lock = threading.Lock()
@@ -1080,7 +1817,16 @@ def _compute_llm_confidence_metric(
 
 
 def _parse_spans_from_response(resp: Any) -> list[CanonicalSpan]:
-    content = _extract_response_content(resp) or '{"spans":[]}'
+    content = _extract_response_content(resp)
+    if not content.strip():
+        finish_reason = _extract_finish_reason(resp)
+        response_debug = _build_response_debug_summary(resp)
+        if finish_reason:
+            raise ValueError(
+                "LLM returned empty output content "
+                f"(finish_reason={finish_reason}). response_debug={response_debug}"
+            )
+        raise ValueError(f"LLM returned empty output content. response_debug={response_debug}")
     content = _strip_code_fences(content)
 
     def _extract_json_candidate(text: str) -> str | None:
@@ -1129,6 +1875,63 @@ def _parse_spans_from_response(resp: Any) -> list[CanonicalSpan]:
         CanonicalSpan(start=s["start"], end=s["end"], label=s["label"], text=s["text"])
         for s in raw
     ]
+
+
+def _recover_partial_spans_from_truncated_output(raw_content: str) -> list[CanonicalSpan]:
+    content = _strip_code_fences(raw_content).strip()
+    if not content:
+        return []
+
+    spans_key_index = content.find('"spans"')
+    if spans_key_index < 0:
+        return []
+    array_start = content.find("[", spans_key_index)
+    if array_start < 0:
+        return []
+
+    decoder = json.JSONDecoder()
+    recovered: list[CanonicalSpan] = []
+    idx = array_start + 1
+    while idx < len(content):
+        while idx < len(content) and content[idx] in " \t\r\n,":
+            idx += 1
+        if idx >= len(content) or content[idx] == "]":
+            break
+        if content[idx] != "{":
+            break
+        try:
+            payload, consumed = decoder.raw_decode(content[idx:])
+        except json.JSONDecodeError:
+            break
+        if not isinstance(payload, dict):
+            break
+        try:
+            recovered.append(
+                CanonicalSpan(
+                    start=int(payload["start"]),
+                    end=int(payload["end"]),
+                    label=str(payload["label"]),
+                    text=str(payload["text"]),
+                )
+            )
+        except Exception:
+            break
+        idx += consumed
+    return recovered
+
+
+def _compute_repair_max_tokens(
+    *,
+    raw_content: str,
+    requested_max_tokens: object,
+    default_repair_max_tokens: int,
+) -> int:
+    try:
+        upper_bound = max(default_repair_max_tokens, int(requested_max_tokens or 0))
+    except Exception:
+        upper_bound = max(default_repair_max_tokens, DEFAULT_LLM_EXTRACTION_MAX_TOKENS)
+    estimated_tokens = math.ceil(len(raw_content) / 4) + 256
+    return max(default_repair_max_tokens, min(upper_bound, estimated_tokens))
 
 
 def _build_span_response_format(
@@ -1514,7 +2317,9 @@ def _parse_with_one_repair_retry(
     request_kwargs: dict[str, Any],
     text: str,
     warnings: list[str],
-) -> tuple[list[CanonicalSpan], Any]:
+    repair_timeout_seconds: float,
+    repair_max_tokens: int,
+) -> tuple[list[CanonicalSpan], Any, dict[str, Any] | None, Any | None]:
     raw_content = _extract_response_content(resp)
     if not raw_content.strip():
         finish_reason = _extract_finish_reason(resp)
@@ -1527,30 +2332,50 @@ def _parse_with_one_repair_retry(
         raise ValueError(f"LLM returned empty output content. response_debug={response_debug}")
 
     try:
-        return _parse_spans_from_response(resp), resp
+        return _parse_spans_from_response(resp), resp, None, None
     except Exception as parse_exc:
+        finish_reason = _extract_finish_reason(resp)
+        partial_spans = (
+            _recover_partial_spans_from_truncated_output(raw_content)
+            if finish_reason == "length"
+            else []
+        )
         repair_kwargs = {
             key: value
             for key, value in request_kwargs.items()
-            if key not in {"messages", "logprobs"}
+            if key not in {"messages", "logprobs", "thinking"}
         }
         repair_kwargs["messages"] = [
             {"role": "system", "content": JSON_REPAIR_PROMPT},
             {
                 "role": "user",
                 "content": (
-                    "Fix this invalid extractor output into valid JSON.\n\n"
-                    f"TRANSCRIPT:\n{text}\n\n"
+                    "Fix this invalid extractor output into valid JSON.\n"
+                    "Use only spans recoverable from INVALID_OUTPUT. "
+                    "Do not invent new spans or add prose.\n\n"
                     f"INVALID_OUTPUT:\n{raw_content}"
                 ),
             },
         ]
+        repair_kwargs["timeout"] = repair_timeout_seconds
+        repair_kwargs["max_tokens"] = _compute_repair_max_tokens(
+            raw_content=raw_content,
+            requested_max_tokens=request_kwargs.get("max_tokens"),
+            default_repair_max_tokens=repair_max_tokens,
+        )
+        repair_resp: Any | None = None
         try:
             repair_resp = completion(**repair_kwargs)
             repaired_spans = _parse_spans_from_response(repair_resp)
             warnings.append("Recovered invalid LLM JSON with one repair retry.")
-            return repaired_spans, repair_resp
+            return repaired_spans, repair_resp, repair_kwargs, repair_resp
         except Exception as repair_exc:
+            if partial_spans:
+                warnings.append(
+                    "Recovered "
+                    f"{len(partial_spans)} span(s) from truncated LLM output after repair retry failed."
+                )
+                return partial_spans, resp, repair_kwargs, repair_resp
             raise ValueError(
                 f"Failed to parse LLM output and one repair retry failed: {repair_exc}"
             ) from parse_exc
@@ -1671,6 +2496,207 @@ def normalize_method_spans(
     return normalized
 
 
+def _normalize_method_bundle(method_bundle: MethodBundleId | str | None) -> MethodBundleId:
+    raw = str(method_bundle or DEFAULT_METHOD_BUNDLE).strip().lower()
+    if raw not in {"legacy", "audited", "test"}:
+        raise ValueError("method_bundle must be one of: legacy, audited, test")
+    return raw  # type: ignore[return-value]
+
+
+def get_method_definitions(
+    *,
+    method_bundle: MethodBundleId = DEFAULT_METHOD_BUNDLE,
+) -> list[dict[str, Any]]:
+    bundle = _normalize_method_bundle(method_bundle)
+    return METHOD_DEFINITIONS_BY_BUNDLE[bundle]
+
+
+def get_method_definition_by_id(
+    method_id: str,
+    *,
+    method_bundle: MethodBundleId = DEFAULT_METHOD_BUNDLE,
+) -> dict[str, Any] | None:
+    bundle = _normalize_method_bundle(method_bundle)
+    return METHOD_DEFINITION_BY_ID_BY_BUNDLE[bundle].get(method_id)
+
+
+def _supported_profiles_for_method(method: dict[str, Any]) -> list[Literal["simple", "advanced"]]:
+    raw_profiles = method.get("supported_label_profiles")
+    if isinstance(raw_profiles, list):
+        profiles = [
+            str(profile).strip().lower()
+            for profile in raw_profiles
+            if str(profile).strip().lower() in {"simple", "advanced"}
+        ]
+        if profiles:
+            return sorted(set(profiles))  # type: ignore[return-value]
+    return ["advanced", "simple"]
+
+
+def _resolve_method_pass_prompt(
+    method_pass: dict[str, Any],
+    *,
+    label_profile: Literal["simple", "advanced"],
+) -> str:
+    prompt_by_profile = method_pass.get("prompt_by_profile")
+    if isinstance(prompt_by_profile, dict):
+        value = prompt_by_profile.get(label_profile)
+        if isinstance(value, str) and value.strip():
+            return value
+    return str(method_pass.get("prompt") or SYSTEM_PROMPT)
+
+
+def _resolve_method_pass_entity_types(
+    method_pass: dict[str, Any],
+    *,
+    label_profile: Literal["simple", "advanced"],
+) -> list[str] | None:
+    entity_types_by_profile = method_pass.get("entity_types_by_profile")
+    if isinstance(entity_types_by_profile, dict):
+        value = entity_types_by_profile.get(label_profile)
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return [str(item) for item in value]
+    raw_value = method_pass.get("entity_types")
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, list):
+        return [str(item) for item in raw_value]
+    return None
+
+
+def _resolve_method_pass_requested_labels(
+    method_pass: dict[str, Any],
+    *,
+    label_profile: Literal["simple", "advanced"],
+) -> list[str]:
+    requested_by_profile = method_pass.get("requested_labels_by_profile")
+    if isinstance(requested_by_profile, dict):
+        value = requested_by_profile.get(label_profile)
+        if isinstance(value, list):
+            return [str(item) for item in value]
+    entity_types = _resolve_method_pass_entity_types(method_pass, label_profile=label_profile)
+    return entity_types or []
+
+
+def _resolve_presidio_pass_entities(
+    method_pass: dict[str, Any],
+    *,
+    label_profile: Literal["simple", "advanced"],
+) -> list[str] | None:
+    presidio_by_profile = method_pass.get("presidio_entities_by_profile")
+    if isinstance(presidio_by_profile, dict):
+        value = presidio_by_profile.get(label_profile)
+        if isinstance(value, list):
+            return [str(item) for item in value]
+    raw_value = method_pass.get("presidio_entities")
+    if isinstance(raw_value, list):
+        return [str(item) for item in raw_value]
+    return _resolve_method_pass_entity_types(method_pass, label_profile=label_profile)
+
+
+def _compute_method_output_labels(
+    method: dict[str, Any],
+    *,
+    label_profile: Literal["simple", "advanced"],
+) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for method_pass in method.get("passes", []):
+        if not isinstance(method_pass, dict):
+            continue
+        requested = _resolve_method_pass_requested_labels(
+            method_pass,
+            label_profile=label_profile,
+        )
+        for label in requested:
+            normalized = normalize_method_label(label, label_profile=label_profile)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(normalized)
+    return ordered
+
+
+def validate_method_contracts(
+    *,
+    method_bundle: MethodBundleId = DEFAULT_METHOD_BUNDLE,
+) -> list[str]:
+    errors: list[str] = []
+    for method in get_method_definitions(method_bundle=method_bundle):
+        method_id = str(method.get("id", ""))
+        for label_profile in _supported_profiles_for_method(method):
+            allowed_labels = set(_labels_for_profile(label_profile))
+            for index, method_pass in enumerate(method.get("passes", []), start=1):
+                if not isinstance(method_pass, dict):
+                    continue
+                pass_label = str(method_pass.get("pass_label") or f"{method_id}:pass_{index}")
+                requested = _resolve_method_pass_requested_labels(
+                    method_pass,
+                    label_profile=label_profile,
+                )
+                normalized_requested = {
+                    normalize_method_label(label, label_profile=label_profile)
+                    for label in requested
+                }
+                normalized_requested.discard("")
+                unsupported_requested = sorted(
+                    label for label in normalized_requested if label not in allowed_labels
+                )
+                if unsupported_requested:
+                    errors.append(
+                        f"{method_id}/{label_profile}/{pass_label} requests labels outside the "
+                        f"profile schema: {', '.join(unsupported_requested)}"
+                    )
+                pass_filter = _resolve_method_pass_entity_types(
+                    method_pass,
+                    label_profile=label_profile,
+                )
+                if pass_filter is not None:
+                    normalized_filter = {
+                        normalize_method_label(label, label_profile=label_profile)
+                        for label in pass_filter
+                    }
+                    normalized_filter.discard("")
+                    missing = sorted(normalized_requested - normalized_filter)
+                    if missing:
+                        errors.append(
+                            f"{method_id}/{label_profile}/{pass_label} drops prompt-requested "
+                            f"labels via entity filter: {', '.join(missing)}"
+                        )
+                if str(method_pass.get("kind")) == "presidio":
+                    presidio_entities = _resolve_presidio_pass_entities(
+                        method_pass,
+                        label_profile=label_profile,
+                    ) or []
+                    normalized_presidio = {
+                        normalize_method_label(label, label_profile=label_profile)
+                        for label in presidio_entities
+                    }
+                    normalized_presidio.discard("")
+                    unsupported_presidio = sorted(
+                        label for label in normalized_presidio if label not in allowed_labels
+                    )
+                    if unsupported_presidio:
+                        errors.append(
+                            f"{method_id}/{label_profile}/{pass_label} includes Presidio "
+                            f"entities outside the profile schema: {', '.join(unsupported_presidio)}"
+                        )
+    return errors
+
+
+_AUDITED_METHOD_CONTRACT_ERRORS = tuple(validate_method_contracts(method_bundle="audited"))
+if _AUDITED_METHOD_CONTRACT_ERRORS:
+    joined_errors = "; ".join(_AUDITED_METHOD_CONTRACT_ERRORS)
+    raise RuntimeError(f"Audited method contract validation failed: {joined_errors}")
+
+_TEST_METHOD_CONTRACT_ERRORS = tuple(validate_method_contracts(method_bundle="test"))
+if _TEST_METHOD_CONTRACT_ERRORS:
+    joined_errors = "; ".join(_TEST_METHOD_CONTRACT_ERRORS)
+    raise RuntimeError(f"Test method contract validation failed: {joined_errors}")
+
+
 def merge_method_spans(spans: list[CanonicalSpan]) -> list[CanonicalSpan]:
     if not spans:
         return []
@@ -1757,10 +2783,13 @@ def _reset_presidio_runtime_state():
         _presidio_analyzer = None
 
 
-def list_agent_methods() -> list[dict[str, Any]]:
+def list_agent_methods(
+    *,
+    method_bundle: MethodBundleId = DEFAULT_METHOD_BUNDLE,
+) -> list[dict[str, Any]]:
     presidio_error = _presidio_runtime_error()
     methods: list[dict[str, Any]] = []
-    for method in METHOD_DEFINITIONS:
+    for method in get_method_definitions(method_bundle=method_bundle):
         unavailable_reason = None
         if method["requires_presidio"] and presidio_error:
             unavailable_reason = presidio_error
@@ -1768,13 +2797,37 @@ def list_agent_methods() -> list[dict[str, Any]]:
         for pass_index, method_pass in enumerate(method.get("passes", []), start=1):
             if method_pass.get("kind") != "llm":
                 continue
+            system_prompt_by_profile = {
+                profile: _resolve_method_pass_prompt(
+                    method_pass,
+                    label_profile=profile,  # type: ignore[arg-type]
+                )
+                for profile in _supported_profiles_for_method(method)
+            }
+            entity_types_by_profile = {
+                profile: _resolve_method_pass_entity_types(
+                    method_pass,
+                    label_profile=profile,  # type: ignore[arg-type]
+                )
+                for profile in _supported_profiles_for_method(method)
+            }
             prompt_templates.append(
                 {
                     "pass_index": pass_index,
-                    "entity_types": method_pass.get("entity_types"),
-                    "system_prompt": str(method_pass.get("prompt") or SYSTEM_PROMPT),
+                    "entity_types": entity_types_by_profile.get("simple"),
+                    "entity_types_by_profile": entity_types_by_profile,
+                    "system_prompt": system_prompt_by_profile.get("simple", SYSTEM_PROMPT),
+                    "system_prompt_by_profile": system_prompt_by_profile,
                 }
             )
+        supported_profiles = _supported_profiles_for_method(method)
+        output_labels_by_profile = {
+            profile: _compute_method_output_labels(
+                method,
+                label_profile=profile,  # type: ignore[arg-type]
+            )
+            for profile in supported_profiles
+        }
         methods.append(
             {
                 "id": method["id"],
@@ -1785,6 +2838,9 @@ def list_agent_methods() -> list[dict[str, Any]]:
                 "supports_verify_override": method["supports_verify_override"],
                 "default_verify": method["default_verify"],
                 "prompt_templates": prompt_templates,
+                "supported_label_profiles": supported_profiles,
+                "output_labels_by_profile": output_labels_by_profile,
+                "known_limitations": list(method.get("known_limitations", [])),
                 "available": unavailable_reason is None,
                 "unavailable_reason": unavailable_reason,
             }
@@ -1809,6 +2865,25 @@ def _parse_verifier_decisions(content: str, total: int) -> set[int]:
         if isinstance(index, int) and 0 <= index < total and keep is False:
             rejected.add(index)
     return rejected
+
+
+def _clamp_call_timeout_seconds(
+    timeout_seconds: float | None,
+    *,
+    default_timeout_seconds: float,
+) -> float:
+    if timeout_seconds is None:
+        return default_timeout_seconds
+    return max(0.01, min(float(timeout_seconds), default_timeout_seconds))
+
+
+def _remaining_timeout_seconds(deadline_monotonic: float | None) -> float | None:
+    if deadline_monotonic is None:
+        return None
+    remaining = deadline_monotonic - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("LLM task exhausted its timeout budget before the next provider call.")
+    return remaining
 
 
 def _run_llm_verifier(
@@ -1866,9 +2941,12 @@ def _run_llm_verifier(
         ],
         "response_format": response_format,
         "api_key": api_key,
+        "timeout": _clamp_call_timeout_seconds(
+            timeout_seconds,
+            default_timeout_seconds=DEFAULT_LLM_VERIFIER_TIMEOUT_SECONDS,
+        ),
+        "max_tokens": DEFAULT_LLM_VERIFIER_MAX_TOKENS,
     }
-    if timeout_seconds is not None:
-        base_request_kwargs["timeout"] = timeout_seconds
 
     warnings: list[str] = []
     api_base_candidates = _build_api_base_candidates(api_base)
@@ -1964,8 +3042,9 @@ def run_method_with_metadata(
     label_profile: Literal["simple", "advanced"] = "simple",
     timeout_seconds: float | None = None,
     progress_callback: Callable[[int, str], None] | None = None,
+    method_bundle: MethodBundleId = DEFAULT_METHOD_BUNDLE,
 ) -> MethodRunResult:
-    method = METHOD_DEFINITION_BY_ID.get(method_id)
+    method = get_method_definition_by_id(method_id, method_bundle=method_bundle)
     if method is None:
         raise ValueError(f"Unknown method: {method_id}")
 
@@ -1989,30 +3068,47 @@ def run_method_with_metadata(
     all_raw_spans: list[CanonicalSpan] = []
     llm_metrics: list[LLMConfidenceMetric] = []
     response_debug: list[str] = []
+    deadline_monotonic = (
+        time.monotonic() + float(timeout_seconds)
+        if timeout_seconds is not None
+        else None
+    )
 
     for idx, method_pass in enumerate(method["passes"]):
         kind = method_pass["kind"]
         pass_label = str(method_pass.get("pass_label") or f"{method_id}:pass_{idx + 1}")
+        pass_entity_types = _resolve_method_pass_entity_types(
+            method_pass,
+            label_profile=label_profile,
+        )
         if progress_callback is not None:
             progress_callback(idx + 1, pass_label)
         if kind == "presidio":
+            presidio_entities = _resolve_presidio_pass_entities(
+                method_pass,
+                label_profile=label_profile,
+            )
             pass_spans = _run_presidio_pass(
                 text=text,
-                entity_types=method_pass.get("entity_types"),
+                entity_types=presidio_entities,
             )
             all_raw_spans.extend(
                 _filter_method_pass_spans(
                     normalize_method_spans(pass_spans, label_profile=label_profile),
-                    method_pass.get("entity_types"),
+                    pass_entity_types,
                     label_profile=label_profile,
                 )
             )
             continue
 
-        prompt = str(method_pass.get("prompt") or SYSTEM_PROMPT)
+        prompt = _resolve_method_pass_prompt(
+            method_pass,
+            label_profile=label_profile,
+        )
         if system_prompt.strip():
             prompt = f"{prompt}\n\nAdditional constraints:\n{system_prompt.strip()}"
 
+        call_timeout_seconds = _remaining_timeout_seconds(deadline_monotonic)
         llm_result = run_llm_with_metadata(
             text=text,
             api_key=api_key or "",
@@ -2024,8 +3120,9 @@ def run_method_with_metadata(
             anthropic_thinking=anthropic_thinking,
             anthropic_thinking_budget_tokens=anthropic_thinking_budget_tokens,
             label_profile=label_profile,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=call_timeout_seconds,
             enable_deterministic_augmentation=False,
+            method_bundle=method_bundle,
         )
         llm_metrics.append(llm_result.llm_confidence)
         response_debug.extend(
@@ -2036,7 +3133,7 @@ def run_method_with_metadata(
                 getattr(llm_result, "raw_spans", llm_result.spans),
                 label_profile=label_profile,
             ),
-            method_pass.get("entity_types"),
+            pass_entity_types,
             label_profile=label_profile,
         )
         all_raw_spans.extend(raw_pass_spans)
@@ -2056,13 +3153,19 @@ def run_method_with_metadata(
         try:
             if progress_callback is not None:
                 progress_callback(len(method["passes"]) + 1, f"{method_id}:verifier")
+            verifier_timeout_seconds = _remaining_timeout_seconds(deadline_monotonic)
+            response_debug.append(
+                "Verifier settings: "
+                f"timeout={_clamp_call_timeout_seconds(verifier_timeout_seconds, default_timeout_seconds=DEFAULT_LLM_VERIFIER_TIMEOUT_SECONDS):g}; "
+                f"max_tokens={DEFAULT_LLM_VERIFIER_MAX_TOKENS}"
+            )
             verified_spans, verify_warnings = _run_llm_verifier(
                 text=text,
                 spans=merged,
                 api_key=api_key or "",
                 api_base=api_base,
                 model=model,
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=verifier_timeout_seconds,
             )
             merged = merge_method_spans(
                 normalize_method_spans(verified_spans, label_profile=label_profile)
@@ -2113,6 +3216,7 @@ def run_llm_with_metadata(
     label_profile: Literal["simple", "advanced"] = "simple",
     timeout_seconds: float | None = None,
     enable_deterministic_augmentation: bool = True,
+    method_bundle: MethodBundleId = DEFAULT_METHOD_BUNDLE,
 ) -> LLMRunResult:
     """Run LLM-based PII detection with provider-aware advanced parameters."""
     provider = _infer_provider(model)
@@ -2128,7 +3232,18 @@ def run_llm_with_metadata(
     effective_system_prompt = build_extraction_system_prompt(
         system_prompt,
         label_profile=label_profile,
+        method_bundle=method_bundle,
     )
+    deadline_monotonic = (
+        time.monotonic() + float(timeout_seconds)
+        if timeout_seconds is not None
+        else None
+    )
+    effective_timeout_seconds = _clamp_call_timeout_seconds(
+        timeout_seconds,
+        default_timeout_seconds=DEFAULT_LLM_EXTRACTION_TIMEOUT_SECONDS,
+    )
+    effective_max_tokens = DEFAULT_LLM_EXTRACTION_MAX_TOKENS
 
     if anthropic_thinking and supports_thinking:
         if temperature != 1.0:
@@ -2147,9 +3262,8 @@ def run_llm_with_metadata(
             {"role": "user", "content": text},
         ],
         "api_key": api_key,
+        "timeout": effective_timeout_seconds,
     }
-    if timeout_seconds is not None:
-        base_request_kwargs["timeout"] = timeout_seconds
     supports_logprobs = _supports_logprobs(
         model,
         provider,
@@ -2196,20 +3310,20 @@ def run_llm_with_metadata(
             thinking: dict[str, Any] = {"type": "enabled"}
             if anthropic_thinking_budget_tokens is not None:
                 thinking["budget_tokens"] = anthropic_thinking_budget_tokens
-                if use_openai_gateway_format:
-                    extra_body["max_tokens"] = max(
-                        anthropic_thinking_budget_tokens + 256, 4096
-                    )
-                else:
-                    base_request_kwargs["max_tokens"] = max(
-                        anthropic_thinking_budget_tokens + 256, 4096
-                    )
+                effective_max_tokens = max(
+                    anthropic_thinking_budget_tokens + 256,
+                    DEFAULT_LLM_EXTRACTION_MAX_TOKENS,
+                )
             if use_openai_gateway_format:
                 extra_body["thinking"] = thinking
             else:
                 base_request_kwargs["thinking"] = thinking
         else:
             warnings.append(f"Model '{model}' does not support anthropic thinking; ignored.")
+    if use_openai_gateway_format and anthropic_thinking and supports_thinking:
+        extra_body["max_tokens"] = effective_max_tokens
+    else:
+        base_request_kwargs["max_tokens"] = effective_max_tokens
     if extra_body:
         base_request_kwargs["extra_body"] = extra_body
 
@@ -2225,17 +3339,32 @@ def run_llm_with_metadata(
             resp, effective_kwargs = _complete_with_supported_params(
                 request_kwargs, model=model, warnings=warnings
             )
-            response_debug = [_build_response_debug_summary(resp)]
-            spans, parsed_resp = _parse_with_one_repair_retry(
+            response_debug = [
+                "request_settings: "
+                f"provider={provider}; timeout={effective_timeout_seconds:g}; "
+                f"max_tokens={effective_max_tokens}; label_profile={label_profile}; "
+                f"reasoning_effort={reasoning_effort}; anthropic_thinking={anthropic_thinking}",
+                _build_response_debug_summary(resp),
+            ]
+            repair_timeout_seconds = _clamp_call_timeout_seconds(
+                _remaining_timeout_seconds(deadline_monotonic),
+                default_timeout_seconds=DEFAULT_LLM_REPAIR_TIMEOUT_SECONDS,
+            )
+            spans, parsed_resp, repair_kwargs, repair_resp = _parse_with_one_repair_retry(
                 resp=resp,
                 request_kwargs=effective_kwargs,
                 text=text,
                 warnings=warnings,
+                repair_timeout_seconds=repair_timeout_seconds,
+                repair_max_tokens=DEFAULT_LLM_REPAIR_MAX_TOKENS,
             )
-            if parsed_resp is not resp:
+            if repair_kwargs is not None:
                 response_debug.append(
-                    f"repair: {_build_response_debug_summary(parsed_resp)}"
+                    "repair_settings: "
+                    f"timeout={repair_kwargs['timeout']:g}; max_tokens={repair_kwargs['max_tokens']}"
                 )
+                if repair_resp is not None:
+                    response_debug.append(f"repair: {_build_response_debug_summary(repair_resp)}")
             spans, repair_warnings = _repair_offset_mismatches(
                 text,
                 spans,

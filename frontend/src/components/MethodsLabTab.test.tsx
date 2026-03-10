@@ -89,11 +89,16 @@ function cloneValue<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-function makeRunSummary(id: string, name: string): MethodsLabRunSummary {
+function makeRunSummary(
+  id: string,
+  name: string,
+  methodBundle: "legacy" | "audited" | "test" = "audited",
+): MethodsLabRunSummary {
   return {
     id,
     name,
     status: "completed",
+    method_bundle: methodBundle,
     cancellable: false,
     created_at: "2026-03-08T00:00:00Z",
     started_at: "2026-03-08T00:00:00Z",
@@ -150,8 +155,11 @@ function makeRunDetail(
     runtime: {
       temperature: 0,
       match_mode: "exact",
+      reference_source: "manual",
+      fallback_reference_source: "pre",
       label_profile: "simple",
       label_projection: "native",
+      method_bundle: summary.method_bundle,
       chunk_mode: "auto",
       chunk_size_chars: 10000,
     },
@@ -349,6 +357,68 @@ describe("MethodsLabTab", () => {
 
     expect(await screen.findByText("run form max=12")).toBeTruthy();
     expect(clientMocks.getExperimentLimits).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the method bundle in run history", async () => {
+    const legacySummary = makeRunSummary("legacy-run", "methods_lab__legacy", "legacy");
+    const legacyDetail = makeRunDetail(legacySummary, {
+      docId: "doc-1",
+      cellId: "model_1__method_1",
+      modelId: "model_1",
+      modelLabel: "Codex",
+      methodId: "method_1",
+      methodLabel: "Default",
+    });
+    clientMocks.listMethodsLabRuns.mockResolvedValue([legacySummary]);
+    clientMocks.getMethodsLabRun.mockResolvedValue(legacyDetail);
+    clientMocks.getMethodsLabDocResult.mockResolvedValue(
+      makeDocResult(legacyDetail, {
+        cellId: legacyDetail.matrix.cells[0]!.id,
+        docId: "doc-1",
+      }),
+    );
+
+    render(
+      <MethodsLabTab
+        documents={documents}
+        folders={[]}
+        selectedDocumentId={null}
+        onSelectDocument={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText(/Legacy methods/i)).toBeTruthy();
+  });
+
+  it("shows the test method bundle in run history", async () => {
+    const testSummary = makeRunSummary("test-run", "methods_lab__test", "test");
+    const testDetail = makeRunDetail(testSummary, {
+      docId: "doc-1",
+      cellId: "model_1__method_1",
+      modelId: "model_1",
+      modelLabel: "Codex",
+      methodId: "method_1",
+      methodLabel: "Default",
+    });
+    clientMocks.listMethodsLabRuns.mockResolvedValue([testSummary]);
+    clientMocks.getMethodsLabRun.mockResolvedValue(testDetail);
+    clientMocks.getMethodsLabDocResult.mockResolvedValue(
+      makeDocResult(testDetail, {
+        cellId: testDetail.matrix.cells[0]!.id,
+        docId: "doc-1",
+      }),
+    );
+
+    render(
+      <MethodsLabTab
+        documents={documents}
+        folders={[]}
+        selectedDocumentId={null}
+        onSelectDocument={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText(/Test methods/i)).toBeTruthy();
   });
 
   it("loads experiment diagnostics and passes them to the selected run view", async () => {

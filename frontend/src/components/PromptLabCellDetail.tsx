@@ -6,6 +6,7 @@ import type {
   PromptLabMatrixCellSummary,
   PromptLabRunDetail,
 } from "../types";
+import { formatMethodBundleLabel } from "../experimentDisplay";
 import { getPrimaryMetricLabel, getPrimaryMetrics } from "../metricPresentation";
 import { getExperimentModelLabelById } from "../modelDisplay";
 
@@ -104,7 +105,8 @@ export default function PromptLabCellDetail({
           <div className="prompt-lab-detail-meta">
             {getPrimaryMetricLabel("F1", usingOverlap)} {fmtPct((cell.co_primary_metrics?.overlap?.micro.f1 ?? cell.micro.f1))} ·{" "}
             {getPrimaryMetricLabel("Recall", usingOverlap)} {fmtPct((cell.co_primary_metrics?.overlap?.micro.recall ?? cell.micro.recall))} · Completed{" "}
-            {cell.completed_docs}/{cell.total_docs} · Errors {cell.error_count}
+            {cell.completed_docs}/{cell.total_docs} · Errors {cell.error_count} ·{" "}
+            {formatMethodBundleLabel(run.method_bundle)}
           </div>
         </div>
         <div className="prompt-lab-detail-actions">

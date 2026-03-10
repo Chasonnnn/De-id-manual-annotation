@@ -1,6 +1,7 @@
 # Runtime data
 .annotation_tool/
 .env.local
+output/
 
 # Python
 __pycache__/

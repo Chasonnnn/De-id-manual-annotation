@@ -10,6 +10,7 @@ import {
   listPromptLabRuns,
   stopPromptLabRun,
 } from "../api/client";
+import { formatMethodBundleLabel } from "../experimentDisplay";
 import { DEFAULT_EXPERIMENT_LIMITS } from "../types";
 import type {
   AgentMethodOption,
@@ -655,7 +656,8 @@ export default function PromptLabTab({
                 >
                   <div className="prompt-lab-history-name">{run.name}</div>
                   <div className="prompt-lab-history-meta">
-                    {run.status} · {run.completed_tasks}/{run.total_tasks}
+                    {run.status} · {run.completed_tasks}/{run.total_tasks} ·{" "}
+                    {formatMethodBundleLabel(run.method_bundle)}
                   </div>
                 </button>
                 <div className="prompt-lab-history-actions">

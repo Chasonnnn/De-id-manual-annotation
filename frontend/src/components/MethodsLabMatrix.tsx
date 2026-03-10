@@ -4,6 +4,7 @@ import type {
   MethodsLabMatrixCellSummary,
   MethodsLabRunDetail,
 } from "../types";
+import { formatMethodBundleLabel } from "../experimentDisplay";
 import { getPrimaryMatrixMetrics, getPrimaryMetricLabel } from "../metricPresentation";
 import { getExperimentModelLabelById } from "../modelDisplay";
 
@@ -118,6 +119,7 @@ export default function MethodsLabMatrix({
             <span>Effective {run.diagnostics.effective_worker_count}</span>
             <span>Tasks {run.diagnostics.total_tasks}</span>
             <span>Cap {run.diagnostics.max_allowed_concurrency}</span>
+            <span>Bundle {formatMethodBundleLabel(run.method_bundle)}</span>
             <span>Gateway {run.diagnostics.api_base_host ?? experimentDiagnostics?.api_base_host ?? "n/a"}</span>
             <span>Catalog {formatCatalogStatus(experimentDiagnostics)}</span>
           </div>
