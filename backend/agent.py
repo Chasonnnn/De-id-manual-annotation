@@ -271,11 +271,11 @@ MODEL_PRESETS: list[dict[str, Any]] = [
         "default_reasoning_effort": "xhigh",
     },
     {
-        "label": "Anthropic: Claude Opus 4.6 (thinking)",
-        "model": "anthropic.claude-4.6-opus",
+        "label": "Anthropic: Claude Sonnet 4.6",
+        "model": "anthropic.claude-4.6-sonnet",
         "provider": "anthropic",
         "supports_reasoning_effort": False,
-        "supports_anthropic_thinking": True,
+        "supports_anthropic_thinking": False,
         "default_reasoning_effort": "none",
     },
     {
@@ -682,6 +682,7 @@ class LLMRunResult:
     warnings: list[str]
     llm_confidence: LLMConfidenceMetric
     finish_reason: str | None = None
+    response_debug: list[str] = field(default_factory=list)
     raw_spans: list[CanonicalSpan] = field(default_factory=list)
     resolution_events: list[ResolutionEvent] = field(default_factory=list)
     resolution_policy_version: str | None = None
@@ -692,6 +693,7 @@ class MethodRunResult:
     spans: list[CanonicalSpan]
     warnings: list[str]
     llm_confidence: LLMConfidenceMetric | None = None
+    response_debug: list[str] = field(default_factory=list)
     raw_spans: list[CanonicalSpan] = field(default_factory=list)
     resolution_events: list[ResolutionEvent] = field(default_factory=list)
     resolution_policy_version: str | None = None
@@ -784,6 +786,71 @@ def _extract_response_content(resp: Any) -> str:
             return extracted
 
     return ""
+
+
+def _truncate_debug_preview(value: str, *, limit: int = 400) -> str:
+    compact = value.replace("\n", "\\n").strip()
+    if len(compact) <= limit:
+        return compact
+    return f"{compact[:limit]}..."
+
+
+def _describe_payload_for_debug(value: Any) -> str:
+    if value is None:
+        return "None"
+    if isinstance(value, str):
+        return f"str(len={len(value)}, preview={_truncate_debug_preview(value)!r})"
+    if isinstance(value, list):
+        return f"list(len={len(value)})"
+    if isinstance(value, dict):
+        keys = ", ".join(sorted(str(key) for key in value.keys())[:6])
+        return f"dict(keys=[{keys}])"
+    return type(value).__name__
+
+
+def _build_response_debug_summary(resp: Any) -> str:
+    parts: list[str] = [f"resp_type={type(resp).__name__}"]
+    choices = getattr(resp, "choices", None)
+    parts.append(f"choices={_describe_payload_for_debug(choices)}")
+    finish_reason = _extract_finish_reason(resp)
+    if finish_reason:
+        parts.append(f"finish_reason={finish_reason}")
+    if choices:
+        message = getattr(choices[0], "message", None)
+        if message is None:
+            parts.append("message=None")
+        else:
+            parts.append(
+                f"message.content={_describe_payload_for_debug(getattr(message, 'content', None))}"
+            )
+            parts.append(
+                f"message.tool_calls={_describe_payload_for_debug(getattr(message, 'tool_calls', None))}"
+            )
+    parts.append(f"output_text={_describe_payload_for_debug(getattr(resp, 'output_text', None))}")
+
+    preview = ""
+    for attr_name in ("model_dump", "dict", "json"):
+        method = getattr(type(resp), attr_name, None)
+        if not callable(method):
+            continue
+        try:
+            payload = getattr(resp, attr_name)()
+            if isinstance(payload, str):
+                preview = payload
+            else:
+                preview = json.dumps(payload, default=repr, ensure_ascii=True)
+        except Exception:
+            continue
+        if preview.strip():
+            break
+    if not preview:
+        try:
+            preview = repr(resp)
+        except Exception:
+            preview = ""
+    if preview.strip():
+        parts.append(f"raw_preview={_truncate_debug_preview(preview)!r}")
+    return "; ".join(parts)
 
 
 def _infer_provider(model: str) -> str:
@@ -1451,11 +1518,13 @@ def _parse_with_one_repair_retry(
     raw_content = _extract_response_content(resp)
     if not raw_content.strip():
         finish_reason = _extract_finish_reason(resp)
+        response_debug = _build_response_debug_summary(resp)
         if finish_reason:
             raise ValueError(
-                f"LLM returned empty output content (finish_reason={finish_reason})."
+                "LLM returned empty output content "
+                f"(finish_reason={finish_reason}). response_debug={response_debug}"
             )
-        raise ValueError("LLM returned empty output content.")
+        raise ValueError(f"LLM returned empty output content. response_debug={response_debug}")
 
     try:
         return _parse_spans_from_response(resp), resp
@@ -1919,6 +1988,7 @@ def run_method_with_metadata(
     warnings: list[str] = []
     all_raw_spans: list[CanonicalSpan] = []
     llm_metrics: list[LLMConfidenceMetric] = []
+    response_debug: list[str] = []
 
     for idx, method_pass in enumerate(method["passes"]):
         kind = method_pass["kind"]
@@ -1958,6 +2028,9 @@ def run_method_with_metadata(
             enable_deterministic_augmentation=False,
         )
         llm_metrics.append(llm_result.llm_confidence)
+        response_debug.extend(
+            [f"Pass {idx + 1}: {item}" for item in getattr(llm_result, "response_debug", [])]
+        )
         raw_pass_spans = _filter_method_pass_spans(
             normalize_method_spans(
                 getattr(llm_result, "raw_spans", llm_result.spans),
@@ -2020,6 +2093,7 @@ def run_method_with_metadata(
         spans=merged,
         warnings=warnings,
         llm_confidence=_aggregate_llm_confidence_metrics(llm_metrics),
+        response_debug=response_debug,
         raw_spans=raw_spans,
         resolution_events=[*pre_verify_events, *post_verify_events],
         resolution_policy_version=RESOLUTION_POLICY_VERSION,
@@ -2151,12 +2225,17 @@ def run_llm_with_metadata(
             resp, effective_kwargs = _complete_with_supported_params(
                 request_kwargs, model=model, warnings=warnings
             )
+            response_debug = [_build_response_debug_summary(resp)]
             spans, parsed_resp = _parse_with_one_repair_retry(
                 resp=resp,
                 request_kwargs=effective_kwargs,
                 text=text,
                 warnings=warnings,
             )
+            if parsed_resp is not resp:
+                response_debug.append(
+                    f"repair: {_build_response_debug_summary(parsed_resp)}"
+                )
             spans, repair_warnings = _repair_offset_mismatches(
                 text,
                 spans,
@@ -2216,6 +2295,7 @@ def run_llm_with_metadata(
                 warnings=warnings,
                 llm_confidence=llm_confidence,
                 finish_reason=finish_reason,
+                response_debug=response_debug,
                 raw_spans=raw_spans,
                 resolution_events=resolution_events,
                 resolution_policy_version=RESOLUTION_POLICY_VERSION,

@@ -1,9 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import type { PromptLabMatrixCellSummary, PromptLabRunDetail } from "../types";
+import type {
+  ExperimentDiagnostics,
+  PromptLabMatrixCellSummary,
+  PromptLabRunDetail,
+} from "../types";
 import { getPrimaryMatrixMetrics, getPrimaryMetricLabel } from "../metricPresentation";
+import { getExperimentModelLabelById } from "../modelDisplay";
 
 interface Props {
   run: PromptLabRunDetail;
+  experimentDiagnostics?: ExperimentDiagnostics | null;
   selectedCellId: string | null;
   onSelectCell: (cellId: string) => void;
 }
@@ -46,12 +52,38 @@ function getHeatColor(score: number): string {
   return `hsl(${hue} 62% ${lightness}%)`;
 }
 
-export default function PromptLabMatrix({ run, selectedCellId, onSelectCell }: Props) {
+function formatCatalogStatus(diagnostics: ExperimentDiagnostics | null): string {
+  if (!diagnostics) return "status unavailable";
+  if (diagnostics.gateway_catalog.reachable) {
+    return diagnostics.gateway_catalog.model_count != null
+      ? `status reachable · ${diagnostics.gateway_catalog.model_count} models`
+      : "status reachable";
+  }
+  if (diagnostics.gateway_catalog.error) {
+    return `status unavailable · ${diagnostics.gateway_catalog.error}`;
+  }
+  return "status unavailable";
+}
+
+export default function PromptLabMatrix({
+  run,
+  experimentDiagnostics,
+  selectedCellId,
+  onSelectCell,
+}: Props) {
   const [metricKey, setMetricKey] = useState<string>(OVERALL_METRIC_KEY);
   const [metricMeasure, setMetricMeasure] = useState<MetricMeasure>("f1");
   const [collapsed, setCollapsed] = useState(false);
   const totalCells = run.matrix.models.length * run.matrix.prompts.length;
   const totalRequests = run.total_tasks || run.doc_count * totalCells;
+  const taskLabel = run.diagnostics.total_tasks === 1 ? "task" : "tasks";
+  const taskVerb = run.diagnostics.total_tasks === 1 ? "exists" : "exist";
+  const workerLabel = run.diagnostics.effective_worker_count === 1 ? "worker" : "workers";
+  const clampMessage = run.diagnostics.clamped_by_task_count
+    ? `Only ${run.diagnostics.total_tasks} ${taskLabel} ${taskVerb} for this run, so the backend started ${run.diagnostics.effective_worker_count} ${workerLabel}.`
+    : run.diagnostics.clamped_by_server_cap
+      ? `The server cap is ${run.diagnostics.max_allowed_concurrency}, so the backend started ${run.diagnostics.effective_worker_count} ${workerLabel}.`
+      : null;
 
   useEffect(() => {
     const options = [OVERALL_METRIC_KEY, ...(run.matrix.available_labels ?? [])];
@@ -81,6 +113,15 @@ export default function PromptLabMatrix({ run, selectedCellId, onSelectCell }: P
             Showing {totalCells} cells (model × prompt), aggregated from {totalRequests} requests
             (docs × prompts × models).
           </div>
+          <div className="prompt-lab-matrix-diagnostics" data-testid="prompt-lab-matrix-diagnostics">
+            <span>Requested {run.diagnostics.requested_concurrency}</span>
+            <span>Effective {run.diagnostics.effective_worker_count}</span>
+            <span>Tasks {run.diagnostics.total_tasks}</span>
+            <span>Cap {run.diagnostics.max_allowed_concurrency}</span>
+            <span>Gateway {run.diagnostics.api_base_host ?? experimentDiagnostics?.api_base_host ?? "n/a"}</span>
+            <span>Catalog {formatCatalogStatus(experimentDiagnostics)}</span>
+          </div>
+          {clampMessage && <div className="prompt-lab-matrix-clamp-message">{clampMessage}</div>}
           <button
             type="button"
             className="prompt-lab-toggle-btn"
@@ -131,7 +172,7 @@ export default function PromptLabMatrix({ run, selectedCellId, onSelectCell }: P
               <tbody>
                 {run.matrix.models.map((model) => (
                   <tr key={model.id}>
-                    <th>{model.label}</th>
+                    <th>{getExperimentModelLabelById(run.models, model.id, model.label)}</th>
                     {run.matrix.prompts.map((prompt) => {
                       const cellId = `${model.id}__${prompt.id}`;
                       const cell = cellsById.get(cellId);

@@ -394,6 +394,31 @@ export interface ExperimentLimits {
   methods_lab_max_concurrency: number;
 }
 
+export interface ExperimentRunDiagnostics {
+  requested_concurrency: number;
+  effective_worker_count: number;
+  max_allowed_concurrency: number;
+  total_tasks: number;
+  clamped_by_task_count: boolean;
+  clamped_by_server_cap: boolean;
+  api_base_host?: string;
+}
+
+export interface ExperimentGatewayCatalogDiagnostics {
+  reachable: boolean;
+  model_count: number | null;
+  error: string | null;
+  checked_at: string | null;
+}
+
+export interface ExperimentDiagnostics {
+  resolved_api_base?: string;
+  api_base_host?: string;
+  prompt_lab_max_concurrency: number;
+  methods_lab_max_concurrency: number;
+  gateway_catalog: ExperimentGatewayCatalogDiagnostics;
+}
+
 export const DEFAULT_EXPERIMENT_LIMITS: ExperimentLimits = {
   prompt_lab_default_concurrency: 10,
   prompt_lab_max_concurrency: 16,
@@ -572,6 +597,7 @@ export interface PromptLabRunDetail extends PromptLabRunSummary {
   models: PromptLabModelInput[];
   runtime: Omit<PromptLabRuntimeInput, "api_key"> & { api_base?: string };
   concurrency: number;
+  diagnostics: ExperimentRunDiagnostics;
   warnings: string[];
   errors: string[];
   matrix: {
@@ -679,6 +705,7 @@ export interface MethodsLabRunDetail extends MethodsLabRunSummary {
   models: PromptLabModelInput[];
   runtime: Omit<MethodsLabRuntimeInput, "api_key"> & { api_base?: string };
   concurrency: number;
+  diagnostics: ExperimentRunDiagnostics;
   warnings: string[];
   errors: string[];
   matrix: {

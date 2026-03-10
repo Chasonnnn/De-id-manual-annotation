@@ -127,7 +127,7 @@ def test_run_ground_truth_sweep_writes_manifests_exports_and_final_report(
         lambda api_base, api_key: [
             "openai.gpt-5.3-codex",
             "openai.gpt-5.2-chat",
-            "anthropic.claude-4.6-opus",
+            "anthropic.claude-4.6-sonnet",
             "google.gemini-3.1-pro-preview",
             "google.gemini-3.1-flash-lite-preview",
         ],

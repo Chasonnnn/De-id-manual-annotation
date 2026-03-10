@@ -797,6 +797,7 @@ def build_prompt_lab_run_detail(run: dict) -> dict:
     matrix = build_prompt_lab_matrix(run)
     runtime_raw = run.get("runtime", {})
     runtime = runtime_raw if isinstance(runtime_raw, dict) else {}
+    diagnostics = srv._build_experiment_run_diagnostics(run, kind="prompt_lab")
     return {
         **summary,
         "doc_ids": run.get("doc_ids", []),
@@ -817,6 +818,7 @@ def build_prompt_lab_run_detail(run: dict) -> dict:
         "concurrency": run.get("concurrency", srv.PROMPT_LAB_DEFAULT_CONCURRENCY),
         "warnings": run.get("warnings", []),
         "errors": run.get("errors", []),
+        "diagnostics": diagnostics,
         "matrix": matrix,
         "progress": {
             "total_tasks": summary["total_tasks"],
@@ -950,6 +952,7 @@ def run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object])
                     raw_hypothesis_spans,
                     resolution_events,
                     resolution_policy_version,
+                    response_debug,
                 ) = srv._run_method_for_document(
                     doc=enriched,
                     method_id=preset_method_id,
@@ -978,6 +981,7 @@ def run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object])
                     raw_hypothesis_spans,
                     resolution_events,
                     resolution_policy_version,
+                    response_debug,
                 ) = srv._run_llm_for_document(
                     doc=enriched,
                     api_key=api_key,
@@ -1026,6 +1030,7 @@ def run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object])
                 "metrics": metrics,
                 "warnings": warnings,
                 "llm_confidence": llm_confidence.model_dump() if llm_confidence else None,
+                "response_debug": response_debug,
                 "resolution_events": [event.model_dump() for event in resolution_events],
                 "resolution_policy_version": resolution_policy_version,
                 "resolution_summary": srv.summarize_resolution_events(resolution_events),
@@ -1598,6 +1603,7 @@ def build_methods_lab_run_detail(run: dict) -> dict:
     matrix = build_methods_lab_matrix(run)
     runtime_raw = run.get("runtime", {})
     runtime = runtime_raw if isinstance(runtime_raw, dict) else {}
+    diagnostics = srv._build_experiment_run_diagnostics(run, kind="methods_lab")
     return {
         **summary,
         "doc_ids": run.get("doc_ids", []),
@@ -1619,6 +1625,7 @@ def build_methods_lab_run_detail(run: dict) -> dict:
         "concurrency": run.get("concurrency", srv.METHODS_LAB_DEFAULT_CONCURRENCY),
         "warnings": run.get("warnings", []),
         "errors": run.get("errors", []),
+        "diagnostics": diagnostics,
         "matrix": matrix,
         "progress": {
             "total_tasks": summary["total_tasks"],
@@ -1892,6 +1899,7 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                     raw_hypothesis_spans,
                     resolution_events,
                     resolution_policy_version,
+                    response_debug,
                 ) = _run_document()
             else:
                 task_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -1911,6 +1919,7 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                                 raw_hypothesis_spans,
                                 resolution_events,
                                 resolution_policy_version,
+                                response_debug,
                             ) = task_future.result(timeout=poll_timeout)
                             break
                         except concurrent.futures.TimeoutError:
@@ -1982,6 +1991,7 @@ def run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                     "llm_confidence": (
                         llm_confidence.model_dump() if llm_confidence is not None else None
                     ),
+                    "response_debug": response_debug,
                     "resolution_events": [event.model_dump() for event in resolution_events],
                     "resolution_policy_version": resolution_policy_version,
                     "resolution_summary": srv.summarize_resolution_events(resolution_events),

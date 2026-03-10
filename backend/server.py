@@ -2342,6 +2342,16 @@ def _get_experiment_limits(cfg: dict | None = None) -> dict[str, int]:
     }
 
 
+def _extract_api_base_host(api_base: object) -> str | None:
+    raw = str(api_base or "").strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw)
+    if parsed.netloc:
+        return parsed.netloc
+    return parsed.path or None
+
+
 def _validate_experiment_concurrency(value: int, *, max_allowed: int):
     if value < 1 or value > max_allowed:
         raise HTTPException(
@@ -2358,6 +2368,93 @@ def _resolve_experiment_worker_count(
 ) -> int:
     bounded_total = max(1, total_tasks)
     return max(1, min(int(requested), bounded_total, max_allowed))
+
+
+def _count_prompt_lab_tasks(run: dict) -> int:
+    return (
+        len(run.get("doc_ids", []))
+        * len(run.get("models", []))
+        * len(run.get("prompts", []))
+    )
+
+
+def _count_methods_lab_tasks(run: dict) -> int:
+    doc_count = len(run.get("doc_ids", []))
+    model_count = len(run.get("models", []))
+    total = 0
+    for method in run.get("methods", []):
+        if not isinstance(method, dict):
+            continue
+        definition = METHOD_DEFINITION_BY_ID.get(str(method.get("method_id", "")))
+        if definition is None:
+            continue
+        total += doc_count * (model_count if bool(definition.get("uses_llm")) else 1)
+    return total
+
+
+def _build_experiment_run_diagnostics(
+    run: dict,
+    *,
+    kind: Literal["prompt_lab", "methods_lab"],
+) -> dict[str, object]:
+    runtime_raw = run.get("runtime", {})
+    runtime = runtime_raw if isinstance(runtime_raw, dict) else {}
+    if kind == "prompt_lab":
+        requested = int(run.get("concurrency", PROMPT_LAB_DEFAULT_CONCURRENCY))
+        max_allowed = _get_prompt_lab_max_concurrency()
+        total_tasks = _count_prompt_lab_tasks(run)
+    else:
+        requested = int(run.get("concurrency", METHODS_LAB_DEFAULT_CONCURRENCY))
+        max_allowed = _get_methods_lab_max_concurrency()
+        total_tasks = _count_methods_lab_tasks(run)
+    effective = _resolve_experiment_worker_count(
+        requested,
+        total_tasks=total_tasks,
+        max_allowed=max_allowed,
+    )
+    return {
+        "requested_concurrency": requested,
+        "effective_worker_count": effective,
+        "max_allowed_concurrency": max_allowed,
+        "total_tasks": total_tasks,
+        "clamped_by_task_count": requested > max(1, total_tasks),
+        "clamped_by_server_cap": requested > max_allowed,
+        "api_base_host": _extract_api_base_host(runtime.get("api_base")),
+    }
+
+
+def _build_experiment_diagnostics_response() -> dict[str, object]:
+    cfg = _load_config()
+    resolved_api_base = str(cfg.get("api_base", "") or "") or _resolve_env_api_base()
+    api_key = _resolve_env_api_key()
+    checked_at = _now_iso()
+    gateway_catalog: dict[str, object] = {
+        "reachable": False,
+        "model_count": None,
+        "error": None,
+        "checked_at": checked_at,
+    }
+    if not resolved_api_base:
+        gateway_catalog["error"] = "No api_base configured."
+    elif not api_key:
+        gateway_catalog["error"] = "No API key available for gateway catalog check."
+    else:
+        try:
+            models = _fetch_gateway_model_ids(resolved_api_base, api_key)
+            gateway_catalog["reachable"] = True
+            gateway_catalog["model_count"] = len(models)
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, str) else json.dumps(exc.detail)
+            gateway_catalog["error"] = detail
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            gateway_catalog["error"] = str(exc) or exc.__class__.__name__
+    return {
+        "resolved_api_base": resolved_api_base or None,
+        "api_base_host": _extract_api_base_host(resolved_api_base),
+        "prompt_lab_max_concurrency": _get_prompt_lab_max_concurrency(cfg),
+        "methods_lab_max_concurrency": _get_methods_lab_max_concurrency(cfg),
+        "gateway_catalog": gateway_catalog,
+    }
 
 
 def _resolve_bundle_version(payload: dict) -> int:
@@ -2664,6 +2761,7 @@ class _ChunkExecutionResult:
     shifted_spans: list[CanonicalSpan]
     raw_shifted_spans: list[CanonicalSpan]
     warnings: list[str]
+    response_debug: list[str]
     llm_confidence: LLMConfidenceMetric | None
     finish_reason: str | None = None
 
@@ -2674,6 +2772,14 @@ def _format_chunk_warnings(
     warnings: list[str],
 ) -> list[str]:
     return [f"Chunk {idx + 1}/{chunk_count}: {item}" for item in warnings]
+
+
+def _format_chunk_response_debug(
+    idx: int,
+    chunk_count: int,
+    entries: list[str],
+) -> list[str]:
+    return [f"Chunk {idx + 1}/{chunk_count}: {item}" for item in entries]
 
 
 def _build_chunk_diagnostic(
@@ -2737,6 +2843,7 @@ def _run_llm_for_document(
     list[CanonicalSpan],
     list[ResolutionEvent],
     str | None,
+    list[str],
 ]:
     if not _should_use_chunking(len(doc.raw_text), chunk_mode, chunk_size_chars):
         llm_result = run_llm_with_metadata(
@@ -2772,10 +2879,12 @@ def _run_llm_for_document(
             raw_spans,
             list(getattr(llm_result, "resolution_events", [])),
             getattr(llm_result, "resolution_policy_version", None),
+            list(getattr(llm_result, "response_debug", [])),
         )
 
     chunks = _build_text_chunks(doc, chunk_size_chars)
     warnings: list[str] = []
+    response_debug: list[str] = []
     all_raw_spans: list[CanonicalSpan] = []
     chunk_metrics: list[LLMConfidenceMetric] = []
     chunk_count = len(chunks)
@@ -2813,6 +2922,7 @@ def _run_llm_for_document(
             shifted_spans=shifted,
             raw_shifted_spans=raw_shifted,
             warnings=list(llm_result.warnings),
+            response_debug=list(getattr(llm_result, "response_debug", [])),
             llm_confidence=llm_result.llm_confidence,
             finish_reason=getattr(llm_result, "finish_reason", None),
         )
@@ -2863,6 +2973,7 @@ def _run_llm_for_document(
                     "suspicious empty first pass returned 0 spans; retry disabled.",
                     *chunk_outcomes[idx].warnings,
                 ],
+                response_debug=list(chunk_outcomes[idx].response_debug),
                 llm_confidence=chunk_outcomes[idx].llm_confidence,
                 finish_reason=chunk_outcomes[idx].finish_reason,
             )
@@ -2889,6 +3000,7 @@ def _run_llm_for_document(
                 ),
                 *selected_result.warnings,
             ],
+            response_debug=list(selected_result.response_debug),
             llm_confidence=selected_result.llm_confidence,
             finish_reason=selected_result.finish_reason,
         )
@@ -2902,6 +3014,9 @@ def _run_llm_for_document(
         )
         all_raw_spans.extend(result.raw_shifted_spans)
         warnings.extend(_format_chunk_warnings(idx, chunk_count, result.warnings))
+        response_debug.extend(
+            _format_chunk_response_debug(idx, chunk_count, result.response_debug)
+        )
         if result.llm_confidence is not None:
             chunk_metrics.append(result.llm_confidence)
         chunk_diagnostics.append(
@@ -2952,6 +3067,7 @@ def _run_llm_for_document(
         raw_spans,
         resolution_events,
         RESOLUTION_POLICY_VERSION,
+        response_debug,
     )
 
 
@@ -2982,6 +3098,7 @@ def _run_method_for_document(
     list[CanonicalSpan],
     list[ResolutionEvent],
     str | None,
+    list[str],
 ]:
     def _emit_runtime_progress(
         *,
@@ -3058,10 +3175,12 @@ def _run_method_for_document(
             raw_spans,
             list(getattr(method_result, "resolution_events", [])),
             getattr(method_result, "resolution_policy_version", None),
+            list(getattr(method_result, "response_debug", [])),
         )
 
     chunks = _build_text_chunks(doc, chunk_size_chars)
     warnings: list[str] = []
+    response_debug: list[str] = []
     all_spans: list[CanonicalSpan] = []
     all_raw_spans: list[CanonicalSpan] = []
     chunk_count = len(chunks)
@@ -3122,6 +3241,7 @@ def _run_method_for_document(
             shifted_spans=shifted,
             raw_shifted_spans=raw_shifted,
             warnings=list(method_result.warnings),
+            response_debug=list(getattr(method_result, "response_debug", [])),
             llm_confidence=getattr(method_result, "llm_confidence", None),
             finish_reason=None,
         )
@@ -3159,6 +3279,9 @@ def _run_method_for_document(
         all_spans.extend(result.shifted_spans)
         all_raw_spans.extend(result.raw_shifted_spans)
         warnings.extend(_format_chunk_warnings(idx, chunk_count, result.warnings))
+        response_debug.extend(
+            _format_chunk_response_debug(idx, chunk_count, result.response_debug)
+        )
         if result.llm_confidence is not None:
             chunk_confidence_metrics.append(result.llm_confidence)
         chunk_diagnostics.append(_build_chunk_diagnostic(result=result))
@@ -3207,6 +3330,7 @@ def _run_method_for_document(
         raw_spans,
         resolution_events,
         RESOLUTION_POLICY_VERSION,
+        response_debug,
     )
 
 
@@ -3617,6 +3741,31 @@ class ExperimentLimitsResponse(BaseModel):
     methods_lab_max_concurrency: int
 
 
+class ExperimentRunDiagnosticsResponse(BaseModel):
+    requested_concurrency: int
+    effective_worker_count: int
+    max_allowed_concurrency: int
+    total_tasks: int
+    clamped_by_task_count: bool
+    clamped_by_server_cap: bool
+    api_base_host: str | None = None
+
+
+class GatewayCatalogDiagnosticsResponse(BaseModel):
+    reachable: bool
+    model_count: int | None = None
+    error: str | None = None
+    checked_at: str | None = None
+
+
+class ExperimentDiagnosticsResponse(BaseModel):
+    resolved_api_base: str | None = None
+    api_base_host: str | None = None
+    prompt_lab_max_concurrency: int
+    methods_lab_max_concurrency: int
+    gateway_catalog: GatewayCatalogDiagnosticsResponse
+
+
 def _resolve_prompt_lab_runtime(runtime: PromptLabRuntimeInput) -> dict[str, object]:
     cfg = _load_config()
     api_key = (
@@ -3900,6 +4049,7 @@ def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                     raw_hypothesis_spans,
                     resolution_events,
                     resolution_policy_version,
+                    response_debug,
                 ) = _run_method_for_document(
                     doc=enriched,
                     method_id=preset_method_id,
@@ -3928,6 +4078,7 @@ def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                     raw_hypothesis_spans,
                     resolution_events,
                     resolution_policy_version,
+                    response_debug,
                 ) = _run_llm_for_document(
                     doc=enriched,
                     api_key=api_key,
@@ -3976,6 +4127,7 @@ def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                 "metrics": metrics,
                 "warnings": warnings,
                 "llm_confidence": llm_confidence.model_dump() if llm_confidence else None,
+                "response_debug": response_debug,
                 "resolution_events": [event.model_dump() for event in resolution_events],
                 "resolution_policy_version": resolution_policy_version,
                 "resolution_summary": summarize_resolution_events(resolution_events),
@@ -4351,6 +4503,7 @@ def _run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object
                 raw_hypothesis_spans,
                 resolution_events,
                 resolution_policy_version,
+                response_debug,
             ) = _run_method_for_document(
                 doc=enriched,
                 method_id=str(method_variant["method_id"]),
@@ -4403,6 +4556,7 @@ def _run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object
                     "llm_confidence": (
                         llm_confidence.model_dump() if llm_confidence is not None else None
                     ),
+                    "response_debug": response_debug,
                     "resolution_events": [event.model_dump() for event in resolution_events],
                     "resolution_policy_version": resolution_policy_version,
                     "resolution_summary": summarize_resolution_events(resolution_events),
@@ -4569,6 +4723,7 @@ def run_agent(doc_id: str, body: AgentRunBody):
                 raw_hypothesis_spans,
                 resolution_events,
                 resolution_policy_version,
+                _response_debug,
             ) = _run_llm_for_document(
                 doc=doc,
                 api_key=api_key,
@@ -4729,6 +4884,7 @@ def run_agent(doc_id: str, body: AgentRunBody):
                 raw_hypothesis_spans,
                 resolution_events,
                 resolution_policy_version,
+                _response_debug,
             ) = _run_method_for_document(
                 doc=doc,
                 method_id=method_id,
@@ -4923,6 +5079,7 @@ async def get_prompt_lab_document_detail(run_id: str, cell_id: str, doc_id: str)
         "raw_metrics": stored.get("raw_metrics"),
         "metrics": stored.get("metrics"),
         "llm_confidence": stored.get("llm_confidence"),
+        "response_debug": stored.get("response_debug", []),
         "resolution_events": stored.get("resolution_events", []),
         "resolution_policy_version": stored.get("resolution_policy_version"),
         "resolution_summary": stored.get("resolution_summary"),
@@ -5039,6 +5196,7 @@ async def get_methods_lab_document_detail(run_id: str, cell_id: str, doc_id: str
         "raw_metrics": stored.get("raw_metrics"),
         "metrics": stored.get("metrics"),
         "llm_confidence": stored.get("llm_confidence"),
+        "response_debug": stored.get("response_debug", []),
         "resolution_events": stored.get("resolution_events", []),
         "resolution_policy_version": stored.get("resolution_policy_version"),
         "resolution_summary": stored.get("resolution_summary"),
@@ -5975,6 +6133,11 @@ async def update_config(body: dict):
 @app.get("/api/experiments/limits")
 async def get_experiment_limits() -> ExperimentLimitsResponse:
     return ExperimentLimitsResponse(**_get_experiment_limits())
+
+
+@app.get("/api/experiments/diagnostics")
+async def get_experiment_diagnostics() -> ExperimentDiagnosticsResponse:
+    return ExperimentDiagnosticsResponse(**_build_experiment_diagnostics_response())
 
 
 @app.get("/api/models/presets")

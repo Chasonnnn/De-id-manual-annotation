@@ -827,6 +827,30 @@ textarea:focus-visible {
   color: #6a7290;
 }
 
+.prompt-lab-matrix-diagnostics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  color: #30405f;
+}
+
+.prompt-lab-matrix-diagnostics span {
+  border: 1px solid #d7deef;
+  border-radius: 999px;
+  background: #f8faff;
+  padding: 3px 8px;
+}
+
+.prompt-lab-matrix-clamp-message {
+  font-size: 11px;
+  color: #6b4a10;
+  border: 1px solid #edd9af;
+  border-radius: 6px;
+  background: #fff7e8;
+  padding: 6px 8px;
+}
+
 .prompt-lab-matrix.collapsed {
   min-height: auto;
   max-height: none;
@@ -852,6 +876,8 @@ textarea:focus-visible {
   top: 0;
   z-index: 3;
   background: #f6f8ff;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .prompt-lab-matrix-table-wrap tbody th {
@@ -859,6 +885,8 @@ textarea:focus-visible {
   left: 0;
   z-index: 2;
   background: #fff;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .prompt-lab-matrix th,

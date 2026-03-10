@@ -3,6 +3,7 @@ import {
   createMethodsLabRun,
   deleteMethodsLabRun,
   getAgentMethods,
+  getExperimentDiagnostics,
   getExperimentLimits,
   getMethodsLabDocResult,
   getMethodsLabRun,
@@ -13,6 +14,7 @@ import { DEFAULT_EXPERIMENT_LIMITS } from "../types";
 import type {
   AgentMethodOption,
   DocumentSummary,
+  ExperimentDiagnostics,
   ExperimentLimits,
   FolderSummary,
   MethodsLabDocResult,
@@ -20,6 +22,7 @@ import type {
   MethodsLabRunDetail,
   MethodsLabRunSummary,
 } from "../types";
+import { formatExperimentModelLabel, getExperimentModelLabelById } from "../modelDisplay";
 import MethodsLabCellDetail from "./MethodsLabCellDetail";
 import MethodsLabMatrix from "./MethodsLabMatrix";
 import MethodsLabRunForm from "./MethodsLabRunForm";
@@ -75,6 +78,9 @@ function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
   const [methodCatalog, setMethodCatalog] = useState<AgentMethodOption[]>([]);
   const [experimentLimits, setExperimentLimits] = useState<ExperimentLimits>(
     DEFAULT_EXPERIMENT_LIMITS,
+  );
+  const [experimentDiagnostics, setExperimentDiagnostics] = useState<ExperimentDiagnostics | null>(
+    null,
   );
   const [toasts, setToasts] = useState<MethodsLabToast[]>([]);
   const previousRunStatusRef = useRef<Record<string, string>>({});
@@ -173,6 +179,12 @@ function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
   }, []);
 
   useEffect(() => {
+    getExperimentDiagnostics()
+      .then(setExperimentDiagnostics)
+      .catch(() => setExperimentDiagnostics(null));
+  }, []);
+
+  useEffect(() => {
     latestRunDetailRequestRef.current = selectedRunId;
     latestDocRequestRef.current = null;
     setRunDetail(null);
@@ -221,7 +233,7 @@ function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
       const previousStatus = previousDocStatusRef.current[key];
       if (previousStatus && previousStatus !== detail.status) {
         const filename = detail.document.filename || detail.document.id;
-        const modelLabel = detail.model?.label ?? detail.model?.model ?? "model";
+        const modelLabel = formatExperimentModelLabel(detail.model, detail.model?.label ?? "model");
         const methodLabel = detail.method?.label ?? "method";
         if (detail.status === "completed") {
           pushToast(
@@ -269,13 +281,18 @@ function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
     previousRunStatusRef.current[runId] = runDetail.status;
 
     for (const cell of runDetail.matrix.cells) {
+      const modelLabel = getExperimentModelLabelById(
+        runDetail.models,
+        cell.model_id,
+        cell.model_label,
+      );
       const cellKey = `${runId}::${cell.id}`;
       const previousCompleted = previousCellCompletedRef.current[cellKey];
       if (typeof previousCompleted === "number" && cell.completed_docs > previousCompleted) {
         const delta = cell.completed_docs - previousCompleted;
         pushToast(
           "info",
-          `Cell ${cell.model_label} × ${cell.method_label}: +${delta} doc(s) completed (${cell.completed_docs}/${cell.total_docs}).`,
+          `Cell ${modelLabel} × ${cell.method_label}: +${delta} doc(s) completed (${cell.completed_docs}/${cell.total_docs}).`,
         );
       }
       previousCellCompletedRef.current[cellKey] = cell.completed_docs;
@@ -285,7 +302,7 @@ function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
         const delta = cell.error_count - previousErrors;
         pushToast(
           "error",
-          `Cell ${cell.model_label} × ${cell.method_label}: +${delta} new error(s) (${cell.error_count} total).`,
+          `Cell ${modelLabel} × ${cell.method_label}: +${delta} new error(s) (${cell.error_count} total).`,
         );
       }
       previousCellErrorsRef.current[cellKey] = cell.error_count;
@@ -402,10 +419,15 @@ function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
     if (!runDetail || !selectedCell || isActiveStatus(runDetail.status)) {
       return;
     }
+    const modelLabel = getExperimentModelLabelById(
+      runDetail.models,
+      selectedCell.model_id,
+      selectedCell.model_label,
+    );
     if (selectedCell.error_count === 0) {
       pushToast(
         "info",
-        `No error docs to re-run for ${selectedCell.model_label} × ${selectedCell.method_label}.`,
+        `No error docs to re-run for ${modelLabel} × ${selectedCell.method_label}.`,
       );
       return;
     }
@@ -413,7 +435,7 @@ function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
     const selectedMethod = runDetail.methods.find((method) => method.id === selectedCell.method_id);
     const selectedModel = runDetail.models.find((model) => model.id === selectedCell.model_id);
     if (!selectedMethod || !selectedModel) {
-      const message = `Could not resolve the selected Methods Lab cell configuration for ${selectedCell.model_label} × ${selectedCell.method_label}.`;
+      const message = `Could not resolve the selected Methods Lab cell configuration for ${modelLabel} × ${selectedCell.method_label}.`;
       setRunError(message);
       pushToast("error", message);
       return;
@@ -430,12 +452,12 @@ function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
       if (errorDocIds.length === 0) {
         pushToast(
           "info",
-          `No error docs remain for ${selectedCell.model_label} × ${selectedCell.method_label}.`,
+          `No error docs remain for ${modelLabel} × ${selectedCell.method_label}.`,
         );
         return;
       }
       const created = await createAndSelectRun({
-        name: `${runDetail.name} · ${selectedCell.model_label} × ${selectedCell.method_label} · error docs`,
+        name: `${runDetail.name} · ${modelLabel} × ${selectedCell.method_label} · error docs`,
         doc_ids: errorDocIds,
         folder_ids: [],
         methods: [selectedMethod],
@@ -454,7 +476,7 @@ function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
       setRunError(message);
       pushToast(
         "error",
-        `Failed to re-run Methods Lab error docs for ${selectedCell.model_label} × ${selectedCell.method_label}.`,
+        `Failed to re-run Methods Lab error docs for ${modelLabel} × ${selectedCell.method_label}.`,
       );
     } finally {
       setRerunningErrorCellId(null);
@@ -538,6 +560,7 @@ function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
     docLoading,
     methodCatalog,
     experimentLimits,
+    experimentDiagnostics,
     toasts,
     selectedCell,
     dismissToast,
@@ -576,6 +599,7 @@ export default function MethodsLabTab({
     docLoading,
     methodCatalog,
     experimentLimits,
+    experimentDiagnostics,
     toasts,
     selectedCell,
     dismissToast,
@@ -663,6 +687,7 @@ export default function MethodsLabTab({
               )}
               <MethodsLabMatrix
                 run={runDetail}
+                experimentDiagnostics={experimentDiagnostics}
                 selectedCellId={selectedCellId}
                 onSelectCell={setSelectedCellId}
               />

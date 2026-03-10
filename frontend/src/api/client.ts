@@ -15,6 +15,7 @@ import type {
   LLMConfidenceMetric,
   MatchMode,
   DocumentSummary,
+  ExperimentDiagnostics,
   ExperimentLimits,
   FolderDetail,
   FolderPruneResult,
@@ -203,6 +204,11 @@ export async function getAgentMethods(): Promise<AgentMethodOption[]> {
 export async function getExperimentLimits(): Promise<ExperimentLimits> {
   const raw = await request<Record<string, unknown>>("/experiments/limits");
   return normalizeExperimentLimits(raw);
+}
+
+export async function getExperimentDiagnostics(): Promise<ExperimentDiagnostics> {
+  const raw = await request<Record<string, unknown>>("/experiments/diagnostics");
+  return normalizeExperimentDiagnostics(raw);
 }
 
 export async function createPromptLabRun(
@@ -497,6 +503,31 @@ function normalizeExperimentLimits(raw: Record<string, unknown>): ExperimentLimi
   };
 }
 
+function normalizeExperimentDiagnostics(raw: Record<string, unknown>): ExperimentDiagnostics {
+  const gatewayCatalogRaw = isRecord(raw.gateway_catalog) ? raw.gateway_catalog : {};
+  return {
+    resolved_api_base:
+      typeof raw.resolved_api_base === "string" ? raw.resolved_api_base : undefined,
+    api_base_host: typeof raw.api_base_host === "string" ? raw.api_base_host : undefined,
+    prompt_lab_max_concurrency: toNumber(
+      raw.prompt_lab_max_concurrency,
+      DEFAULT_EXPERIMENT_LIMITS.prompt_lab_max_concurrency,
+    ),
+    methods_lab_max_concurrency: toNumber(
+      raw.methods_lab_max_concurrency,
+      DEFAULT_EXPERIMENT_LIMITS.methods_lab_max_concurrency,
+    ),
+    gateway_catalog: {
+      reachable: Boolean(gatewayCatalogRaw.reachable),
+      model_count:
+        typeof gatewayCatalogRaw.model_count === "number" ? gatewayCatalogRaw.model_count : null,
+      error: typeof gatewayCatalogRaw.error === "string" ? gatewayCatalogRaw.error : null,
+      checked_at:
+        typeof gatewayCatalogRaw.checked_at === "string" ? gatewayCatalogRaw.checked_at : null,
+    },
+  };
+}
+
 function normalizePromptLabRunSummary(raw: Record<string, unknown>): PromptLabRunSummary {
   return {
     id: String(raw.id ?? ""),
@@ -562,6 +593,7 @@ function normalizePromptLabRunDetail(raw: Record<string, unknown>): PromptLabRun
   const availableLabels = Array.isArray(matrixRaw.available_labels)
     ? matrixRaw.available_labels.filter((x): x is string => typeof x === "string")
     : [];
+  const diagnosticsRaw = isRecord(raw.diagnostics) ? raw.diagnostics : {};
 
   return {
     ...summary,
@@ -605,6 +637,25 @@ function normalizePromptLabRunDetail(raw: Record<string, unknown>): PromptLabRun
       chunk_size_chars: toNumber(runtimeRaw.chunk_size_chars, 10000),
     },
     concurrency: toNumber(raw.concurrency, DEFAULT_EXPERIMENT_LIMITS.prompt_lab_default_concurrency),
+    diagnostics: {
+      requested_concurrency: toNumber(
+        diagnosticsRaw.requested_concurrency,
+        toNumber(raw.concurrency, DEFAULT_EXPERIMENT_LIMITS.prompt_lab_default_concurrency),
+      ),
+      effective_worker_count: toNumber(
+        diagnosticsRaw.effective_worker_count,
+        toNumber(raw.concurrency, DEFAULT_EXPERIMENT_LIMITS.prompt_lab_default_concurrency),
+      ),
+      max_allowed_concurrency: toNumber(
+        diagnosticsRaw.max_allowed_concurrency,
+        DEFAULT_EXPERIMENT_LIMITS.prompt_lab_max_concurrency,
+      ),
+      total_tasks: toNumber(diagnosticsRaw.total_tasks, summary.total_tasks),
+      clamped_by_task_count: Boolean(diagnosticsRaw.clamped_by_task_count),
+      clamped_by_server_cap: Boolean(diagnosticsRaw.clamped_by_server_cap),
+      api_base_host:
+        typeof diagnosticsRaw.api_base_host === "string" ? diagnosticsRaw.api_base_host : undefined,
+    },
     warnings: Array.isArray(raw.warnings)
       ? raw.warnings.filter((x): x is string => typeof x === "string")
       : [],
@@ -660,6 +711,7 @@ function normalizeMethodsLabRunDetail(raw: Record<string, unknown>): MethodsLabR
   const availableLabels = Array.isArray(matrixRaw.available_labels)
     ? matrixRaw.available_labels.filter((x): x is string => typeof x === "string")
     : [];
+  const diagnosticsRaw = isRecord(raw.diagnostics) ? raw.diagnostics : {};
 
   return {
     ...summary,
@@ -702,6 +754,25 @@ function normalizeMethodsLabRunDetail(raw: Record<string, unknown>): MethodsLabR
           : null,
     },
     concurrency: toNumber(raw.concurrency, DEFAULT_EXPERIMENT_LIMITS.methods_lab_default_concurrency),
+    diagnostics: {
+      requested_concurrency: toNumber(
+        diagnosticsRaw.requested_concurrency,
+        toNumber(raw.concurrency, DEFAULT_EXPERIMENT_LIMITS.methods_lab_default_concurrency),
+      ),
+      effective_worker_count: toNumber(
+        diagnosticsRaw.effective_worker_count,
+        toNumber(raw.concurrency, DEFAULT_EXPERIMENT_LIMITS.methods_lab_default_concurrency),
+      ),
+      max_allowed_concurrency: toNumber(
+        diagnosticsRaw.max_allowed_concurrency,
+        DEFAULT_EXPERIMENT_LIMITS.methods_lab_max_concurrency,
+      ),
+      total_tasks: toNumber(diagnosticsRaw.total_tasks, summary.total_tasks),
+      clamped_by_task_count: Boolean(diagnosticsRaw.clamped_by_task_count),
+      clamped_by_server_cap: Boolean(diagnosticsRaw.clamped_by_server_cap),
+      api_base_host:
+        typeof diagnosticsRaw.api_base_host === "string" ? diagnosticsRaw.api_base_host : undefined,
+    },
     warnings: Array.isArray(raw.warnings)
       ? raw.warnings.filter((x): x is string => typeof x === "string")
       : [],

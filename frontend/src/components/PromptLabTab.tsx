@@ -3,6 +3,7 @@ import {
   createPromptLabRun,
   deletePromptLabRun,
   getAgentMethods,
+  getExperimentDiagnostics,
   getExperimentLimits,
   getPromptLabDocResult,
   getPromptLabRun,
@@ -13,6 +14,7 @@ import { DEFAULT_EXPERIMENT_LIMITS } from "../types";
 import type {
   AgentMethodOption,
   DocumentSummary,
+  ExperimentDiagnostics,
   ExperimentLimits,
   FolderSummary,
   PromptLabDocResult,
@@ -20,6 +22,7 @@ import type {
   PromptLabRunDetail,
   PromptLabRunSummary,
 } from "../types";
+import { formatExperimentModelLabel, getExperimentModelLabelById } from "../modelDisplay";
 import PromptLabCellDetail from "./PromptLabCellDetail";
 import PromptLabMatrix from "./PromptLabMatrix";
 import PromptLabRunForm from "./PromptLabRunForm";
@@ -75,6 +78,9 @@ function usePromptLabTabController(onSelectDocument: (docId: string) => void) {
   const [methodCatalog, setMethodCatalog] = useState<AgentMethodOption[]>([]);
   const [experimentLimits, setExperimentLimits] = useState<ExperimentLimits>(
     DEFAULT_EXPERIMENT_LIMITS,
+  );
+  const [experimentDiagnostics, setExperimentDiagnostics] = useState<ExperimentDiagnostics | null>(
+    null,
   );
   const [toasts, setToasts] = useState<PromptLabToast[]>([]);
   const previousRunStatusRef = useRef<Record<string, string>>({});
@@ -173,6 +179,12 @@ function usePromptLabTabController(onSelectDocument: (docId: string) => void) {
   }, []);
 
   useEffect(() => {
+    getExperimentDiagnostics()
+      .then(setExperimentDiagnostics)
+      .catch(() => setExperimentDiagnostics(null));
+  }, []);
+
+  useEffect(() => {
     latestRunDetailRequestRef.current = selectedRunId;
     latestDocRequestRef.current = null;
     setRunDetail(null);
@@ -221,7 +233,7 @@ function usePromptLabTabController(onSelectDocument: (docId: string) => void) {
       const previousStatus = previousDocStatusRef.current[key];
       if (previousStatus && previousStatus !== detail.status) {
         const filename = detail.document.filename || detail.document.id;
-        const modelLabel = detail.model?.label ?? detail.model?.model ?? "model";
+        const modelLabel = formatExperimentModelLabel(detail.model, detail.model?.label ?? "model");
         const promptLabel = detail.prompt?.label ?? "prompt";
         if (detail.status === "completed") {
           pushToast(
@@ -272,6 +284,11 @@ function usePromptLabTabController(onSelectDocument: (docId: string) => void) {
     previousRunStatusRef.current[runId] = runDetail.status;
 
     for (const cell of runDetail.matrix.cells) {
+      const modelLabel = getExperimentModelLabelById(
+        runDetail.models,
+        cell.model_id,
+        cell.model_label,
+      );
       const cellKey = `${runId}::${cell.id}`;
       const previousCompleted = previousCellCompletedRef.current[cellKey];
       if (
@@ -281,7 +298,7 @@ function usePromptLabTabController(onSelectDocument: (docId: string) => void) {
         const delta = cell.completed_docs - previousCompleted;
         pushToast(
           "info",
-          `Cell ${cell.model_label} × ${cell.prompt_label}: +${delta} doc(s) completed (${cell.completed_docs}/${cell.total_docs}).`,
+          `Cell ${modelLabel} × ${cell.prompt_label}: +${delta} doc(s) completed (${cell.completed_docs}/${cell.total_docs}).`,
         );
       }
       previousCellCompletedRef.current[cellKey] = cell.completed_docs;
@@ -294,7 +311,7 @@ function usePromptLabTabController(onSelectDocument: (docId: string) => void) {
         const delta = cell.error_count - previousErrors;
         pushToast(
           "error",
-          `Cell ${cell.model_label} × ${cell.prompt_label}: +${delta} new error(s) (${cell.error_count} total).`,
+          `Cell ${modelLabel} × ${cell.prompt_label}: +${delta} new error(s) (${cell.error_count} total).`,
         );
       }
       previousCellErrorsRef.current[cellKey] = cell.error_count;
@@ -411,10 +428,15 @@ function usePromptLabTabController(onSelectDocument: (docId: string) => void) {
     if (!runDetail || !selectedCell || isActiveStatus(runDetail.status)) {
       return;
     }
+    const modelLabel = getExperimentModelLabelById(
+      runDetail.models,
+      selectedCell.model_id,
+      selectedCell.model_label,
+    );
     if (selectedCell.error_count === 0) {
       pushToast(
         "info",
-        `No error docs to re-run for ${selectedCell.model_label} × ${selectedCell.prompt_label}.`,
+        `No error docs to re-run for ${modelLabel} × ${selectedCell.prompt_label}.`,
       );
       return;
     }
@@ -422,7 +444,7 @@ function usePromptLabTabController(onSelectDocument: (docId: string) => void) {
     const selectedPrompt = runDetail.prompts.find((prompt) => prompt.id === selectedCell.prompt_id);
     const selectedModel = runDetail.models.find((model) => model.id === selectedCell.model_id);
     if (!selectedPrompt || !selectedModel) {
-      const message = `Could not resolve the selected Prompt Lab cell configuration for ${selectedCell.model_label} × ${selectedCell.prompt_label}.`;
+      const message = `Could not resolve the selected Prompt Lab cell configuration for ${modelLabel} × ${selectedCell.prompt_label}.`;
       setRunError(message);
       pushToast("error", message);
       return;
@@ -439,12 +461,12 @@ function usePromptLabTabController(onSelectDocument: (docId: string) => void) {
       if (errorDocIds.length === 0) {
         pushToast(
           "info",
-          `No error docs remain for ${selectedCell.model_label} × ${selectedCell.prompt_label}.`,
+          `No error docs remain for ${modelLabel} × ${selectedCell.prompt_label}.`,
         );
         return;
       }
       const created = await createAndSelectRun({
-        name: `${runDetail.name} · ${selectedCell.model_label} × ${selectedCell.prompt_label} · error docs`,
+        name: `${runDetail.name} · ${modelLabel} × ${selectedCell.prompt_label} · error docs`,
         doc_ids: errorDocIds,
         folder_ids: [],
         prompts: [selectedPrompt],
@@ -463,7 +485,7 @@ function usePromptLabTabController(onSelectDocument: (docId: string) => void) {
       setRunError(message);
       pushToast(
         "error",
-        `Failed to re-run Prompt Lab error docs for ${selectedCell.model_label} × ${selectedCell.prompt_label}.`,
+        `Failed to re-run Prompt Lab error docs for ${modelLabel} × ${selectedCell.prompt_label}.`,
       );
     } finally {
       setRerunningErrorCellId(null);
@@ -547,6 +569,7 @@ function usePromptLabTabController(onSelectDocument: (docId: string) => void) {
     docLoading,
     methodCatalog,
     experimentLimits,
+    experimentDiagnostics,
     toasts,
     selectedCell,
     dismissToast,
@@ -585,6 +608,7 @@ export default function PromptLabTab({
     docLoading,
     methodCatalog,
     experimentLimits,
+    experimentDiagnostics,
     toasts,
     selectedCell,
     dismissToast,
@@ -676,6 +700,7 @@ export default function PromptLabTab({
               )}
               <PromptLabMatrix
                 run={runDetail}
+                experimentDiagnostics={experimentDiagnostics}
                 selectedCellId={selectedCellId}
                 onSelectCell={setSelectedCellId}
               />

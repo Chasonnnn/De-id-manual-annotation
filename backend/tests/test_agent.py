@@ -480,6 +480,28 @@ class TestRunLLM:
             )
 
     @patch("agent.completion")
+    def test_empty_content_error_includes_response_debug_summary(self, mock_completion):
+        message = types.SimpleNamespace(content=None, tool_calls=None)
+        choice = types.SimpleNamespace(message=message, finish_reason="length")
+        resp = types.SimpleNamespace(choices=[choice], output_text=None)
+        mock_completion.return_value = resp
+
+        with pytest.raises(ValueError) as exc_info:
+            run_llm_with_metadata(
+                text="text",
+                api_key="test-key",
+                model="openai/gpt-4o",
+            )
+
+        message_text = str(exc_info.value)
+        assert "empty output content (finish_reason=length)" in message_text
+        assert "response_debug=" in message_text
+        assert "message.content=None" in message_text
+        assert "message.tool_calls=None" in message_text
+        assert "output_text=None" in message_text
+        assert "raw_preview=" in message_text
+
+    @patch("agent.completion")
     def test_custom_system_prompt_and_temperature(self, mock_completion):
         mock_completion.return_value = _mock_completion_response('{"spans":[]}')
 
@@ -1135,7 +1157,7 @@ def test_model_presets_include_requested_options():
     assert "openai.gpt-5.3-codex" in model_ids
     assert "gpt-5.4" in model_ids
     assert "openai.gpt-5.2-chat" in model_ids
-    assert "anthropic.claude-4.6-opus" in model_ids
+    assert "anthropic.claude-4.6-sonnet" in model_ids
     assert "google.gemini-3.1-pro-preview" in model_ids
     assert "google.gemini-3.1-flash-lite-preview" in model_ids
 

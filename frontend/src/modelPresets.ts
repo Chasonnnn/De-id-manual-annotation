@@ -33,11 +33,11 @@ export const MODEL_PRESETS: ModelPreset[] = [
     defaultReasoningEffort: "xhigh",
   },
   {
-    id: "anthropic.claude-4.6-opus",
-    label: "Claude Opus 4.6 (thinking)",
+    id: "anthropic.claude-4.6-sonnet",
+    label: "Claude Sonnet 4.6",
     group: "Anthropic",
     supportsReasoningEffort: false,
-    supportsAnthropicThinking: true,
+    supportsAnthropicThinking: false,
   },
   {
     id: "google.gemini-3.1-pro-preview",

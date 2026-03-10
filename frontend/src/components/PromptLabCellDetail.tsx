@@ -7,6 +7,7 @@ import type {
   PromptLabRunDetail,
 } from "../types";
 import { getPrimaryMetricLabel, getPrimaryMetrics } from "../metricPresentation";
+import { getExperimentModelLabelById } from "../modelDisplay";
 
 interface Props {
   run: PromptLabRunDetail;
@@ -91,13 +92,14 @@ export default function PromptLabCellDetail({
       : !canRerunErrorDocs
         ? "Wait for the run to finish before rerunning error docs."
         : undefined;
+  const modelLabel = getExperimentModelLabelById(run.models, cell.model_id, cell.model_label);
 
   return (
     <section className="prompt-lab-detail">
       <div className="prompt-lab-detail-header">
         <div className="prompt-lab-detail-heading">
           <h3>
-            Cell Detail: {cell.model_label} × {cell.prompt_label}
+            Cell Detail: {modelLabel} × {cell.prompt_label}
           </h3>
           <div className="prompt-lab-detail-meta">
             {getPrimaryMetricLabel("F1", usingOverlap)} {fmtPct((cell.co_primary_metrics?.overlap?.micro.f1 ?? cell.micro.f1))} ·{" "}
@@ -127,7 +129,7 @@ export default function PromptLabCellDetail({
         >
           {run.matrix.models.map((model) => (
             <option key={model.id} value={model.id}>
-              {model.label}
+              {getExperimentModelLabelById(run.models, model.id, model.label)}
             </option>
           ))}
         </select>

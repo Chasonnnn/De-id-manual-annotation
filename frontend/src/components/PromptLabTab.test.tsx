@@ -13,6 +13,7 @@ const clientMocks = vi.hoisted(() => ({
   createPromptLabRun: vi.fn(),
   deletePromptLabRun: vi.fn(),
   getAgentMethods: vi.fn(),
+  getExperimentDiagnostics: vi.fn(),
   getExperimentLimits: vi.fn(),
   getPromptLabDocResult: vi.fn(),
   getPromptLabRun: vi.fn(),
@@ -29,8 +30,19 @@ vi.mock("./PromptLabRunForm", () => ({
 }));
 
 vi.mock("./PromptLabMatrix", () => ({
-  default: ({ selectedCellId }: { selectedCellId: string | null }) => (
-    <div data-testid="prompt-lab-matrix">{selectedCellId ?? "no-cell"}</div>
+  default: ({
+    selectedCellId,
+    experimentDiagnostics,
+    run,
+  }: {
+    selectedCellId: string | null;
+    experimentDiagnostics?: { api_base_host?: string | null } | null;
+    run: { diagnostics?: { effective_worker_count?: number } };
+  }) => (
+    <div data-testid="prompt-lab-matrix">
+      {selectedCellId ?? "no-cell"}|{experimentDiagnostics?.api_base_host ?? "no-host"}|
+      {run.diagnostics?.effective_worker_count ?? "no-effective"}
+    </div>
   ),
 }));
 
@@ -148,6 +160,15 @@ function makeRunDetail(
     concurrency: 1,
     warnings: [],
     errors: [],
+    diagnostics: {
+      requested_concurrency: 16,
+      effective_worker_count: 1,
+      max_allowed_concurrency: 16,
+      total_tasks: 1,
+      clamped_by_task_count: true,
+      clamped_by_server_cap: false,
+      api_base_host: "api.ai.it.cornell.edu",
+    },
     matrix: {
       models: [{ id: modelId, label: modelLabel }],
       prompts: [{ id: promptId, label: promptLabel }],
@@ -235,12 +256,25 @@ describe("PromptLabTab", () => {
     clientMocks.createPromptLabRun.mockReset();
     clientMocks.deletePromptLabRun.mockReset();
     clientMocks.getAgentMethods.mockReset();
+    clientMocks.getExperimentDiagnostics.mockReset();
     clientMocks.getExperimentLimits.mockReset();
     clientMocks.getPromptLabDocResult.mockReset();
     clientMocks.getPromptLabRun.mockReset();
     clientMocks.listPromptLabRuns.mockReset();
     clientMocks.stopPromptLabRun.mockReset();
     clientMocks.getAgentMethods.mockResolvedValue([]);
+    clientMocks.getExperimentDiagnostics.mockResolvedValue({
+      resolved_api_base: "https://api.ai.it.cornell.edu",
+      api_base_host: "api.ai.it.cornell.edu",
+      prompt_lab_max_concurrency: 16,
+      methods_lab_max_concurrency: 16,
+      gateway_catalog: {
+        reachable: true,
+        model_count: 189,
+        error: null,
+        checked_at: "2026-03-10T00:00:00Z",
+      },
+    });
     clientMocks.getExperimentLimits.mockResolvedValue({
       prompt_lab_default_concurrency: 10,
       prompt_lab_max_concurrency: 16,
@@ -317,6 +351,31 @@ describe("PromptLabTab", () => {
 
     expect(await screen.findByText("run form max=12")).toBeTruthy();
     expect(clientMocks.getExperimentLimits).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads experiment diagnostics and passes them to the selected run view", async () => {
+    clientMocks.listPromptLabRuns.mockResolvedValue([openAiSummary]);
+    clientMocks.getPromptLabRun.mockResolvedValue(openAiDetail);
+    clientMocks.getPromptLabDocResult.mockResolvedValue(
+      makeDocResult(openAiDetail, {
+        cellId: openAiDetail.matrix.cells[0]!.id,
+        docId: "doc-1",
+      }),
+    );
+
+    render(
+      <PromptLabTab
+        documents={documents}
+        folders={[]}
+        selectedDocumentId={null}
+        onSelectDocument={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByText("codex_xhigh__baseline_raw|api.ai.it.cornell.edu|1"),
+    ).toBeTruthy();
+    expect(clientMocks.getExperimentDiagnostics).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the current doc detail visible while polling an active run", async () => {

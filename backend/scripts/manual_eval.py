@@ -88,7 +88,7 @@ def _run_variant(
     enable_suspicious_empty_retry: bool,
     match_mode: str,
 ) -> dict[str, Any]:
-    spans, warnings, llm_confidence, chunk_diagnostics = _run_llm_for_document(
+    spans, warnings, llm_confidence, chunk_diagnostics, _raw_spans, _events, _policy, _response_debug = _run_llm_for_document(
         doc=doc,
         api_key=api_key,
         api_base=api_base,
@@ -281,7 +281,7 @@ def run_probe(args: argparse.Namespace) -> int:
     f1_scores: list[float] = []
     outputs: list[dict[str, Any]] = []
     for run_index in range(args.repeats):
-        spans, warnings, llm_confidence, chunk_diagnostics = _run_llm_for_document(
+        spans, warnings, llm_confidence, chunk_diagnostics, _raw_spans, _events, _policy, _response_debug = _run_llm_for_document(
             doc=enriched.model_copy(update={"raw_text": chunk_text}),
             api_key=api_key,
             api_base=api_base,

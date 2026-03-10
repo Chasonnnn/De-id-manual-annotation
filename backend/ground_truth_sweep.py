@@ -209,13 +209,13 @@ def _model_batches() -> dict[str, list[ModelVariant]]:
             ModelVariant(
                 id="claude_thinking_off",
                 label="claude_thinking_off",
-                model="anthropic.claude-4.6-opus",
+                model="anthropic.claude-4.6-sonnet",
                 anthropic_thinking=False,
             ),
             ModelVariant(
                 id="claude_thinking_on",
                 label="claude_thinking_on",
-                model="anthropic.claude-4.6-opus",
+                model="anthropic.claude-4.6-sonnet",
                 anthropic_thinking=True,
                 anthropic_thinking_budget_tokens=2048,
             ),

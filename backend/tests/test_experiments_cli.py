@@ -329,6 +329,55 @@ def test_methods_cli_run_accepts_pre_reference_source(client, monkeypatch):
     assert saved["runtime"]["fallback_reference_source"] == "pre"
 
 
+def test_methods_cli_run_accepts_task_timeout_seconds(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_method_with_metadata(**kwargs):
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(model="openai.gpt-5.3-codex"),
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    doc_id = _upload(client)
+    _set_manual_annotations(
+        client,
+        doc_id,
+        [{"start": 6, "end": 10, "label": "NAME", "text": "Anna"}],
+    )
+
+    exit_code = main(
+        [
+            "methods",
+            "--doc-id",
+            doc_id,
+            "--method",
+            "Default=default",
+            "--model",
+            "Codex=openai.gpt-5.3-codex",
+            "--api-key",
+            "request-key",
+            "--api-base",
+            "https://proxy.example.com/v1",
+            "--task-timeout-seconds",
+            "12.5",
+        ]
+    )
+
+    assert exit_code == 0
+    run_ids = _load_methods_lab_index()
+    assert len(run_ids) == 1
+    saved = _load_methods_lab_run(run_ids[0])
+    assert saved is not None
+    assert saved["status"] == "completed"
+    assert saved["runtime"]["task_timeout_seconds"] == pytest.approx(12.5)
+
+
 def test_manifest_prompt_run_accepts_folder_ids(client, monkeypatch, tmp_path):
     monkeypatch.setattr(
         "server._fetch_gateway_model_ids",

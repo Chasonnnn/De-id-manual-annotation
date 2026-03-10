@@ -244,6 +244,44 @@ Concurrency notes:
 - The server-configurable max defaults to `16` and is hard-capped at `32`.
 - Higher concurrency mainly helps LLM-backed sweeps. Local Presidio-heavy runs benefit less.
 
+### Cornell concurrency benchmark
+
+Verify the gateway catalog through the same code path the app uses:
+
+```bash
+cd /Users/chason/De-id-manual-annotation/backend
+set -a
+source /Users/chason/De-id-manual-annotation/.env.local
+set +a
+.venv/bin/python -c "import os; from server import _fetch_gateway_model_ids; models=_fetch_gateway_model_ids(os.environ['LITELLM_BASE_URL'], os.environ['LITELLM_API_KEY']); print(len(models)); print('openai.gpt-4.1-nano' in models)"
+```
+
+Then run a 16-task Prompt Lab benchmark against the Cornell gateway:
+
+```bash
+cd /Users/chason/De-id-manual-annotation/backend
+uv run annotation-experiments list-docs --session default
+
+uv run annotation-experiments prompt \
+  --session default \
+  --name 'cornell-concurrency-16' \
+  --doc-id <doc_id> \
+  --prompt 'P1=Extract PII spans as strict JSON.' \
+  --prompt 'P2=Extract PII spans as strict JSON.' \
+  --prompt 'P3=Extract PII spans as strict JSON.' \
+  --prompt 'P4=Extract PII spans as strict JSON.' \
+  --model 'M1=openai.gpt-4.1-nano' \
+  --model 'M2=openai.gpt-4.1-nano' \
+  --model 'M3=openai.gpt-4.1-nano' \
+  --model 'M4=openai.gpt-4.1-nano' \
+  --api-key "$LITELLM_API_KEY" \
+  --api-base "$LITELLM_BASE_URL" \
+  --concurrency 16 \
+  --output-json /tmp/cornell-concurrency-16.json
+```
+
+Repeat the same run with `--concurrency 1`, `4`, `8`, and `16`. If the diagnostics card reports `effective_worker_count=16` but runtime stops improving, the bottleneck is the Cornell LiteLLM gateway or its upstream provider rather than this app.
+
 ## Qwen3.5 9B local runner
 
 If you want to run the local `Qwen3.5-9B` MLX-VLM checkpoint from this repo,

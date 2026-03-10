@@ -125,6 +125,7 @@ def _build_methods_body_from_args(args: argparse.Namespace) -> MethodsLabRunCrea
         label_projection=args.label_projection,
         chunk_mode=args.chunk_mode,
         chunk_size_chars=args.chunk_size_chars,
+        task_timeout_seconds=args.task_timeout_seconds,
     )
     return MethodsLabRunCreateBody(
         name=args.name,
@@ -466,6 +467,7 @@ def _add_runtime_args(parser: argparse.ArgumentParser, *, prompt_mode: bool) -> 
         parser.add_argument("--preset", action="append", default=[])
     else:
         parser.add_argument("--method", action="append", default=[])
+        parser.add_argument("--task-timeout-seconds", type=float)
     _add_output_args(parser)
 
 
