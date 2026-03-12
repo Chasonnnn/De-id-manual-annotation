@@ -1,5 +1,6 @@
 # Runtime data
 .annotation_tool/
+backend/.benchmark_artifacts/
 .env.local
 output/
 
