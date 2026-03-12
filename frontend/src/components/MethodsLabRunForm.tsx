@@ -273,6 +273,7 @@ function MethodsLabConfigGrid({
         >
           <option value="audited">Audited</option>
           <option value="test">Test</option>
+          <option value="v2+post-process">V2 + post-process</option>
           <option value="legacy">Legacy</option>
         </select>
       </div>

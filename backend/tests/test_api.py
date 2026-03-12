@@ -18,6 +18,7 @@ from server import (
     _resolve_env_api_base,
     _resolve_env_api_key,
     _load_doc,
+    _run_method_for_document,
     _methods_lab_cancel_events,
     _methods_lab_runs,
     _prompt_lab_runs,
@@ -3270,6 +3271,84 @@ def test_prompt_lab_preset_variant_accepts_legacy_method_bundle(client, monkeypa
     assert seen_method_bundles == ["legacy"]
 
 
+def test_prompt_lab_preset_variant_accepts_v2_post_process_method_bundle(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+    seen_method_bundles: list[str] = []
+
+    def fake_run_method_with_metadata(**kwargs):
+        seen_method_bundles.append(str(kwargs.get("method_bundle")))
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            raw_spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=None,
+            response_debug=[],
+            resolution_events=[],
+            resolution_policy_version=None,
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    create_resp = client.post(
+        "/api/prompt-lab/runs",
+        json={
+            "name": "preset-method-v2-post-process-run",
+            "doc_ids": [doc_id],
+            "prompts": [
+                {
+                    "id": "preset1",
+                    "label": "Verified preset",
+                    "variant_type": "preset",
+                    "preset_method_id": "verified",
+                    "method_verify_override": True,
+                }
+            ],
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "none",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "reference_source": "manual",
+                "fallback_reference_source": "pre",
+                "method_bundle": "v2+post-process",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+    assert create_resp.json()["method_bundle"] == "v2+post-process"
+
+    final = _wait_for_prompt_lab_terminal(client, run_id)
+    assert final["status"] == "completed"
+    assert final["method_bundle"] == "v2+post-process"
+    assert final["runtime"]["method_bundle"] == "v2+post-process"
+    runs_resp = client.get("/api/prompt-lab/runs")
+    assert runs_resp.status_code == 200
+    runs = runs_resp.json()["runs"]
+    listed = next((row for row in runs if row["id"] == run_id), None)
+    assert listed is not None
+    assert listed["method_bundle"] == "v2+post-process"
+    assert seen_method_bundles == ["v2+post-process"]
+
+
 def test_prompt_lab_matrix_includes_per_label_and_available_labels(client, monkeypatch):
     monkeypatch.setattr(
         "server._fetch_gateway_model_ids",
@@ -6494,6 +6573,126 @@ def test_methods_lab_accepts_test_method_bundle(client, monkeypatch):
     assert listed is not None
     assert listed["method_bundle"] == "test"
     assert seen_method_bundles == ["test"]
+
+
+def test_methods_lab_accepts_v2_post_process_method_bundle(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["google.gemini-3.1-pro-preview"],
+    )
+    seen_method_bundles: list[str] = []
+
+    def fake_run_method_with_metadata(**kwargs):
+        seen_method_bundles.append(str(kwargs.get("method_bundle")))
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            raw_spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=None,
+            response_debug=[],
+            resolution_events=[],
+            resolution_policy_version=None,
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    create_resp = client.post(
+        "/api/methods-lab/runs",
+        json={
+            "name": "methods-v2-post-process-run",
+            "doc_ids": [doc_id],
+            "methods": [{"id": "method_1", "label": "Default", "method_id": "default"}],
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Gemini Pro",
+                    "model": "google.gemini-3.1-pro-preview",
+                    "reasoning_effort": "none",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "reference_source": "pre",
+                "fallback_reference_source": "pre",
+                "method_bundle": "v2+post-process",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+    assert create_resp.json()["method_bundle"] == "v2+post-process"
+
+    final = _wait_for_methods_lab_terminal(client, run_id)
+    assert final["status"] == "completed"
+    assert final["method_bundle"] == "v2+post-process"
+    assert final["runtime"]["method_bundle"] == "v2+post-process"
+    runs_resp = client.get("/api/methods-lab/runs")
+    assert runs_resp.status_code == 200
+    runs = runs_resp.json()["runs"]
+    listed = next((row for row in runs if row["id"] == run_id), None)
+    assert listed is not None
+    assert listed["method_bundle"] == "v2+post-process"
+    assert seen_method_bundles == ["v2+post-process"]
+
+
+def test_run_method_for_document_v2_post_process_expands_repeated_occurrences(
+    client, monkeypatch
+):
+    doc_id = str(_upload(client).json()["id"])
+    doc = _load_doc(doc_id)
+    assert doc is not None
+    doc.raw_text = "Anna met Anna."
+
+    def fake_run_method_with_metadata(**kwargs):
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=0, end=4, label="NAME", text="Anna")],
+            raw_spans=[CanonicalSpan(start=0, end=4, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=None,
+            response_debug=[],
+            resolution_events=[],
+            resolution_policy_version=None,
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    spans, warnings, _confidence, _diag, raw_spans, _events, _policy, _debug = _run_method_for_document(
+        doc=doc,
+        method_id="default",
+        api_key="request-key",
+        api_base="https://proxy.example.com/v1",
+        model="google.gemini-3.1-pro-preview",
+        system_prompt="",
+        temperature=0.0,
+        reasoning_effort="none",
+        anthropic_thinking=False,
+        anthropic_thinking_budget_tokens=None,
+        method_verify=False,
+        label_profile="simple",
+        chunk_mode="off",
+        chunk_size_chars=10000,
+        method_bundle="v2+post-process",
+    )
+
+    assert warnings == []
+    assert [(span.start, span.end, span.text) for span in raw_spans] == [
+        (0, 4, "Anna"),
+        (9, 13, "Anna"),
+    ]
+    assert [(span.start, span.end, span.text) for span in spans] == [
+        (0, 4, "Anna"),
+        (9, 13, "Anna"),
+    ]
 
 
 def test_methods_lab_detail_includes_raw_metrics_and_resolution_metadata(client, monkeypatch):

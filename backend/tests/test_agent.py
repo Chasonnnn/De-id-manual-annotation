@@ -14,7 +14,9 @@ from agent import (
     METHOD_DEFINITION_BY_ID,
     MODEL_PRESETS,
     SYSTEM_PROMPT,
+    _expand_detected_value_occurrences,
     _infer_provider,
+    _normalize_method_bundle,
     _presidio_runtime_error,
     _reset_presidio_runtime_state,
     _run_presidio_pass,
@@ -1321,6 +1323,10 @@ def test_test_method_contracts_validate_cleanly():
     assert agent.validate_method_contracts(method_bundle="test") == []
 
 
+def test_v2_post_process_method_contracts_validate_cleanly():
+    assert agent.validate_method_contracts(method_bundle="v2+post-process") == []
+
+
 def test_test_bundle_prompt_wrapper_includes_examples_and_label_catalog():
     prompt = build_extraction_system_prompt(
         "Base prompt",
@@ -1333,6 +1339,34 @@ def test_test_bundle_prompt_wrapper_includes_examples_and_label_catalog():
     assert '"label":"NAME"' in prompt
     assert "ages over 89" in prompt
     assert "geographic locations smaller than a state" in prompt
+
+
+def test_normalize_method_bundle_accepts_v2_post_process():
+    assert _normalize_method_bundle("v2+post-process") == "v2+post-process"
+
+
+def test_expand_detected_value_occurrences_repeats_same_name():
+    text = "Anna met Anna at school."
+    spans = [CanonicalSpan(start=0, end=4, label="NAME", text="Anna")]
+
+    expanded = _expand_detected_value_occurrences(text, spans)
+
+    assert [(span.start, span.end, span.label, span.text) for span in expanded] == [
+        (0, 4, "NAME", "Anna"),
+        (9, 13, "NAME", "Anna"),
+    ]
+
+
+def test_expand_detected_value_occurrences_prefers_longer_overlap():
+    text = "Call 555-123-4567 now"
+    spans = [
+        CanonicalSpan(start=5, end=17, label="PHONE", text="555-123-4567"),
+        CanonicalSpan(start=9, end=17, label="MISC_ID", text="123-4567"),
+    ]
+
+    expanded = _expand_detected_value_occurrences(text, spans)
+
+    assert [(span.label, span.text) for span in expanded] == [("PHONE", "555-123-4567")]
 
 
 def test_list_agent_methods_reports_profile_metadata_for_audited_bundle():
@@ -1437,6 +1471,105 @@ def test_run_method_with_metadata_audited_dual_split_keeps_school_output(monkeyp
     )
 
     assert [(span.label, span.text) for span in result.spans] == [("SCHOOL", "Yale")]
+
+
+def test_run_method_with_metadata_v2_post_process_expands_repeated_occurrences(monkeypatch):
+    llm_call_count = 0
+
+    def fake_run_llm_with_metadata(**kwargs):
+        nonlocal llm_call_count
+        llm_call_count += 1
+        spans = [CanonicalSpan(start=0, end=4, label="NAME", text="Anna")]
+        return types.SimpleNamespace(
+            spans=spans,
+            raw_spans=spans,
+            warnings=[],
+            llm_confidence=LLMConfidenceMetric(
+                available=False,
+                provider="gemini",
+                model="google.gemini-3.1-pro-preview",
+                reason="unsupported_provider",
+                token_count=0,
+                band="na",
+            ),
+            response_debug=[],
+            resolution_events=[],
+            resolution_policy_version=None,
+        )
+
+    monkeypatch.setattr("agent.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    result = run_method_with_metadata(
+        text="Anna met Anna.",
+        method_id="default",
+        api_key="k",
+        api_base="https://proxy.example.com/v1",
+        model="google.gemini-3.1-pro-preview",
+        system_prompt="",
+        temperature=0.0,
+        reasoning_effort="none",
+        anthropic_thinking=False,
+        anthropic_thinking_budget_tokens=None,
+        method_verify=False,
+        label_profile="simple",
+        method_bundle="v2+post-process",
+    )
+
+    assert llm_call_count == 1
+    assert [(span.start, span.end, span.text) for span in result.raw_spans] == [
+        (0, 4, "Anna"),
+        (9, 13, "Anna"),
+    ]
+    assert [(span.start, span.end, span.text) for span in result.spans] == [
+        (0, 4, "Anna"),
+        (9, 13, "Anna"),
+    ]
+
+
+def test_run_method_with_metadata_audited_does_not_expand_repeated_occurrences(monkeypatch):
+    def fake_run_llm_with_metadata(**kwargs):
+        spans = [CanonicalSpan(start=0, end=4, label="NAME", text="Anna")]
+        return types.SimpleNamespace(
+            spans=spans,
+            raw_spans=spans,
+            warnings=[],
+            llm_confidence=LLMConfidenceMetric(
+                available=False,
+                provider="gemini",
+                model="google.gemini-3.1-pro-preview",
+                reason="unsupported_provider",
+                token_count=0,
+                band="na",
+            ),
+            response_debug=[],
+            resolution_events=[],
+            resolution_policy_version=None,
+        )
+
+    monkeypatch.setattr("agent.run_llm_with_metadata", fake_run_llm_with_metadata)
+
+    result = run_method_with_metadata(
+        text="Anna met Anna.",
+        method_id="default",
+        api_key="k",
+        api_base="https://proxy.example.com/v1",
+        model="google.gemini-3.1-pro-preview",
+        system_prompt="",
+        temperature=0.0,
+        reasoning_effort="none",
+        anthropic_thinking=False,
+        anthropic_thinking_budget_tokens=None,
+        method_verify=False,
+        label_profile="simple",
+        method_bundle="audited",
+    )
+
+    assert [(span.start, span.end, span.text) for span in result.raw_spans] == [
+        (0, 4, "Anna"),
+    ]
+    assert [(span.start, span.end, span.text) for span in result.spans] == [
+        (0, 4, "Anna"),
+    ]
 
 
 def test_presidio_runtime_error_caches_success(monkeypatch):

@@ -218,4 +218,39 @@ describe("PromptLabRunForm", () => {
       );
     });
   });
+
+  it("submits the v2+post-process prompt lab preset method bundle", async () => {
+    const onRun = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <PromptLabRunForm
+        documents={documents}
+        folders={[]}
+        selectedDocumentId="doc-1"
+        methods={[]}
+        onRun={onRun}
+        running={false}
+        concurrencyMax={12}
+      />,
+    );
+
+    await waitFor(() => {
+      expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
+    });
+
+    fireEvent.change(screen.getByLabelText("Preset Bundle"), {
+      target: { value: "v2+post-process" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run Prompt Lab" }));
+
+    await waitFor(() => {
+      expect(onRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtime: expect.objectContaining({
+            method_bundle: "v2+post-process",
+          }),
+        }),
+      );
+    });
+  });
 });

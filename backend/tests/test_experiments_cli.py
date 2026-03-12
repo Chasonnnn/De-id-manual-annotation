@@ -468,6 +468,51 @@ def test_methods_cli_run_accepts_test_method_bundle(monkeypatch, capsys):
     assert "bundle-test" in capsys.readouterr().out
 
 
+def test_methods_cli_run_accepts_v2_post_process_method_bundle(monkeypatch, capsys):
+    captured: dict[str, object] = {}
+
+    def fake_create_methods_lab_run(
+        body,
+        *,
+        session_id: str = "default",
+        run_async: bool = False,
+        method_bundle: str = "audited",
+    ):
+        captured["session_id"] = session_id
+        captured["run_async"] = run_async
+        captured["method_bundle"] = method_bundle
+        return {
+            "id": "run-v2-post-process",
+            "status": "completed",
+            "name": "bundle-test",
+            "matrix": {"cells": []},
+        }
+
+    monkeypatch.setattr("experiments_cli.create_methods_lab_run", fake_create_methods_lab_run)
+
+    exit_code = main(
+        [
+            "methods",
+            "--doc-id",
+            "c9c3cf4c",
+            "--method",
+            "Default=default",
+            "--model",
+            "Gemini Pro=google.gemini-3.1-pro-preview",
+            "--api-key",
+            "request-key",
+            "--method-bundle",
+            "v2+post-process",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["session_id"] == "default"
+    assert captured["run_async"] is False
+    assert captured["method_bundle"] == "v2+post-process"
+    assert "bundle-test" in capsys.readouterr().out
+
+
 def test_manifest_methods_run_forwards_internal_method_bundle(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
 
@@ -519,6 +564,59 @@ def test_manifest_methods_run_forwards_internal_method_bundle(monkeypatch, tmp_p
     assert captured["session_id"] == "default"
     assert captured["run_async"] is False
     assert captured["method_bundle"] == "legacy"
+
+
+def test_manifest_methods_run_accepts_v2_post_process_method_bundle(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    def fake_create_methods_lab_run(
+        body,
+        *,
+        session_id: str = "default",
+        run_async: bool = False,
+        method_bundle: str = "audited",
+    ):
+        captured["session_id"] = session_id
+        captured["run_async"] = run_async
+        captured["method_bundle"] = method_bundle
+        return {
+            "id": "run-v2-post-process",
+            "status": "completed",
+            "name": "manifest-bundle-test",
+            "matrix": {"cells": []},
+        }
+
+    monkeypatch.setattr("experiments_cli.create_methods_lab_run", fake_create_methods_lab_run)
+
+    manifest_path = tmp_path / "methods_manifest_v2_post_process.yaml"
+    manifest_path.write_text(
+        "\n".join(
+            [
+                "kind: methods_lab",
+                "session: default",
+                "method_bundle: v2+post-process",
+                "doc_ids:",
+                "  - c9c3cf4c",
+                "methods:",
+                "  - id: method_1",
+                "    label: Default",
+                "    method_id: default",
+                "models:",
+                "  - id: model_1",
+                "    label: Codex",
+                "    model: openai.gpt-5.3-codex",
+                "runtime:",
+                "  api_key: request-key",
+            ]
+        )
+    )
+
+    exit_code = main(["run", str(manifest_path)])
+
+    assert exit_code == 0
+    assert captured["session_id"] == "default"
+    assert captured["run_async"] is False
+    assert captured["method_bundle"] == "v2+post-process"
 
 
 def test_build_method_bundle_ab_summary_reports_metric_and_stability_deltas():

@@ -176,8 +176,10 @@ def _load_manifest(path_value: str) -> tuple[str, str, Any, Path, str]:
     kind = str(data.get("kind") or "").strip()
     session_id = str(data.get("session") or "default").strip() or "default"
     method_bundle = str(data.get("method_bundle") or "audited").strip().lower() or "audited"
-    if method_bundle not in {"legacy", "audited", "test"}:
-        raise ValueError("method_bundle must be one of 'legacy', 'audited', or 'test'.")
+    if method_bundle not in {"legacy", "audited", "test", "v2+post-process"}:
+        raise ValueError(
+            "method_bundle must be one of 'legacy', 'audited', 'test', or 'v2+post-process'."
+        )
     body_payload = {key: value for key, value in data.items() if key not in {"kind", "session"}}
     body_payload.pop("method_bundle", None)
     raw_doc_ids = body_payload.get("doc_ids")
@@ -935,7 +937,7 @@ def _add_runtime_args(parser: argparse.ArgumentParser, *, prompt_mode: bool) -> 
         parser.add_argument("--method", action="append", default=[])
         parser.add_argument(
             "--method-bundle",
-            choices=["legacy", "audited", "test"],
+            choices=["legacy", "audited", "test", "v2+post-process"],
             default="audited",
         )
         parser.add_argument("--task-timeout-seconds", type=float)

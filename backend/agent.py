@@ -242,7 +242,7 @@ Output data following the provided JSON schema.
 
 
 ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh"]
-MethodBundleId = Literal["legacy", "audited", "test"]
+MethodBundleId = Literal["legacy", "audited", "test", "v2+post-process"]
 
 CONFIDENCE_HIGH_THRESHOLD = 0.9
 CONFIDENCE_MEDIUM_THRESHOLD = 0.75
@@ -1395,17 +1395,25 @@ TEST_METHOD_DEFINITIONS: list[dict[str, Any]] = copy.deepcopy(AUDITED_METHOD_DEF
 TEST_METHOD_DEFINITION_BY_ID: dict[str, dict[str, Any]] = {
     method["id"]: method for method in TEST_METHOD_DEFINITIONS
 }
+V2_POST_PROCESS_METHOD_DEFINITIONS: list[dict[str, Any]] = copy.deepcopy(
+    AUDITED_METHOD_DEFINITIONS
+)
+V2_POST_PROCESS_METHOD_DEFINITION_BY_ID: dict[str, dict[str, Any]] = {
+    method["id"]: method for method in V2_POST_PROCESS_METHOD_DEFINITIONS
+}
 METHOD_DEFINITIONS = AUDITED_METHOD_DEFINITIONS
 METHOD_DEFINITION_BY_ID = AUDITED_METHOD_DEFINITION_BY_ID
 METHOD_DEFINITIONS_BY_BUNDLE: dict[MethodBundleId, list[dict[str, Any]]] = {
     "legacy": LEGACY_METHOD_DEFINITIONS,
     "audited": METHOD_DEFINITIONS,
     "test": TEST_METHOD_DEFINITIONS,
+    "v2+post-process": V2_POST_PROCESS_METHOD_DEFINITIONS,
 }
 METHOD_DEFINITION_BY_ID_BY_BUNDLE: dict[MethodBundleId, dict[str, dict[str, Any]]] = {
     "legacy": LEGACY_METHOD_DEFINITION_BY_ID,
     "audited": METHOD_DEFINITION_BY_ID,
     "test": TEST_METHOD_DEFINITION_BY_ID,
+    "v2+post-process": V2_POST_PROCESS_METHOD_DEFINITION_BY_ID,
 }
 
 _presidio_analyzer_lock = threading.Lock()
@@ -2498,8 +2506,10 @@ def normalize_method_spans(
 
 def _normalize_method_bundle(method_bundle: MethodBundleId | str | None) -> MethodBundleId:
     raw = str(method_bundle or DEFAULT_METHOD_BUNDLE).strip().lower()
-    if raw not in {"legacy", "audited", "test"}:
-        raise ValueError("method_bundle must be one of: legacy, audited, test")
+    if raw not in {"legacy", "audited", "test", "v2+post-process"}:
+        raise ValueError(
+            "method_bundle must be one of: legacy, audited, test, v2+post-process"
+        )
     return raw  # type: ignore[return-value]
 
 
@@ -2695,6 +2705,91 @@ _TEST_METHOD_CONTRACT_ERRORS = tuple(validate_method_contracts(method_bundle="te
 if _TEST_METHOD_CONTRACT_ERRORS:
     joined_errors = "; ".join(_TEST_METHOD_CONTRACT_ERRORS)
     raise RuntimeError(f"Test method contract validation failed: {joined_errors}")
+
+
+_V2_POST_PROCESS_METHOD_CONTRACT_ERRORS = tuple(
+    validate_method_contracts(method_bundle="v2+post-process")
+)
+if _V2_POST_PROCESS_METHOD_CONTRACT_ERRORS:
+    joined_errors = "; ".join(_V2_POST_PROCESS_METHOD_CONTRACT_ERRORS)
+    raise RuntimeError(f"V2+post-process method contract validation failed: {joined_errors}")
+
+
+def _bundle_uses_detected_value_post_process(
+    method_bundle: MethodBundleId | str | None,
+) -> bool:
+    return _normalize_method_bundle(method_bundle) == "v2+post-process"
+
+
+def _is_word_char(value: str) -> bool:
+    return value.isalnum() or value == "_"
+
+
+def _at_word_boundary(text: str, start: int, end: int) -> bool:
+    if start > 0 and _is_word_char(text[start - 1]) and _is_word_char(text[start]):
+        return False
+    if end < len(text) and _is_word_char(text[end - 1]) and _is_word_char(text[end]):
+        return False
+    return True
+
+
+def _expand_detected_value_occurrences(
+    text: str,
+    spans: list[CanonicalSpan],
+) -> list[CanonicalSpan]:
+    if not spans:
+        return []
+
+    expanded: list[CanonicalSpan] = []
+    seen: set[tuple[str, str]] = set()
+    ordered_spans = sorted(
+        (span for span in spans if span.text),
+        key=lambda item: len(item.text),
+        reverse=True,
+    )
+
+    for span in ordered_spans:
+        key = (span.label, span.text)
+        if key in seen:
+            continue
+
+        start_index = 0
+        while start_index < len(text):
+            found = text.find(span.text, start_index)
+            if found == -1:
+                break
+
+            new_start = found
+            new_end = found + len(span.text)
+            if not _at_word_boundary(text, new_start, new_end):
+                start_index = found + 1
+                continue
+
+            candidate = CanonicalSpan(
+                start=new_start,
+                end=new_end,
+                label=span.label,
+                text=text[new_start:new_end],
+            )
+
+            overlapping_index: int | None = None
+            for index, existing in enumerate(expanded):
+                if new_end > existing.start and new_start < existing.end:
+                    overlapping_index = index
+                    break
+
+            if overlapping_index is None:
+                expanded.append(candidate)
+            else:
+                existing = expanded[overlapping_index]
+                if (candidate.end - candidate.start) > (existing.end - existing.start):
+                    expanded[overlapping_index] = candidate
+
+            start_index = found + len(span.text)
+
+        seen.add(key)
+
+    return expanded
 
 
 def merge_method_spans(spans: list[CanonicalSpan]) -> list[CanonicalSpan]:
@@ -3141,6 +3236,8 @@ def run_method_with_metadata(
             warnings.append(f"Pass {idx + 1}: {warning}")
 
     raw_spans = merge_method_spans(all_raw_spans)
+    if _bundle_uses_detected_value_post_process(method_bundle):
+        raw_spans = merge_method_spans(_expand_detected_value_occurrences(text, raw_spans))
     pre_verify_resolved, pre_verify_events = resolve_spans(
         text,
         raw_spans,

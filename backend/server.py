@@ -41,6 +41,8 @@ from agent import (
     METHOD_DEFINITION_BY_ID,
     MODEL_PRESETS,
     SYSTEM_PROMPT,
+    _bundle_uses_detected_value_post_process,
+    _expand_detected_value_occurrences,
     _normalize_method_bundle,
     _drop_implausible_name_spans,
     build_extraction_system_prompt,
@@ -3132,6 +3134,8 @@ def _run_method_for_document(
             }
         )
 
+    use_detected_value_post_process = _bundle_uses_detected_value_post_process(method_bundle)
+
     if not _should_use_chunking(len(doc.raw_text), chunk_mode, chunk_size_chars):
         _emit_runtime_progress(
             chunk_index=1,
@@ -3176,6 +3180,15 @@ def _run_method_for_document(
             ),
             doc.raw_text,
         )
+        if use_detected_value_post_process:
+            raw_spans = _normalize_and_validate_spans(
+                merge_method_spans(_expand_detected_value_occurrences(doc.raw_text, raw_spans)),
+                doc.raw_text,
+            )
+            spans = _normalize_and_validate_spans(
+                merge_method_spans(_expand_detected_value_occurrences(doc.raw_text, spans)),
+                doc.raw_text,
+            )
         if progress_callback is not None:
             progress_callback(1, 1)
         return (
@@ -3297,6 +3310,10 @@ def _run_method_for_document(
         if result.llm_confidence is not None:
             chunk_confidence_metrics.append(result.llm_confidence)
         chunk_diagnostics.append(_build_chunk_diagnostic(result=result))
+
+    if use_detected_value_post_process:
+        all_raw_spans = _expand_detected_value_occurrences(doc.raw_text, all_raw_spans)
+        all_spans = _expand_detected_value_occurrences(doc.raw_text, all_spans)
 
     raw_spans = _normalize_and_validate_spans(
         merge_method_spans(all_raw_spans),
@@ -3701,7 +3718,7 @@ class PromptLabRuntimeInput(BaseModel):
     fallback_reference_source: Literal["manual", "pre"] = "pre"
     label_profile: Literal["simple", "advanced"] = "simple"
     label_projection: Literal["native", "coarse_simple"] = "native"
-    method_bundle: Literal["legacy", "audited", "test"] = "audited"
+    method_bundle: Literal["legacy", "audited", "test", "v2+post-process"] = "audited"
     chunk_mode: Literal["auto", "off", "force"] = "off"
     chunk_size_chars: int = DEFAULT_CHUNK_SIZE_CHARS
 
@@ -3732,7 +3749,7 @@ class MethodsLabRuntimeInput(BaseModel):
     fallback_reference_source: Literal["manual", "pre"] = "pre"
     label_profile: Literal["simple", "advanced"] = "simple"
     label_projection: Literal["native", "coarse_simple"] = "native"
-    method_bundle: Literal["legacy", "audited", "test"] = "audited"
+    method_bundle: Literal["legacy", "audited", "test", "v2+post-process"] = "audited"
     chunk_mode: Literal["auto", "off", "force"] = "off"
     chunk_size_chars: int = DEFAULT_CHUNK_SIZE_CHARS
     task_timeout_seconds: float | None = None
