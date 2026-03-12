@@ -242,7 +242,7 @@ Output data following the provided JSON schema.
 
 
 ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh"]
-MethodBundleId = Literal["legacy", "audited", "test", "v2+post-process"]
+MethodBundleId = Literal["legacy", "audited", "test", "v2", "v2+post-process"]
 
 CONFIDENCE_HIGH_THRESHOLD = 0.9
 CONFIDENCE_MEDIUM_THRESHOLD = 0.75
@@ -265,12 +265,12 @@ MODEL_PRESETS: list[dict[str, Any]] = [
         "default_reasoning_effort": "xhigh",
     },
     {
-        "label": "OpenAI: GPT-5.4 (xhigh)",
-        "model": "gpt-5.4",
-        "provider": "openai",
-        "supports_reasoning_effort": True,
-        "supports_anthropic_thinking": False,
-        "default_reasoning_effort": "xhigh",
+        "label": "Anthropic: Claude Opus 4.6",
+        "model": "anthropic.claude-4.6-opus",
+        "provider": "anthropic",
+        "supports_reasoning_effort": False,
+        "supports_anthropic_thinking": True,
+        "default_reasoning_effort": "none",
     },
     {
         "label": "OpenAI: ChatGPT 5.2 (xhigh)",
@@ -1395,6 +1395,10 @@ TEST_METHOD_DEFINITIONS: list[dict[str, Any]] = copy.deepcopy(AUDITED_METHOD_DEF
 TEST_METHOD_DEFINITION_BY_ID: dict[str, dict[str, Any]] = {
     method["id"]: method for method in TEST_METHOD_DEFINITIONS
 }
+V2_METHOD_DEFINITIONS: list[dict[str, Any]] = copy.deepcopy(AUDITED_METHOD_DEFINITIONS)
+V2_METHOD_DEFINITION_BY_ID: dict[str, dict[str, Any]] = {
+    method["id"]: method for method in V2_METHOD_DEFINITIONS
+}
 V2_POST_PROCESS_METHOD_DEFINITIONS: list[dict[str, Any]] = copy.deepcopy(
     AUDITED_METHOD_DEFINITIONS
 )
@@ -1407,12 +1411,14 @@ METHOD_DEFINITIONS_BY_BUNDLE: dict[MethodBundleId, list[dict[str, Any]]] = {
     "legacy": LEGACY_METHOD_DEFINITIONS,
     "audited": METHOD_DEFINITIONS,
     "test": TEST_METHOD_DEFINITIONS,
+    "v2": V2_METHOD_DEFINITIONS,
     "v2+post-process": V2_POST_PROCESS_METHOD_DEFINITIONS,
 }
 METHOD_DEFINITION_BY_ID_BY_BUNDLE: dict[MethodBundleId, dict[str, dict[str, Any]]] = {
     "legacy": LEGACY_METHOD_DEFINITION_BY_ID,
     "audited": METHOD_DEFINITION_BY_ID,
     "test": TEST_METHOD_DEFINITION_BY_ID,
+    "v2": V2_METHOD_DEFINITION_BY_ID,
     "v2+post-process": V2_POST_PROCESS_METHOD_DEFINITION_BY_ID,
 }
 
@@ -2506,9 +2512,9 @@ def normalize_method_spans(
 
 def _normalize_method_bundle(method_bundle: MethodBundleId | str | None) -> MethodBundleId:
     raw = str(method_bundle or DEFAULT_METHOD_BUNDLE).strip().lower()
-    if raw not in {"legacy", "audited", "test", "v2+post-process"}:
+    if raw not in {"legacy", "audited", "test", "v2", "v2+post-process"}:
         raise ValueError(
-            "method_bundle must be one of: legacy, audited, test, v2+post-process"
+            "method_bundle must be one of: legacy, audited, test, v2, v2+post-process"
         )
     return raw  # type: ignore[return-value]
 
@@ -2705,6 +2711,12 @@ _TEST_METHOD_CONTRACT_ERRORS = tuple(validate_method_contracts(method_bundle="te
 if _TEST_METHOD_CONTRACT_ERRORS:
     joined_errors = "; ".join(_TEST_METHOD_CONTRACT_ERRORS)
     raise RuntimeError(f"Test method contract validation failed: {joined_errors}")
+
+
+_V2_METHOD_CONTRACT_ERRORS = tuple(validate_method_contracts(method_bundle="v2"))
+if _V2_METHOD_CONTRACT_ERRORS:
+    joined_errors = "; ".join(_V2_METHOD_CONTRACT_ERRORS)
+    raise RuntimeError(f"V2 method contract validation failed: {joined_errors}")
 
 
 _V2_POST_PROCESS_METHOD_CONTRACT_ERRORS = tuple(

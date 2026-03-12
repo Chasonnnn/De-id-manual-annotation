@@ -1295,8 +1295,8 @@ def test_run_llm_verifier_defaults_timeout_and_max_tokens(mock_completion):
 def test_model_presets_include_requested_options():
     model_ids = {preset["model"] for preset in MODEL_PRESETS}
     assert "openai.gpt-5.3-codex" in model_ids
-    assert "gpt-5.4" in model_ids
     assert "openai.gpt-5.2-chat" in model_ids
+    assert "anthropic.claude-4.6-opus" in model_ids
     assert "anthropic.claude-4.6-sonnet" in model_ids
     assert "google.gemini-3.1-pro-preview" in model_ids
     assert "google.gemini-3.1-flash-lite-preview" in model_ids
@@ -1327,6 +1327,10 @@ def test_v2_post_process_method_contracts_validate_cleanly():
     assert agent.validate_method_contracts(method_bundle="v2+post-process") == []
 
 
+def test_v2_method_contracts_validate_cleanly():
+    assert agent.validate_method_contracts(method_bundle="v2") == []
+
+
 def test_test_bundle_prompt_wrapper_includes_examples_and_label_catalog():
     prompt = build_extraction_system_prompt(
         "Base prompt",
@@ -1343,6 +1347,10 @@ def test_test_bundle_prompt_wrapper_includes_examples_and_label_catalog():
 
 def test_normalize_method_bundle_accepts_v2_post_process():
     assert _normalize_method_bundle("v2+post-process") == "v2+post-process"
+
+
+def test_normalize_method_bundle_accepts_v2():
+    assert _normalize_method_bundle("v2") == "v2"
 
 
 def test_expand_detected_value_occurrences_repeats_same_name():

@@ -17,12 +17,11 @@ export const MODEL_PRESETS: ModelPreset[] = [
     defaultReasoningEffort: "xhigh",
   },
   {
-    id: "gpt-5.4",
-    label: "GPT-5.4 (xhigh)",
-    group: "OpenAI",
-    supportsReasoningEffort: true,
-    supportsAnthropicThinking: false,
-    defaultReasoningEffort: "xhigh",
+    id: "anthropic.claude-4.6-opus",
+    label: "Claude Opus 4.6",
+    group: "Anthropic",
+    supportsReasoningEffort: false,
+    supportsAnthropicThinking: true,
   },
   {
     id: "openai.gpt-5.2-chat",

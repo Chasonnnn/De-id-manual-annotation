@@ -769,6 +769,13 @@ def build_prompt_lab_matrix(run: dict) -> dict:
     }
 
 
+def _read_method_bundle_for_summary(value: object) -> str:
+    raw = str(value or "audited").strip().lower()
+    if raw in {"legacy", "audited", "test", "v2+post-process", "stable", "v2"}:
+        return raw
+    return "audited"
+
+
 def build_prompt_lab_run_summary(run: dict) -> dict:
     srv = _server()
     matrix = build_prompt_lab_matrix(run)
@@ -781,7 +788,7 @@ def build_prompt_lab_run_summary(run: dict) -> dict:
     status = str(run.get("status", ""))
     runtime_raw = run.get("runtime", {})
     runtime = runtime_raw if isinstance(runtime_raw, dict) else {}
-    method_bundle = srv._normalize_method_bundle(runtime.get("method_bundle", "audited"))
+    method_bundle = _read_method_bundle_for_summary(runtime.get("method_bundle", "audited"))
     for cell in cells:
         completed += int(cell.get("completed_docs", 0)) + int(cell.get("failed_docs", 0))
         failed += int(cell.get("failed_docs", 0))
@@ -1612,7 +1619,7 @@ def build_methods_lab_run_summary(run: dict) -> dict:
     status = str(run.get("status", ""))
     runtime_raw = run.get("runtime", {})
     runtime = runtime_raw if isinstance(runtime_raw, dict) else {}
-    method_bundle = srv._normalize_method_bundle(runtime.get("method_bundle", "audited"))
+    method_bundle = _read_method_bundle_for_summary(runtime.get("method_bundle", "audited"))
     for cell in cells:
         completed += int(cell.get("completed_docs", 0)) + int(cell.get("failed_docs", 0))
         failed += int(cell.get("failed_docs", 0))

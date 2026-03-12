@@ -3718,7 +3718,7 @@ class PromptLabRuntimeInput(BaseModel):
     fallback_reference_source: Literal["manual", "pre"] = "pre"
     label_profile: Literal["simple", "advanced"] = "simple"
     label_projection: Literal["native", "coarse_simple"] = "native"
-    method_bundle: Literal["legacy", "audited", "test", "v2+post-process"] = "audited"
+    method_bundle: Literal["legacy", "audited", "test", "v2", "v2+post-process"] = "audited"
     chunk_mode: Literal["auto", "off", "force"] = "off"
     chunk_size_chars: int = DEFAULT_CHUNK_SIZE_CHARS
 
@@ -3749,7 +3749,7 @@ class MethodsLabRuntimeInput(BaseModel):
     fallback_reference_source: Literal["manual", "pre"] = "pre"
     label_profile: Literal["simple", "advanced"] = "simple"
     label_projection: Literal["native", "coarse_simple"] = "native"
-    method_bundle: Literal["legacy", "audited", "test", "v2+post-process"] = "audited"
+    method_bundle: Literal["legacy", "audited", "test", "v2", "v2+post-process"] = "audited"
     chunk_mode: Literal["auto", "off", "force"] = "off"
     chunk_size_chars: int = DEFAULT_CHUNK_SIZE_CHARS
     task_timeout_seconds: float | None = None

@@ -1,7 +1,13 @@
 export type PIILabel = string;
 export type LabelProfile = "simple" | "advanced";
 export type LabelProjection = "native" | "coarse_simple";
-export type MethodBundle = "legacy" | "audited" | "test" | "v2+post-process";
+export type MethodBundle =
+  | "legacy"
+  | "audited"
+  | "test"
+  | "stable"
+  | "v2"
+  | "v2+post-process";
 export type ImportConflictPolicy = "replace" | "add_new" | "keep_current";
 
 export const PII_LABELS: PIILabel[] = [

@@ -288,6 +288,7 @@ function PromptLabConfigGrid({
         >
           <option value="audited">Audited</option>
           <option value="test">Test</option>
+          <option value="v2">V2</option>
           <option value="v2+post-process">V2 + post-process</option>
           <option value="legacy">Legacy</option>
         </select>

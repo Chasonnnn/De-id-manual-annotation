@@ -535,6 +535,8 @@ function normalizePromptLabRunSummary(raw: Record<string, unknown>): PromptLabRu
     raw.method_bundle === "legacy" ||
     raw.method_bundle === "audited" ||
     raw.method_bundle === "test" ||
+    raw.method_bundle === "stable" ||
+    raw.method_bundle === "v2" ||
     raw.method_bundle === "v2+post-process"
       ? raw.method_bundle
       : runtimeRaw.method_bundle;
@@ -562,6 +564,8 @@ function normalizeMethodsLabRunSummary(raw: Record<string, unknown>): MethodsLab
     raw.method_bundle === "legacy" ||
     raw.method_bundle === "audited" ||
     raw.method_bundle === "test" ||
+    raw.method_bundle === "stable" ||
+    raw.method_bundle === "v2" ||
     raw.method_bundle === "v2+post-process"
       ? raw.method_bundle
       : runtimeRaw.method_bundle;
@@ -1340,6 +1344,8 @@ function normalizeMethodBundle(value: unknown): MethodBundle {
     value === "legacy" ||
     value === "audited" ||
     value === "test" ||
+    value === "stable" ||
+    value === "v2" ||
     value === "v2+post-process"
   )
     ? value
