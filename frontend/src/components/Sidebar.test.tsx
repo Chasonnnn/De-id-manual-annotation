@@ -156,21 +156,24 @@ describe("Sidebar", () => {
 
   it("creates top-level folders and nested subfolders from prompt actions", () => {
     const onCreateFolder = vi.fn();
-    const promptSpy = vi
-      .spyOn(window, "prompt")
-      .mockReturnValueOnce("Research Batch")
-      .mockReturnValueOnce("Reviewed");
 
     renderSidebar({ onCreateFolder });
 
     fireEvent.click(screen.getByRole("button", { name: "New Folder" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "New Folder" }), {
+      target: { value: "Research Batch" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
     const subfolderButtons = screen.getAllByRole("button", { name: "New" });
     fireEvent.click(subfolderButtons[0]!);
+    fireEvent.change(screen.getByRole("textbox", { name: "New Subfolder" }), {
+      target: { value: "Reviewed" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
 
     expect(onCreateFolder).toHaveBeenNthCalledWith(1, "Research Batch", null);
     expect(onCreateFolder).toHaveBeenNthCalledWith(2, "Reviewed", "folder-import");
-
-    promptSpy.mockRestore();
   });
 
   it("triggers the folder prune action", () => {
@@ -195,5 +198,18 @@ describe("Sidebar", () => {
     });
 
     expect(onIngestFiles).toHaveBeenCalledWith([file], "keep_current");
+  });
+
+  it("creates a sample using the prompt dialog", () => {
+    const onCreateFolderSample = vi.fn();
+    renderSidebar({ onCreateFolderSample });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Sample" })[0]!);
+    fireEvent.change(screen.getByRole("textbox", { name: "Create Sample" }), {
+      target: { value: "3" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create Sample" }));
+
+    expect(onCreateFolderSample).toHaveBeenCalledWith("folder-import", 3);
   });
 });

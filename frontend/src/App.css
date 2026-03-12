@@ -21,11 +21,13 @@ body {
   --app-accent: #f59e0b;
   --app-bg: #f8fafc;
   --app-surface: #ffffff;
+  --app-surface-hover: #f3f4f6;
   --app-border: #d7def0;
   --app-border-strong: #bcc7e6;
   --app-text: #1f2937;
   --app-text-muted: #4b5563;
   --app-ring: rgba(30, 64, 175, 0.28);
+  --app-error: #dc2626;
 }
 
 button,
@@ -2216,4 +2218,73 @@ textarea:focus-visible {
     min-width: 0;
     width: 100%;
   }
+}
+
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(15, 23, 42, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.confirm-dialog {
+  width: min(92vw, 420px);
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  padding: 20px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+.confirm-dialog-title {
+  margin-bottom: 8px;
+  color: var(--app-text);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.confirm-dialog-message {
+  margin-bottom: 16px;
+  color: var(--app-text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.confirm-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.confirm-dialog-btn {
+  border: 1px solid var(--app-border-strong);
+  border-radius: 6px;
+  background: var(--app-surface);
+  color: var(--app-text);
+  padding: 7px 16px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.confirm-dialog-btn:hover {
+  background: var(--app-surface-hover);
+}
+
+.confirm-dialog-btn.destructive {
+  border-color: var(--app-error);
+  background: var(--app-error);
+  color: #fff;
+}
+
+.confirm-dialog-btn.destructive:hover {
+  opacity: 0.9;
+}
+
+.confirm-dialog-btn.primary {
+  border-color: var(--app-primary);
+  background: var(--app-primary);
+  color: #fff;
 }

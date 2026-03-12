@@ -53,6 +53,7 @@ import DashboardPanel from "./components/DashboardPanel";
 import { computeDiff } from "./components/DiffOverlay";
 import PromptLabTab from "./components/PromptLabTab";
 import MethodsLabTab from "./components/MethodsLabTab";
+import ConfirmDialog from "./components/ConfirmDialog";
 import { ingestFiles } from "./ingestFiles";
 import { getPromptPresetLabelFromSnapshot } from "./agentPromptPresets";
 
@@ -127,6 +128,14 @@ interface RunToast {
   id: string;
   kind: RunToastKind;
   message: string;
+}
+
+interface PendingConfirm {
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  destructive?: boolean;
+  onConfirm: () => void;
 }
 
 const CANONICAL_PANE_ORDER: PaneType[] = ["raw", "pre", "manual", "agent", "methods"];
@@ -251,6 +260,7 @@ function useAppContentController() {
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [runToasts, setRunToasts] = useState<RunToast[]>([]);
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
   const [agentRunProgress, setAgentRunProgress] = useState<AgentRunProgress | null>(null);
   const [ingesting, setIngesting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -467,9 +477,8 @@ function useAppContentController() {
     [refreshDocuments, selectedId],
   );
 
-  const handleDeleteDocument = useCallback(
+  const doDeleteDocument = useCallback(
     async (docId: string) => {
-      if (!window.confirm("Delete this document and its annotations?")) return;
       setDeletingId(docId);
       try {
         await deleteDocument(docId);
@@ -489,6 +498,22 @@ function useAppContentController() {
       }
     },
     [refreshDocuments, selectedId],
+  );
+
+  const handleDeleteDocument = useCallback(
+    (docId: string) => {
+      setPendingConfirm({
+        title: "Delete Document",
+        message: "Delete this document and its annotations? This cannot be undone.",
+        confirmLabel: "Delete",
+        destructive: true,
+        onConfirm: () => {
+          setPendingConfirm(null);
+          void doDeleteDocument(docId);
+        },
+      });
+    },
+    [doDeleteDocument],
   );
 
   const handleCreateFolderSample = useCallback(
@@ -521,9 +546,8 @@ function useAppContentController() {
     [refreshDocuments],
   );
 
-  const handleDeleteFolder = useCallback(
+  const doDeleteFolder = useCallback(
     async (folderId: string) => {
-      if (!window.confirm("Delete this folder and its managed transcript set?")) return;
       setFolderBusyId(folderId);
       try {
         await deleteFolder(folderId);
@@ -545,15 +569,24 @@ function useAppContentController() {
     [refreshDocuments, selectedId],
   );
 
-  const handlePruneFolder = useCallback(
+  const handleDeleteFolder = useCallback(
+    (folderId: string) => {
+      setPendingConfirm({
+        title: "Delete Folder",
+        message: "Delete this folder and its managed transcript set? This cannot be undone.",
+        confirmLabel: "Delete Folder",
+        destructive: true,
+        onConfirm: () => {
+          setPendingConfirm(null);
+          void doDeleteFolder(folderId);
+        },
+      });
+    },
+    [doDeleteFolder],
+  );
+
+  const doPruneFolder = useCallback(
     async (folderId: string) => {
-      if (
-        !window.confirm(
-          "Remove direct files in this folder that have neither pre-annotations nor manual annotations?",
-        )
-      ) {
-        return;
-      }
       setFolderBusyId(folderId);
       try {
         const result = await pruneEmptyFolderDocs(folderId);
@@ -578,6 +611,23 @@ function useAppContentController() {
       }
     },
     [refreshDocuments, selectedId],
+  );
+
+  const handlePruneFolder = useCallback(
+    (folderId: string) => {
+      setPendingConfirm({
+        title: "Prune Empty Documents",
+        message:
+          "Remove direct files in this folder that have neither pre-annotations nor manual annotations?",
+        confirmLabel: "Prune",
+        destructive: true,
+        onConfirm: () => {
+          setPendingConfirm(null);
+          void doPruneFolder(folderId);
+        },
+      });
+    },
+    [doPruneFolder],
   );
 
   const handleExportSession = useCallback(async (
@@ -1095,6 +1145,8 @@ function useAppContentController() {
     setWarning,
     runToasts,
     dismissRunToast,
+    pendingConfirm,
+    setPendingConfirm,
     agentRunProgress,
     ingesting,
     deletingId,
@@ -1171,6 +1223,8 @@ function renderAppContent(controller: AppContentController) {
     setWarning,
     runToasts,
     dismissRunToast,
+    pendingConfirm,
+    setPendingConfirm,
     agentRunProgress,
     ingesting,
     deletingId,
@@ -1521,6 +1575,16 @@ function renderAppContent(controller: AppContentController) {
             </button>
           ))}
         </div>
+      )}
+      {pendingConfirm && (
+        <ConfirmDialog
+          title={pendingConfirm.title}
+          message={pendingConfirm.message}
+          confirmLabel={pendingConfirm.confirmLabel}
+          destructive={pendingConfirm.destructive}
+          onConfirm={pendingConfirm.onConfirm}
+          onCancel={() => setPendingConfirm(null)}
+        />
       )}
     </div>
   );

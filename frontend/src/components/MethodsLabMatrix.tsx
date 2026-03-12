@@ -53,7 +53,7 @@ function getHeatColor(score: number): string {
   return `hsl(${hue} 62% ${lightness}%)`;
 }
 
-function formatCatalogStatus(diagnostics: ExperimentDiagnostics | null): string {
+function formatCatalogStatus(diagnostics: ExperimentDiagnostics | null | undefined): string {
   if (!diagnostics) return "status unavailable";
   if (diagnostics.gateway_catalog.reachable) {
     return diagnostics.gateway_catalog.model_count != null

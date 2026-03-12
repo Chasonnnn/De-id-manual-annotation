@@ -471,85 +471,90 @@ def _document_status_snapshot(document: dict[str, Any] | None) -> dict[str, Any]
     }
 
 
-def _build_method_bundle_ab_summary(
+def _build_method_bundle_comparison_summary(
     *,
-    legacy_run: dict[str, Any],
-    audited_run: dict[str, Any],
+    baseline_bundle: str,
+    baseline_run: dict[str, Any],
+    candidate_bundle: str,
+    candidate_run: dict[str, Any],
 ) -> dict[str, Any]:
-    legacy_bundle = _build_methods_bundle_stats(legacy_run)
-    audited_bundle = _build_methods_bundle_stats(audited_run)
+    baseline_stats = _build_methods_bundle_stats(baseline_run)
+    candidate_stats = _build_methods_bundle_stats(candidate_run)
 
-    legacy_cells_raw = legacy_run.get("cells", {})
-    audited_cells_raw = audited_run.get("cells", {})
-    legacy_cells = legacy_cells_raw if isinstance(legacy_cells_raw, dict) else {}
-    audited_cells = audited_cells_raw if isinstance(audited_cells_raw, dict) else {}
-    legacy_models = {
+    baseline_cells_raw = baseline_run.get("cells", {})
+    candidate_cells_raw = candidate_run.get("cells", {})
+    baseline_cells = baseline_cells_raw if isinstance(baseline_cells_raw, dict) else {}
+    candidate_cells = candidate_cells_raw if isinstance(candidate_cells_raw, dict) else {}
+    baseline_models = {
         str(item.get("id", "")): item
-        for item in legacy_run.get("models", [])
+        for item in baseline_run.get("models", [])
         if isinstance(item, dict)
     }
-    audited_models = {
+    candidate_models = {
         str(item.get("id", "")): item
-        for item in audited_run.get("models", [])
+        for item in candidate_run.get("models", [])
         if isinstance(item, dict)
     }
-    legacy_methods = {
+    baseline_methods = {
         str(item.get("id", "")): item
-        for item in legacy_run.get("methods", [])
+        for item in baseline_run.get("methods", [])
         if isinstance(item, dict)
     }
-    audited_methods = {
+    candidate_methods = {
         str(item.get("id", "")): item
-        for item in audited_run.get("methods", [])
+        for item in candidate_run.get("methods", [])
         if isinstance(item, dict)
+    }
+
+    empty_stats = {
+        "micro": _prf_from_counts(0, 0, 0),
+        "completed_count": 0,
+        "failed_count": 0,
+        "cancelled_count": 0,
+        "pending_count": 0,
+        "timeout_count": 0,
+        "empty_content_truncation_count": 0,
+        "mean_runtime_seconds": None,
+        "median_runtime_seconds": None,
+        "documents": {},
     }
 
     pairs: list[dict[str, Any]] = []
-    for cell_id in sorted(set(legacy_cells.keys()) | set(audited_cells.keys())):
-        legacy_cell = legacy_cells.get(cell_id)
-        audited_cell = audited_cells.get(cell_id)
-        if not isinstance(legacy_cell, dict) and not isinstance(audited_cell, dict):
+    for cell_id in sorted(set(baseline_cells.keys()) | set(candidate_cells.keys())):
+        baseline_cell = baseline_cells.get(cell_id)
+        candidate_cell = candidate_cells.get(cell_id)
+        if not isinstance(baseline_cell, dict) and not isinstance(candidate_cell, dict):
             continue
-        reference_cell = audited_cell if isinstance(audited_cell, dict) else legacy_cell
+        reference_cell = candidate_cell if isinstance(candidate_cell, dict) else baseline_cell
         assert isinstance(reference_cell, dict)
         model_variant_id = str(reference_cell.get("model_id", ""))
         method_variant_id = str(reference_cell.get("method_id", ""))
-        model = audited_models.get(model_variant_id) or legacy_models.get(model_variant_id) or {}
-        method = audited_methods.get(method_variant_id) or legacy_methods.get(method_variant_id) or {}
-        legacy_stats = _build_methods_cell_stats(legacy_cell) if isinstance(legacy_cell, dict) else {
-            "micro": _prf_from_counts(0, 0, 0),
-            "completed_count": 0,
-            "failed_count": 0,
-            "cancelled_count": 0,
-            "pending_count": 0,
-            "timeout_count": 0,
-            "empty_content_truncation_count": 0,
-            "mean_runtime_seconds": None,
-            "median_runtime_seconds": None,
-            "documents": {},
-        }
-        audited_stats = _build_methods_cell_stats(audited_cell) if isinstance(audited_cell, dict) else {
-            "micro": _prf_from_counts(0, 0, 0),
-            "completed_count": 0,
-            "failed_count": 0,
-            "cancelled_count": 0,
-            "pending_count": 0,
-            "timeout_count": 0,
-            "empty_content_truncation_count": 0,
-            "mean_runtime_seconds": None,
-            "median_runtime_seconds": None,
-            "documents": {},
-        }
+        model = candidate_models.get(model_variant_id) or baseline_models.get(model_variant_id) or {}
+        method = (
+            candidate_methods.get(method_variant_id)
+            or baseline_methods.get(method_variant_id)
+            or {}
+        )
+        baseline_cell_stats = (
+            _build_methods_cell_stats(baseline_cell)
+            if isinstance(baseline_cell, dict)
+            else empty_stats
+        )
+        candidate_cell_stats = (
+            _build_methods_cell_stats(candidate_cell)
+            if isinstance(candidate_cell, dict)
+            else empty_stats
+        )
         documents: dict[str, Any] = {}
-        legacy_docs = legacy_stats["documents"]
-        audited_docs = audited_stats["documents"]
-        for doc_id in sorted(set(legacy_docs.keys()) | set(audited_docs.keys())):
+        baseline_docs = baseline_cell_stats["documents"]
+        candidate_docs = candidate_cell_stats["documents"]
+        for doc_id in sorted(set(baseline_docs.keys()) | set(candidate_docs.keys())):
             documents[doc_id] = {
-                "legacy": _document_status_snapshot(legacy_docs.get(doc_id)),
-                "audited": _document_status_snapshot(audited_docs.get(doc_id)),
+                baseline_bundle: _document_status_snapshot(baseline_docs.get(doc_id)),
+                candidate_bundle: _document_status_snapshot(candidate_docs.get(doc_id)),
             }
-        legacy_micro = legacy_stats["micro"]
-        audited_micro = audited_stats["micro"]
+        baseline_micro = baseline_cell_stats["micro"]
+        candidate_micro = candidate_cell_stats["micro"]
         pairs.append(
             {
                 "cell_id": cell_id,
@@ -559,45 +564,59 @@ def _build_method_bundle_ab_summary(
                 "method_variant_id": method_variant_id,
                 "method_id": str(method.get("method_id", method_variant_id)),
                 "method_label": str(method.get("label", method_variant_id)),
-                "legacy": {
-                    key: value
-                    for key, value in legacy_stats.items()
-                    if key != "documents"
+                baseline_bundle: {
+                    key: value for key, value in baseline_cell_stats.items() if key != "documents"
                 },
-                "audited": {
-                    key: value
-                    for key, value in audited_stats.items()
-                    if key != "documents"
+                candidate_bundle: {
+                    key: value for key, value in candidate_cell_stats.items() if key != "documents"
                 },
-                "delta_vs_legacy": {
-                    "micro_precision": float(audited_micro.get("precision", 0.0))
-                    - float(legacy_micro.get("precision", 0.0)),
-                    "micro_recall": float(audited_micro.get("recall", 0.0))
-                    - float(legacy_micro.get("recall", 0.0)),
-                    "micro_f1": float(audited_micro.get("f1", 0.0))
-                    - float(legacy_micro.get("f1", 0.0)),
-                    "failed_count": int(audited_stats["failed_count"])
-                    - int(legacy_stats["failed_count"]),
-                    "timeout_count": int(audited_stats["timeout_count"])
-                    - int(legacy_stats["timeout_count"]),
+                f"delta_vs_{baseline_bundle}": {
+                    "micro_precision": float(candidate_micro.get("precision", 0.0))
+                    - float(baseline_micro.get("precision", 0.0)),
+                    "micro_recall": float(candidate_micro.get("recall", 0.0))
+                    - float(baseline_micro.get("recall", 0.0)),
+                    "micro_f1": float(candidate_micro.get("f1", 0.0))
+                    - float(baseline_micro.get("f1", 0.0)),
+                    "failed_count": int(candidate_cell_stats["failed_count"])
+                    - int(baseline_cell_stats["failed_count"]),
+                    "timeout_count": int(candidate_cell_stats["timeout_count"])
+                    - int(baseline_cell_stats["timeout_count"]),
                     "empty_content_truncation_count": int(
-                        audited_stats["empty_content_truncation_count"]
+                        candidate_cell_stats["empty_content_truncation_count"]
                     )
-                    - int(legacy_stats["empty_content_truncation_count"]),
+                    - int(baseline_cell_stats["empty_content_truncation_count"]),
                 },
                 "documents": documents,
             }
         )
 
     return {
-        "legacy_run_id": legacy_run.get("id"),
-        "audited_run_id": audited_run.get("id"),
+        "baseline_bundle": baseline_bundle,
+        "baseline_run_id": baseline_run.get("id"),
+        "candidate_bundle": candidate_bundle,
+        "candidate_run_id": candidate_run.get("id"),
         "bundles": {
-            "legacy": legacy_bundle,
-            "audited": audited_bundle,
+            baseline_bundle: baseline_stats,
+            candidate_bundle: candidate_stats,
         },
         "pairs": pairs,
     }
+
+
+def _build_method_bundle_ab_summary(
+    *,
+    legacy_run: dict[str, Any],
+    audited_run: dict[str, Any],
+) -> dict[str, Any]:
+    summary = _build_method_bundle_comparison_summary(
+        baseline_bundle="legacy",
+        baseline_run=legacy_run,
+        candidate_bundle="audited",
+        candidate_run=audited_run,
+    )
+    summary["legacy_run_id"] = summary.get("baseline_run_id")
+    summary["audited_run_id"] = summary.get("candidate_run_id")
+    return summary
 
 
 def _print_run_summary(kind: str, detail: dict[str, Any]) -> None:
@@ -650,30 +669,32 @@ def _handle_run(kind: str, detail: dict[str, Any], args: argparse.Namespace) -> 
 
 def _comparison_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    baseline_bundle = str(summary.get("baseline_bundle") or "legacy")
+    candidate_bundle = str(summary.get("candidate_bundle") or "audited")
     for pair in summary.get("pairs", []):
         if not isinstance(pair, dict):
             continue
-        legacy = pair.get("legacy", {})
-        audited = pair.get("audited", {})
-        delta = pair.get("delta_vs_legacy", {})
-        legacy_micro = legacy.get("micro", {}) if isinstance(legacy, dict) else {}
-        audited_micro = audited.get("micro", {}) if isinstance(audited, dict) else {}
+        baseline = pair.get(baseline_bundle, {})
+        candidate = pair.get(candidate_bundle, {})
+        delta = pair.get(f"delta_vs_{baseline_bundle}", {})
+        baseline_micro = baseline.get("micro", {}) if isinstance(baseline, dict) else {}
+        candidate_micro = candidate.get("micro", {}) if isinstance(candidate, dict) else {}
         rows.append(
             {
                 "model": pair.get("model"),
                 "method_id": pair.get("method_id"),
                 "method_label": pair.get("method_label"),
-                "legacy_f1": legacy_micro.get("f1"),
-                "audited_f1": audited_micro.get("f1"),
+                f"{baseline_bundle}_f1": baseline_micro.get("f1"),
+                f"{candidate_bundle}_f1": candidate_micro.get("f1"),
                 "delta_f1": delta.get("micro_f1"),
-                "legacy_failed_count": legacy.get("failed_count"),
-                "audited_failed_count": audited.get("failed_count"),
-                "legacy_timeout_count": legacy.get("timeout_count"),
-                "audited_timeout_count": audited.get("timeout_count"),
-                "legacy_empty_content_truncation_count": legacy.get(
+                f"{baseline_bundle}_failed_count": baseline.get("failed_count"),
+                f"{candidate_bundle}_failed_count": candidate.get("failed_count"),
+                f"{baseline_bundle}_timeout_count": baseline.get("timeout_count"),
+                f"{candidate_bundle}_timeout_count": candidate.get("timeout_count"),
+                f"{baseline_bundle}_empty_content_truncation_count": baseline.get(
                     "empty_content_truncation_count"
                 ),
-                "audited_empty_content_truncation_count": audited.get(
+                f"{candidate_bundle}_empty_content_truncation_count": candidate.get(
                     "empty_content_truncation_count"
                 ),
             }
@@ -685,19 +706,21 @@ def _write_method_bundle_ab_csv(path_value: str | None, summary: dict[str, Any])
     if not path_value:
         return
     rows = _comparison_rows(summary)
+    baseline_bundle = str(summary.get("baseline_bundle") or "legacy")
+    candidate_bundle = str(summary.get("candidate_bundle") or "audited")
     fieldnames = [
         "model",
         "method_id",
         "method_label",
-        "legacy_f1",
-        "audited_f1",
+        f"{baseline_bundle}_f1",
+        f"{candidate_bundle}_f1",
         "delta_f1",
-        "legacy_failed_count",
-        "audited_failed_count",
-        "legacy_timeout_count",
-        "audited_timeout_count",
-        "legacy_empty_content_truncation_count",
-        "audited_empty_content_truncation_count",
+        f"{baseline_bundle}_failed_count",
+        f"{candidate_bundle}_failed_count",
+        f"{baseline_bundle}_timeout_count",
+        f"{candidate_bundle}_timeout_count",
+        f"{baseline_bundle}_empty_content_truncation_count",
+        f"{candidate_bundle}_empty_content_truncation_count",
     ]
     with Path(path_value).open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -709,19 +732,21 @@ def _write_method_bundle_ab_markdown(path_value: str | None, summary: dict[str, 
     if not path_value:
         return
     rows = _comparison_rows(summary)
+    baseline_bundle = str(summary.get("baseline_bundle") or "legacy")
+    candidate_bundle = str(summary.get("candidate_bundle") or "audited")
     lines = [
-        "| Model | Method | Legacy F1 | Audited F1 | Delta F1 | Legacy Failures | Audited Failures |",
+        f"| Model | Method | {baseline_bundle.title()} F1 | {candidate_bundle.title()} F1 | Delta F1 | {baseline_bundle.title()} Failures | {candidate_bundle.title()} Failures |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
-        legacy_f1 = float(row["legacy_f1"] or 0.0)
-        audited_f1 = float(row["audited_f1"] or 0.0)
+        baseline_f1 = float(row[f"{baseline_bundle}_f1"] or 0.0)
+        candidate_f1 = float(row[f"{candidate_bundle}_f1"] or 0.0)
         delta_f1 = float(row["delta_f1"] or 0.0)
         lines.append(
             "| "
             f"{row['model']} | {row['method_label']} | "
-            f"{legacy_f1:.3f} | {audited_f1:.3f} | {delta_f1:.3f} | "
-            f"{row['legacy_failed_count']} | {row['audited_failed_count']} |"
+            f"{baseline_f1:.3f} | {candidate_f1:.3f} | {delta_f1:.3f} | "
+            f"{row[f'{baseline_bundle}_failed_count']} | {row[f'{candidate_bundle}_failed_count']} |"
         )
     Path(path_value).write_text("\n".join(lines) + "\n")
 
@@ -733,8 +758,10 @@ def _default_artifact_prefix(name: str | None) -> str:
 
 
 def _print_method_bundle_ab_summary(summary: dict[str, Any]) -> None:
+    baseline_bundle = str(summary.get("baseline_bundle") or "legacy")
+    candidate_bundle = str(summary.get("candidate_bundle") or "audited")
     print("bundle\tcompleted\tfailed\ttimeouts\ttruncations\tf1")
-    for bundle_name in ("legacy", "audited"):
+    for bundle_name in (baseline_bundle, candidate_bundle):
         bundle = summary["bundles"][bundle_name]
         micro = bundle.get("micro", {})
         print(
@@ -750,18 +777,20 @@ def _print_method_bundle_ab_summary(summary: dict[str, Any]) -> None:
             )
         )
     print()
-    print("model\tmethod\tlegacy_f1\taudited_f1\tdelta_f1\tlegacy_failed\taudited_failed")
+    print(
+        f"model\tmethod\t{baseline_bundle}_f1\t{candidate_bundle}_f1\tdelta_f1\t{baseline_bundle}_failed\t{candidate_bundle}_failed"
+    )
     for row in _comparison_rows(summary):
         print(
             "\t".join(
                 [
                     str(row["model"]),
                     str(row["method_label"]),
-                    str(row["legacy_f1"]),
-                    str(row["audited_f1"]),
+                    str(row[f"{baseline_bundle}_f1"]),
+                    str(row[f"{candidate_bundle}_f1"]),
                     str(row["delta_f1"]),
-                    str(row["legacy_failed_count"]),
-                    str(row["audited_failed_count"]),
+                    str(row[f"{baseline_bundle}_failed_count"]),
+                    str(row[f"{candidate_bundle}_failed_count"]),
                 ]
             )
         )
@@ -799,6 +828,62 @@ def run_methods_bundle_benchmark(args: argparse.Namespace) -> int:
         prefix = _default_artifact_prefix(args.artifact_prefix or body.name)
         (output_dir / f"{prefix}_legacy.json").write_text(json.dumps(legacy_run, indent=2))
         (output_dir / f"{prefix}_audited.json").write_text(json.dumps(audited_run, indent=2))
+        (output_dir / f"{prefix}_comparison.json").write_text(json.dumps(summary, indent=2))
+        _write_method_bundle_ab_csv(str(output_dir / f"{prefix}_comparison.csv"), summary)
+        _write_method_bundle_ab_markdown(str(output_dir / f"{prefix}_comparison.md"), summary)
+    return 0
+
+
+def _load_methods_run_source(source: str, *, session: str) -> dict[str, Any]:
+    path = Path(source).expanduser()
+    if path.exists():
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict):
+            raise ValueError(f"Run artifact must decode to an object: {path}")
+        return data
+    run = _load_methods_lab_run(source, session)
+    if run is None:
+        raise ValueError(f"Methods Lab run not found: {source}")
+    return run
+
+
+def run_compare_method_runs(args: argparse.Namespace) -> int:
+    baseline_run = _load_methods_run_source(args.baseline, session=args.session)
+    candidate_run = _load_methods_run_source(args.candidate, session=args.session)
+    baseline_label = (
+        str(args.baseline_label).strip()
+        if getattr(args, "baseline_label", None)
+        else str(
+            ((baseline_run.get("runtime") or {}).get("method_bundle"))
+            or baseline_run.get("name")
+            or "baseline"
+        ).strip()
+    )
+    candidate_label = (
+        str(args.candidate_label).strip()
+        if getattr(args, "candidate_label", None)
+        else str(
+            ((candidate_run.get("runtime") or {}).get("method_bundle"))
+            or candidate_run.get("name")
+            or "candidate"
+        ).strip()
+    )
+    summary = _build_method_bundle_comparison_summary(
+        baseline_bundle=baseline_label,
+        baseline_run=baseline_run,
+        candidate_bundle=candidate_label,
+        candidate_run=candidate_run,
+    )
+    _print_method_bundle_ab_summary(summary)
+    _write_output_json(args.output_json, summary)
+    _write_method_bundle_ab_csv(args.output_csv, summary)
+    _write_method_bundle_ab_markdown(args.output_md, summary)
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        prefix = _default_artifact_prefix(args.artifact_prefix)
+        (output_dir / f"{prefix}_{baseline_label}.json").write_text(json.dumps(baseline_run, indent=2))
+        (output_dir / f"{prefix}_{candidate_label}.json").write_text(json.dumps(candidate_run, indent=2))
         (output_dir / f"{prefix}_comparison.json").write_text(json.dumps(summary, indent=2))
         _write_method_bundle_ab_csv(str(output_dir / f"{prefix}_comparison.csv"), summary)
         _write_method_bundle_ab_markdown(str(output_dir / f"{prefix}_comparison.md"), summary)
@@ -976,6 +1061,22 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark_parser.add_argument("--output-dir")
     benchmark_parser.add_argument("--artifact-prefix")
     benchmark_parser.set_defaults(func=run_methods_bundle_benchmark)
+
+    compare_parser = subparsers.add_parser(
+        "compare-method-runs",
+        help="Compare two completed Methods Lab runs or run artifact JSON files.",
+    )
+    compare_parser.add_argument("--session", default="default")
+    compare_parser.add_argument("--baseline", required=True)
+    compare_parser.add_argument("--candidate", required=True)
+    compare_parser.add_argument("--baseline-label")
+    compare_parser.add_argument("--candidate-label")
+    compare_parser.add_argument("--output-json")
+    compare_parser.add_argument("--output-csv")
+    compare_parser.add_argument("--output-md")
+    compare_parser.add_argument("--output-dir")
+    compare_parser.add_argument("--artifact-prefix")
+    compare_parser.set_defaults(func=run_compare_method_runs)
 
     list_docs_parser = subparsers.add_parser("list-docs", help="List documents in a session.")
     list_docs_parser.add_argument("--session", default="default")

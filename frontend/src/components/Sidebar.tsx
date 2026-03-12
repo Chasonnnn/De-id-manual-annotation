@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type {
   AnnotationSource,
   DocumentSummary,
@@ -6,6 +6,7 @@ import type {
   FolderSummary,
   ImportConflictPolicy,
 } from "../types";
+import PromptDialog from "./PromptDialog";
 
 interface Props {
   documents: DocumentSummary[];
@@ -224,6 +225,7 @@ function SidebarFolderBranch({
   onSelect,
   onCreateFolder,
   onRequestSample,
+  onRequestNewSubfolder,
   onDeleteFolder,
   onPruneFolder,
 }: {
@@ -239,6 +241,7 @@ function SidebarFolderBranch({
   onSelect: (id: string) => void;
   onCreateFolder: (name: string, parentFolderId: string | null) => void;
   onRequestSample: (folder: FolderSummary) => void;
+  onRequestNewSubfolder: (folder: FolderSummary) => void;
   onDeleteFolder: (folderId: string) => void;
   onPruneFolder: (folderId: string) => void;
 }) {
@@ -271,12 +274,7 @@ function SidebarFolderBranch({
           <button
             type="button"
             className="doc-delete-btn"
-            onClick={() => {
-              const rawValue = window.prompt("New subfolder name", `${folder.name} subfolder`);
-              const name = rawValue?.trim() ?? "";
-              if (!name) return;
-              onCreateFolder(name, folder.id);
-            }}
+            onClick={() => onRequestNewSubfolder(folder)}
             disabled={Boolean(folderBusyId)}
           >
             New
@@ -355,6 +353,7 @@ function SidebarFolderBranch({
               onSelect={onSelect}
               onCreateFolder={onCreateFolder}
               onRequestSample={onRequestSample}
+              onRequestNewSubfolder={onRequestNewSubfolder}
               onDeleteFolder={onDeleteFolder}
               onPruneFolder={onPruneFolder}
             />
@@ -377,6 +376,7 @@ function SidebarDocumentTree({
   onDelete,
   onToggleFolder,
   onRequestSample,
+  onRequestNewSubfolder,
   onDeleteFolder,
   onPruneFolder,
   onCreateFolder,
@@ -393,6 +393,7 @@ function SidebarDocumentTree({
   onDelete: (id: string) => void;
   onToggleFolder: (folderId: string) => void;
   onRequestSample: (folder: FolderSummary) => void;
+  onRequestNewSubfolder: (folder: FolderSummary) => void;
   onDeleteFolder: (folderId: string) => void;
   onPruneFolder: (folderId: string) => void;
   onCreateFolder: (name: string, parentFolderId: string | null) => void;
@@ -432,6 +433,7 @@ function SidebarDocumentTree({
             onSelect={onSelect}
             onCreateFolder={onCreateFolder}
             onRequestSample={onRequestSample}
+            onRequestNewSubfolder={onRequestNewSubfolder}
             onDeleteFolder={onDeleteFolder}
             onPruneFolder={onPruneFolder}
           />
@@ -515,7 +517,7 @@ function SidebarActionsPanel({
   onExportModeChange,
   onExportSourceChange,
   onExportSession,
-  onCreateFolder,
+  onRequestNewFolder,
   ingestDragOver,
   ingestRef,
   onIngestOpenPicker,
@@ -534,7 +536,7 @@ function SidebarActionsPanel({
   onExportModeChange: (value: ExportMode) => void;
   onExportSourceChange: (value: AnnotationSource) => void;
   onExportSession: (mode: ExportMode, source: AnnotationSource) => void;
-  onCreateFolder: (name: string, parentFolderId: string | null) => void;
+  onRequestNewFolder: () => void;
   ingestDragOver: boolean;
   ingestRef: React.RefObject<HTMLInputElement | null>;
   onIngestOpenPicker: () => void;
@@ -584,12 +586,7 @@ function SidebarActionsPanel({
         <button
           type="button"
           className="sidebar-action-btn"
-          onClick={() => {
-            const rawValue = window.prompt("New folder name", "New Folder");
-            const name = rawValue?.trim() ?? "";
-            if (!name) return;
-            onCreateFolder(name, null);
-          }}
+          onClick={onRequestNewFolder}
           disabled={Boolean(ingesting || exporting)}
         >
           New Folder
@@ -662,12 +659,18 @@ export default function Sidebar({
   folderBusyId = null,
   exporting = false,
 }: Props) {
+  type DialogState =
+    | { kind: "none" }
+    | { kind: "new_folder"; parentFolderId: string | null; defaultName: string }
+    | { kind: "sample"; folder: FolderSummary };
+
   const [state, dispatch] = useReducer(
     sidebarReducer,
     exportSourceOptions,
     createInitialSidebarState,
   );
   const ingestRef = useRef<HTMLInputElement>(null);
+  const [dialog, setDialog] = useState<DialogState>({ kind: "none" });
 
   const folderById = useMemo(
     () => new Map(folders.map((folder) => [folder.id, folder])),
@@ -737,23 +740,21 @@ export default function Sidebar({
     [exporting, ingesting, onIngestFiles, state.importConflictPolicy],
   );
 
-  const handleRequestSample = useCallback(
-    (folder: FolderSummary) => {
-      const suggested = String(Math.min(Math.max(folder.doc_count, 1), 25));
-      const rawValue = window.prompt(
-        "How many direct transcripts should this saved sample include?",
-        suggested,
-      );
-      if (rawValue === null) return;
-      const count = Number.parseInt(rawValue, 10);
-      if (!Number.isFinite(count) || count < 1) {
-        window.alert("Enter a positive integer sample size.");
-        return;
-      }
-      onCreateFolderSample(folder.id, count);
-    },
-    [onCreateFolderSample],
-  );
+  const handleRequestSample = useCallback((folder: FolderSummary) => {
+    setDialog({ kind: "sample", folder });
+  }, []);
+
+  const handleRequestNewFolder = useCallback(() => {
+    setDialog({ kind: "new_folder", parentFolderId: null, defaultName: "New Folder" });
+  }, []);
+
+  const handleRequestNewSubfolder = useCallback((folder: FolderSummary) => {
+    setDialog({
+      kind: "new_folder",
+      parentFolderId: folder.id,
+      defaultName: `${folder.name} subfolder`,
+    });
+  }, []);
 
   return (
     <aside className="sidebar">
@@ -785,6 +786,7 @@ export default function Sidebar({
         onToggleFolder={(folderId) => dispatch({ type: "toggle_folder", folderId })}
         onCreateFolder={onCreateFolder}
         onRequestSample={handleRequestSample}
+        onRequestNewSubfolder={handleRequestNewSubfolder}
         onDeleteFolder={onDeleteFolder}
         onPruneFolder={onPruneFolder}
       />
@@ -802,7 +804,7 @@ export default function Sidebar({
         onExportModeChange={(value) => dispatch({ type: "set_export_mode", value })}
         onExportSourceChange={(value) => dispatch({ type: "set_export_source", value })}
         onExportSession={onExportSession}
-        onCreateFolder={onCreateFolder}
+        onRequestNewFolder={handleRequestNewFolder}
         ingestDragOver={state.ingestDragOver}
         ingestRef={ingestRef}
         onIngestOpenPicker={openIngestPicker}
@@ -816,6 +818,40 @@ export default function Sidebar({
         onIngestDrop={handleIngestDrop}
         onIngestChange={handleIngestChange}
       />
+
+      {dialog.kind === "new_folder" && (
+        <PromptDialog
+          title={dialog.parentFolderId ? "New Subfolder" : "New Folder"}
+          defaultValue={dialog.defaultName}
+          confirmLabel="Create"
+          onConfirm={(name) => {
+            onCreateFolder(name, dialog.parentFolderId);
+            setDialog({ kind: "none" });
+          }}
+          onCancel={() => setDialog({ kind: "none" })}
+        />
+      )}
+
+      {dialog.kind === "sample" && (
+        <PromptDialog
+          title="Create Sample"
+          message="How many direct transcripts should this saved sample include?"
+          defaultValue={String(Math.min(Math.max(dialog.folder.doc_count, 1), 25))}
+          confirmLabel="Create Sample"
+          validate={(value) => {
+            const count = Number.parseInt(value, 10);
+            if (!Number.isFinite(count) || count < 1) {
+              return "Enter a positive integer sample size.";
+            }
+            return null;
+          }}
+          onConfirm={(value) => {
+            onCreateFolderSample(dialog.folder.id, Number.parseInt(value, 10));
+            setDialog({ kind: "none" });
+          }}
+          onCancel={() => setDialog({ kind: "none" })}
+        />
+      )}
     </aside>
   );
 }

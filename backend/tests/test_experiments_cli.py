@@ -7,7 +7,7 @@ from typing import Literal
 import pytest
 from fastapi.testclient import TestClient
 
-from experiments_cli import _build_method_bundle_ab_summary, main
+from experiments_cli import _build_method_bundle_ab_summary, _build_method_bundle_comparison_summary, main
 from models import CanonicalSpan, LLMConfidenceMetric
 from server import (
     _load_methods_lab_index,
@@ -714,6 +714,235 @@ def test_build_method_bundle_ab_summary_reports_metric_and_stability_deltas():
     assert pair_summary["documents"]["doc2"]["legacy"]["status"] == "failed"
     assert pair_summary["documents"]["doc2"]["audited"]["status"] == "completed"
 
+
+def test_build_method_bundle_comparison_summary_reports_metric_and_stability_deltas():
+    audited_run = {
+        "id": "audited-run",
+        "name": "Audited",
+        "doc_ids": ["doc1", "doc2", "doc3"],
+        "methods": [{"id": "method_1", "label": "Default", "method_id": "default"}],
+        "models": [{"id": "model_1", "label": "Codex", "model": "openai.gpt-5.3-codex"}],
+        "cells": {
+            "model_1__method_1": {
+                "id": "model_1__method_1",
+                "model_id": "model_1",
+                "model_label": "Codex",
+                "method_id": "method_1",
+                "method_label": "Default",
+                "documents": {
+                    "doc1": {
+                        "status": "completed",
+                        "metrics": {"micro": {"tp": 4, "fp": 1, "fn": 1}},
+                        "updated_at": "2026-03-10T12:01:00+00:00",
+                        "runtime_diagnostics": {"started_at": "2026-03-10T12:00:00+00:00"},
+                    },
+                    "doc2": {
+                        "status": "failed",
+                        "error": "Methods Lab task timed out after 180 seconds without progress.",
+                        "error_family": "timeout",
+                        "updated_at": "2026-03-10T12:04:00+00:00",
+                        "runtime_diagnostics": {"started_at": "2026-03-10T12:01:00+00:00"},
+                    },
+                    "doc3": {
+                        "status": "failed",
+                        "error": "LLM returned empty output content (finish_reason=length).",
+                        "error_family": "empty_output_finish_reason_length",
+                        "updated_at": "2026-03-10T12:06:00+00:00",
+                        "runtime_diagnostics": {"started_at": "2026-03-10T12:04:00+00:00"},
+                    },
+                },
+            }
+        },
+    }
+    candidate_run = {
+        "id": "candidate-run",
+        "name": "Candidate",
+        "doc_ids": ["doc1", "doc2", "doc3"],
+        "methods": [{"id": "method_1", "label": "Default", "method_id": "default"}],
+        "models": [{"id": "model_1", "label": "Codex", "model": "openai.gpt-5.3-codex"}],
+        "cells": {
+            "model_1__method_1": {
+                "id": "model_1__method_1",
+                "model_id": "model_1",
+                "model_label": "Codex",
+                "method_id": "method_1",
+                "method_label": "Default",
+                "documents": {
+                    "doc1": {
+                        "status": "completed",
+                        "metrics": {"micro": {"tp": 5, "fp": 0, "fn": 0}},
+                        "updated_at": "2026-03-10T12:01:30+00:00",
+                        "runtime_diagnostics": {"started_at": "2026-03-10T12:00:00+00:00"},
+                    },
+                    "doc2": {
+                        "status": "completed",
+                        "metrics": {"micro": {"tp": 3, "fp": 1, "fn": 1}},
+                        "updated_at": "2026-03-10T12:03:30+00:00",
+                        "runtime_diagnostics": {"started_at": "2026-03-10T12:01:00+00:00"},
+                    },
+                    "doc3": {
+                        "status": "completed",
+                        "metrics": {"micro": {"tp": 2, "fp": 0, "fn": 1}},
+                        "updated_at": "2026-03-10T12:05:00+00:00",
+                        "runtime_diagnostics": {"started_at": "2026-03-10T12:03:30+00:00"},
+                    },
+                },
+            }
+        },
+    }
+
+    summary = _build_method_bundle_comparison_summary(
+        baseline_bundle="audited",
+        baseline_run=audited_run,
+        candidate_bundle="v2+post-process",
+        candidate_run=candidate_run,
+    )
+
+    bundle_stats = summary["bundles"]
+    assert bundle_stats["audited"]["timeout_count"] == 1
+    assert bundle_stats["audited"]["empty_content_truncation_count"] == 1
+    assert bundle_stats["v2+post-process"]["completed_count"] == 3
+    assert bundle_stats["v2+post-process"]["failed_count"] == 0
+
+    pair_summary = summary["pairs"][0]
+    assert pair_summary["model"] == "openai.gpt-5.3-codex"
+    assert pair_summary["method_id"] == "default"
+    assert pair_summary["delta_vs_audited"]["micro_f1"] > 0.0
+    assert pair_summary["delta_vs_audited"]["failed_count"] < 0
+    assert pair_summary["documents"]["doc2"]["audited"]["status"] == "failed"
+    assert pair_summary["documents"]["doc2"]["v2+post-process"]["status"] == "completed"
+
+
+def test_compare_method_runs_writes_artifacts_from_json_files(tmp_path):
+    baseline_path = tmp_path / "audited-run.json"
+    candidate_path = tmp_path / "candidate-run.json"
+    for path, run_id, tp in (
+        (baseline_path, "audited-run", 1),
+        (candidate_path, "candidate-run", 2),
+    ):
+        path.write_text(
+            json.dumps(
+                {
+                    "id": run_id,
+                    "name": run_id,
+                    "doc_ids": ["doc1"],
+                    "methods": [{"id": "method_1", "label": "Default", "method_id": "default"}],
+                    "models": [{"id": "model_1", "label": "Codex", "model": "openai.gpt-5.3-codex"}],
+                    "cells": {
+                        "model_1__method_1": {
+                            "id": "model_1__method_1",
+                            "model_id": "model_1",
+                            "method_id": "method_1",
+                            "documents": {
+                                "doc1": {
+                                    "status": "completed",
+                                    "metrics": {"micro": {"tp": tp, "fp": 0, "fn": 0}},
+                                    "updated_at": "2026-03-10T12:01:00+00:00",
+                                    "runtime_diagnostics": {"started_at": "2026-03-10T12:00:00+00:00"},
+                                }
+                            },
+                        }
+                    },
+                    "runtime": {"method_bundle": run_id.split("-")[0]},
+                }
+            )
+        )
+
+    output_dir = tmp_path / "compare-output"
+    exit_code = main(
+        [
+            "compare-method-runs",
+            "--baseline",
+            str(baseline_path),
+            "--candidate",
+            str(candidate_path),
+            "--baseline-label",
+            "audited",
+            "--candidate-label",
+            "v2+post-process",
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+
+    assert exit_code == 0
+    assert (output_dir / "methods-bundle-ab_audited.json").exists()
+    assert (output_dir / "methods-bundle-ab_v2+post-process.json").exists()
+    assert (output_dir / "methods-bundle-ab_comparison.json").exists()
+    assert (output_dir / "methods-bundle-ab_comparison.csv").exists()
+    assert (output_dir / "methods-bundle-ab_comparison.md").exists()
+
+
+def test_compare_method_runs_accepts_run_ids(monkeypatch):
+    raw_runs = {
+        "audited-run": {
+            "id": "audited-run",
+            "name": "Audited",
+            "doc_ids": ["doc1"],
+            "methods": [{"id": "method_1", "label": "Default", "method_id": "default"}],
+            "models": [{"id": "model_1", "label": "Codex", "model": "openai.gpt-5.3-codex"}],
+            "cells": {
+                "model_1__method_1": {
+                    "id": "model_1__method_1",
+                    "model_id": "model_1",
+                    "method_id": "method_1",
+                    "documents": {
+                        "doc1": {
+                            "status": "completed",
+                            "metrics": {"micro": {"tp": 1, "fp": 1, "fn": 1}},
+                            "updated_at": "2026-03-10T12:01:00+00:00",
+                            "runtime_diagnostics": {"started_at": "2026-03-10T12:00:00+00:00"},
+                        }
+                    },
+                }
+            },
+            "runtime": {"method_bundle": "audited"},
+        },
+        "candidate-run": {
+            "id": "candidate-run",
+            "name": "Candidate",
+            "doc_ids": ["doc1"],
+            "methods": [{"id": "method_1", "label": "Default", "method_id": "default"}],
+            "models": [{"id": "model_1", "label": "Codex", "model": "openai.gpt-5.3-codex"}],
+            "cells": {
+                "model_1__method_1": {
+                    "id": "model_1__method_1",
+                    "model_id": "model_1",
+                    "method_id": "method_1",
+                    "documents": {
+                        "doc1": {
+                            "status": "completed",
+                            "metrics": {"micro": {"tp": 2, "fp": 0, "fn": 0}},
+                            "updated_at": "2026-03-10T12:01:00+00:00",
+                            "runtime_diagnostics": {"started_at": "2026-03-10T12:00:00+00:00"},
+                        }
+                    },
+                }
+            },
+            "runtime": {"method_bundle": "v2+post-process"},
+        },
+    }
+
+    monkeypatch.setattr(
+        "experiments_cli._load_methods_lab_run",
+        lambda run_id, session_id="default": raw_runs.get(run_id),
+    )
+
+    exit_code = main(
+        [
+            "compare-method-runs",
+            "--baseline",
+            "audited-run",
+            "--candidate",
+            "candidate-run",
+            "--baseline-label",
+            "audited",
+            "--candidate-label",
+            "v2+post-process",
+        ]
+    )
+
+    assert exit_code == 0
 
 def test_benchmark_method_bundles_writes_separate_artifacts(monkeypatch, tmp_path):
     calls: list[str] = []
