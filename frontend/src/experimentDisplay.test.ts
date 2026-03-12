@@ -10,5 +10,6 @@ describe("formatMethodBundleLabel", () => {
   it("renders historical bundle labels truthfully", () => {
     expect(formatMethodBundleLabel("v2")).toBe("V2 methods");
     expect(formatMethodBundleLabel("stable")).toBe("Stable methods");
+    expect(formatMethodBundleLabel("deidentify-v2")).toBe("Colleague demo V2 methods");
   });
 });

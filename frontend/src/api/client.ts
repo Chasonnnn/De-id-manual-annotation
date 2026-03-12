@@ -197,8 +197,11 @@ export async function getAgentCredentialStatus(): Promise<AgentCredentialStatus>
   return request("/agent/credentials/status");
 }
 
-export async function getAgentMethods(): Promise<AgentMethodOption[]> {
-  const data = await request<{ methods: AgentMethodOption[] }>("/agent/methods");
+export async function getAgentMethods(methodBundle?: MethodBundle): Promise<AgentMethodOption[]> {
+  const query = methodBundle
+    ? `?method_bundle=${encodeURIComponent(methodBundle)}`
+    : "";
+  const data = await request<{ methods: AgentMethodOption[] }>(`/agent/methods${query}`);
   return data.methods;
 }
 
@@ -632,11 +635,13 @@ function normalizePromptLabRunDetail(raw: Record<string, unknown>): PromptLabRun
       api_base: typeof runtimeRaw.api_base === "string" ? runtimeRaw.api_base : undefined,
       temperature: toNumber(runtimeRaw.temperature, 0),
       match_mode:
-        runtimeRaw.match_mode === "overlap"
-          ? "overlap"
-          : runtimeRaw.match_mode === "boundary"
-            ? "boundary"
-            : "overlap",
+        runtimeRaw.match_mode === "substring"
+          ? "substring"
+          : runtimeRaw.match_mode === "overlap"
+            ? "overlap"
+            : runtimeRaw.match_mode === "boundary"
+              ? "boundary"
+              : "overlap",
       reference_source:
         runtimeRaw.reference_source === "pre"
           ? "pre"
@@ -751,11 +756,13 @@ function normalizeMethodsLabRunDetail(raw: Record<string, unknown>): MethodsLabR
       api_base: typeof runtimeRaw.api_base === "string" ? runtimeRaw.api_base : undefined,
       temperature: toNumber(runtimeRaw.temperature, 0),
       match_mode:
-        runtimeRaw.match_mode === "overlap"
-          ? "overlap"
-          : runtimeRaw.match_mode === "boundary"
-            ? "boundary"
-            : "overlap",
+        runtimeRaw.match_mode === "substring"
+          ? "substring"
+          : runtimeRaw.match_mode === "overlap"
+            ? "overlap"
+            : runtimeRaw.match_mode === "boundary"
+              ? "boundary"
+              : "overlap",
       reference_source:
         runtimeRaw.reference_source === "pre"
           ? "pre"
@@ -1199,11 +1206,13 @@ function normalizeDashboardMetrics(
     reference: (raw.reference as AnnotationSource | undefined) ?? reference,
     hypothesis: (raw.hypothesis as AnnotationSource | undefined) ?? hypothesis,
     match_mode:
-      raw.match_mode === "overlap"
-        ? "overlap"
-        : raw.match_mode === "boundary"
-          ? "boundary"
-          : matchMode,
+      raw.match_mode === "substring"
+        ? "substring"
+        : raw.match_mode === "overlap"
+          ? "overlap"
+          : raw.match_mode === "boundary"
+            ? "boundary"
+            : matchMode,
     label_projection:
       raw.label_projection === "coarse_simple"
         ? "coarse_simple"
@@ -1346,7 +1355,8 @@ function normalizeMethodBundle(value: unknown): MethodBundle {
     value === "test" ||
     value === "stable" ||
     value === "v2" ||
-    value === "v2+post-process"
+    value === "v2+post-process" ||
+    value === "deidentify-v2"
   )
     ? value
     : "audited";

@@ -53,6 +53,55 @@ def _boundary_match(a: CanonicalSpan, b: CanonicalSpan) -> bool:
     return a_start == b_start and a_end == b_end
 
 
+def _substring_match(a: CanonicalSpan, b: CanonicalSpan) -> bool:
+    if a.label != b.label:
+        return False
+    if a.start == b.start and a.end == b.end:
+        return True
+    return b.text in a.text or a.text in b.text
+
+
+def _legacy_substring_match(
+    gold: list[CanonicalSpan],
+    pred: list[CanonicalSpan],
+) -> tuple[
+    list[tuple[CanonicalSpan, CanonicalSpan]], list[CanonicalSpan], list[CanonicalSpan]
+]:
+    matched_gold: set[int] = set()
+    matched_pred: set[int] = set()
+    matched: list[tuple[CanonicalSpan, CanonicalSpan]] = []
+
+    for gold_index, gold_span in enumerate(gold):
+        for pred_index, pred_span in enumerate(pred):
+            if pred_index in matched_pred:
+                continue
+            if gold_span.label != pred_span.label:
+                continue
+            if gold_span.start == pred_span.start and gold_span.end == pred_span.end:
+                matched.append((gold_span, pred_span))
+                matched_gold.add(gold_index)
+                matched_pred.add(pred_index)
+                break
+
+    for gold_index, gold_span in enumerate(gold):
+        if gold_index in matched_gold:
+            continue
+        for pred_index, pred_span in enumerate(pred):
+            if pred_index in matched_pred:
+                continue
+            if gold_span.label != pred_span.label:
+                continue
+            if pred_span.text in gold_span.text or gold_span.text in pred_span.text:
+                matched.append((gold_span, pred_span))
+                matched_gold.add(gold_index)
+                matched_pred.add(pred_index)
+                break
+
+    unmatched_gold = [span for index, span in enumerate(gold) if index not in matched_gold]
+    unmatched_pred = [span for index, span in enumerate(pred) if index not in matched_pred]
+    return matched, unmatched_gold, unmatched_pred
+
+
 def match_spans(
     gold: list[CanonicalSpan],
     pred: list[CanonicalSpan],
@@ -67,6 +116,8 @@ def match_spans(
     """
     if not gold or not pred:
         return [], list(gold), list(pred)
+    if mode == "legacy_substring":
+        return _legacy_substring_match(gold, pred)
 
     n_gold = len(gold)
     n_pred = len(pred)
@@ -82,6 +133,9 @@ def match_spans(
                     cost[i, j] = 0.0  # perfect match
             elif mode == "boundary":
                 if _boundary_match(g, p):
+                    cost[i, j] = 0.0
+            elif mode == "substring":
+                if _substring_match(g, p):
                     cost[i, j] = 0.0
             else:  # overlap
                 if g.label == p.label:

@@ -24,13 +24,14 @@ from server import (
     _prompt_lab_runs,
     _prompt_lab_cancel_events,
     _prompt_lab_run_path,
+    _prepare_experiment_scoring_spans,
     _run_llm_for_document,
     _session_dir,
     _session_docs,
     _methods_lab_run_path,
     ROOT_ENV_PATH,
 )
-from models import CanonicalSpan, LLMConfidenceMetric, ResolutionEvent
+from models import CanonicalDocument, CanonicalSpan, LLMConfidenceMetric, ResolutionEvent, UtteranceRow
 
 
 @pytest.fixture(autouse=True)
@@ -1517,6 +1518,33 @@ def test_metrics_boundary_mode_ignores_edge_space_and_punctuation(client):
     assert boundary_resp.status_code == 200
     assert boundary_resp.json()["micro"]["f1"] == 1.0
     assert boundary_resp.json()["match_mode"] == "boundary"
+
+
+def test_metrics_substring_mode_accepts_nested_same_label(client):
+    resp = _upload(
+        client,
+        data=_make_hips_v1_custom(
+            "Mr. Evans joined.",
+            pii_occurrences=[
+                {"start": 0, "end": 9, "text": "Mr. Evans", "pii_type": "NAME"},
+            ],
+        ),
+    )
+    doc_id = resp.json()["id"]
+
+    manual_spans = [
+        {"start": 4, "end": 9, "label": "NAME", "text": "Evans"},
+    ]
+    save_resp = client.put(f"/api/documents/{doc_id}/manual-annotations", json=manual_spans)
+    assert save_resp.status_code == 200
+
+    substring_resp = client.get(
+        f"/api/documents/{doc_id}/metrics",
+        params={"reference": "pre", "hypothesis": "manual", "match_mode": "substring"},
+    )
+    assert substring_resp.status_code == 200
+    assert substring_resp.json()["micro"]["f1"] == 1.0
+    assert substring_resp.json()["match_mode"] == "substring"
 
 
 def test_metrics_endpoint_defaults_to_overlap_matching(client):
@@ -3401,6 +3429,135 @@ def test_prompt_lab_preset_variant_accepts_v2_post_process_method_bundle(client,
     assert listed is not None
     assert listed["method_bundle"] == "v2+post-process"
     assert seen_method_bundles == ["v2+post-process"]
+
+
+def test_prompt_lab_preset_variant_accepts_deidentify_v2_method_bundle(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+    seen_method_bundles: list[str] = []
+
+    def fake_run_method_with_metadata(**kwargs):
+        seen_method_bundles.append(str(kwargs.get("method_bundle")))
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            raw_spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=None,
+            response_debug=[],
+            resolution_events=[],
+            resolution_policy_version=None,
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    create_resp = client.post(
+        "/api/prompt-lab/runs",
+        json={
+            "name": "preset-method-deidentify-v2-run",
+            "doc_ids": [doc_id],
+            "prompts": [
+                {
+                    "id": "preset1",
+                    "label": "Dual V2 preset",
+                    "variant_type": "preset",
+                    "preset_method_id": "dual-v2",
+                }
+            ],
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "none",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "substring",
+                "reference_source": "pre",
+                "fallback_reference_source": "pre",
+                "method_bundle": "deidentify-v2",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+    assert create_resp.json()["method_bundle"] == "deidentify-v2"
+
+    final = _wait_for_prompt_lab_terminal(client, run_id)
+    assert final["status"] == "completed"
+    assert final["method_bundle"] == "deidentify-v2"
+    assert final["runtime"]["method_bundle"] == "deidentify-v2"
+    runs_resp = client.get("/api/prompt-lab/runs")
+    assert runs_resp.status_code == 200
+    runs = runs_resp.json()["runs"]
+    listed = next((row for row in runs if row["id"] == run_id), None)
+    assert listed is not None
+    assert listed["method_bundle"] == "deidentify-v2"
+    assert seen_method_bundles == ["deidentify-v2"]
+
+
+def test_prompt_lab_preset_variant_rejects_unsupported_verify_override_for_deidentify_v2(
+    client, monkeypatch
+):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    create_resp = client.post(
+        "/api/prompt-lab/runs",
+        json={
+            "name": "preset-method-deidentify-v2-verify-override",
+            "doc_ids": [doc_id],
+            "prompts": [
+                {
+                    "id": "preset1",
+                    "label": "Dual V2 preset",
+                    "variant_type": "preset",
+                    "preset_method_id": "dual-v2",
+                    "method_verify_override": True,
+                }
+            ],
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "none",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "substring",
+                "reference_source": "pre",
+                "fallback_reference_source": "pre",
+                "method_bundle": "deidentify-v2",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 400
+    assert "method_verify_override is not supported" in create_resp.json()["detail"]
 
 
 def test_prompt_lab_preset_variant_accepts_v2_method_bundle(client, monkeypatch):
@@ -6847,6 +7004,170 @@ def test_methods_lab_accepts_v2_method_bundle(client, monkeypatch):
     assert seen_method_bundles == ["v2"]
 
 
+def test_methods_lab_accepts_deidentify_v2_method_bundle(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["google.gemini-3.1-pro-preview"],
+    )
+    seen_method_bundles: list[str] = []
+
+    def fake_run_method_with_metadata(**kwargs):
+        seen_method_bundles.append(str(kwargs.get("method_bundle")))
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            raw_spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=None,
+            response_debug=[],
+            resolution_events=[],
+            resolution_policy_version=None,
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    create_resp = client.post(
+        "/api/methods-lab/runs",
+        json={
+            "name": "methods-deidentify-v2-run",
+            "doc_ids": [doc_id],
+            "methods": [{"id": "method_1", "label": "Dual V2", "method_id": "dual-v2"}],
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Gemini Pro",
+                    "model": "google.gemini-3.1-pro-preview",
+                    "reasoning_effort": "none",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "substring",
+                "reference_source": "pre",
+                "fallback_reference_source": "pre",
+                "method_bundle": "deidentify-v2",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+    assert create_resp.json()["method_bundle"] == "deidentify-v2"
+
+    final = _wait_for_methods_lab_terminal(client, run_id)
+    assert final["status"] == "completed"
+    assert final["method_bundle"] == "deidentify-v2"
+    assert final["runtime"]["method_bundle"] == "deidentify-v2"
+    runs_resp = client.get("/api/methods-lab/runs")
+    assert runs_resp.status_code == 200
+    runs = runs_resp.json()["runs"]
+    listed = next((row for row in runs if row["id"] == run_id), None)
+    assert listed is not None
+    assert listed["method_bundle"] == "deidentify-v2"
+    assert seen_method_bundles == ["deidentify-v2"]
+
+
+def test_methods_lab_deidentify_v2_scores_with_legacy_label_aliases(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["google.gemini-3.1-pro-preview"],
+    )
+
+    def fake_run_method_for_document(**kwargs):
+        return (
+            [CanonicalSpan(start=0, end=12, label="ADDRESS", text="123 Main St.")],
+            [],
+            None,
+            [],
+            [CanonicalSpan(start=0, end=12, label="ADDRESS", text="123 Main St.")],
+            [],
+            None,
+            [],
+        )
+
+    monkeypatch.setattr("server._run_method_for_document", fake_run_method_for_document)
+
+    upload_resp = _upload(
+        client,
+        data=_make_hips_v1_custom(
+            "123 Main St.",
+            pii_occurrences=[
+                {"start": 0, "end": 12, "text": "123 Main St.", "pii_type": "LOCATION"},
+            ],
+        ),
+    )
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    create_resp = client.post(
+        "/api/methods-lab/runs",
+        json={
+            "name": "methods-deidentify-v2-alias-run",
+            "doc_ids": [doc_id],
+            "methods": [{"id": "method_1", "label": "Dual V2", "method_id": "dual-v2"}],
+            "models": [
+                {
+                    "id": "m1",
+                    "label": "Gemini Pro",
+                    "model": "google.gemini-3.1-pro-preview",
+                    "reasoning_effort": "none",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "reference_source": "pre",
+                "fallback_reference_source": "pre",
+                "method_bundle": "deidentify-v2",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+
+    final = _wait_for_methods_lab_terminal(client, run_id)
+    assert final["status"] == "completed"
+    detail_resp = client.get(
+        f"/api/methods-lab/runs/{run_id}/cells/{final['matrix']['cells'][0]['id']}/documents/{doc_id}"
+    )
+    assert detail_resp.status_code == 200
+    result = detail_resp.json()
+    assert result["status"] == "completed"
+    assert result["metrics"]["micro"]["f1"] == 1.0
+    assert result["raw_metrics"]["micro"]["f1"] == 1.0
+
+
+def test_prepare_experiment_scoring_spans_deidentify_v2_uses_run_level_gold_labels():
+    reference_spans = [
+        CanonicalSpan(start=0, end=12, label="LOCATION", text="123 Main St."),
+    ]
+    hypothesis_spans = [
+        CanonicalSpan(start=0, end=12, label="ADDRESS", text="123 Main St."),
+    ]
+
+    _projected_reference, projected_hypothesis = _prepare_experiment_scoring_spans(
+        reference_spans,
+        hypothesis_spans,
+        label_projection="native",
+        method_bundle="deidentify-v2",
+        reference_label_set={"ADDRESS"},
+    )
+
+    assert projected_hypothesis[0].label == "ADDRESS"
+
+
 def test_run_method_for_document_v2_post_process_expands_repeated_occurrences(
     client, monkeypatch
 ):
@@ -6894,6 +7215,112 @@ def test_run_method_for_document_v2_post_process_expands_repeated_occurrences(
     assert [(span.start, span.end, span.text) for span in spans] == [
         (0, 4, "Anna"),
         (9, 13, "Anna"),
+    ]
+
+
+def test_run_method_for_document_deidentify_v2_uses_legacy_chunking_and_propagation(monkeypatch):
+    first_text = "Anna " + ("x" * 30010)
+    second_text = "Anna " + ("y" * 30010)
+    first_prefix = "student: "
+    second_prefix = "volunteer: "
+    raw_text = f"{first_prefix}{first_text}\n{second_prefix}{second_text}"
+    doc = CanonicalDocument(
+        id="doc-legacy-v2",
+        filename="session.jsonl.record-0001.json",
+        format="jsonl",
+        raw_text=raw_text,
+        utterances=[
+            UtteranceRow(
+                speaker="student",
+                text=first_text,
+                global_start=len(first_prefix),
+                global_end=len(first_prefix) + len(first_text),
+            ),
+            UtteranceRow(
+                speaker="volunteer",
+                text=second_text,
+                global_start=len(first_prefix) + len(first_text) + 1 + len(second_prefix),
+                global_end=len(first_prefix)
+                + len(first_text)
+                + 1
+                + len(second_prefix)
+                + len(second_text),
+            ),
+        ],
+        pre_annotations=[],
+        label_set=["NAME"],
+    )
+
+    seen_texts: list[str] = []
+
+    def fake_run_method_with_metadata(**kwargs):
+        chunk_text = str(kwargs["text"])
+        seen_texts.append(chunk_text)
+        if "[MSG-1:student]" in chunk_text:
+            start = chunk_text.index("Anna")
+            return SimpleNamespace(
+                spans=[CanonicalSpan(start=start, end=start + 4, label="NAME", text="Anna")],
+                raw_spans=[CanonicalSpan(start=start, end=start + 4, label="NAME", text="Anna")],
+                warnings=[],
+                llm_confidence=None,
+                response_debug=[],
+                resolution_events=[],
+                resolution_policy_version=None,
+            )
+        return SimpleNamespace(
+            spans=[],
+            raw_spans=[],
+            warnings=[],
+            llm_confidence=None,
+            response_debug=[],
+            resolution_events=[],
+            resolution_policy_version=None,
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    spans, warnings, _confidence, diagnostics, raw_spans, events, policy, _debug = _run_method_for_document(
+        doc=doc,
+        method_id="dual-v2",
+        api_key="request-key",
+        api_base="https://proxy.example.com/v1",
+        model="google.gemini-3.1-pro-preview",
+        system_prompt="ignored",
+        temperature=0.0,
+        reasoning_effort="none",
+        anthropic_thinking=False,
+        anthropic_thinking_budget_tokens=None,
+        method_verify=False,
+        label_profile="simple",
+        chunk_mode="off",
+        chunk_size_chars=10000,
+        method_bundle="deidentify-v2",
+    )
+
+    assert len(seen_texts) == 2
+    assert seen_texts[0].startswith("[MSG-1:student] ")
+    assert seen_texts[1].startswith("[MSG-2:volunteer] ")
+    assert warnings == []
+    assert diagnostics
+    assert events == []
+    assert policy is None
+    assert [(span.start, span.end, span.label, span.text) for span in raw_spans] == [
+        (len(first_prefix), len(first_prefix) + 4, "NAME", "Anna"),
+        (
+            len(first_prefix) + len(first_text) + 1 + len(second_prefix),
+            len(first_prefix) + len(first_text) + 1 + len(second_prefix) + 4,
+            "NAME",
+            "Anna",
+        ),
+    ]
+    assert [(span.start, span.end, span.label, span.text) for span in spans] == [
+        (len(first_prefix), len(first_prefix) + 4, "NAME", "Anna"),
+        (
+            len(first_prefix) + len(first_text) + 1 + len(second_prefix),
+            len(first_prefix) + len(first_text) + 1 + len(second_prefix) + 4,
+            "NAME",
+            "Anna",
+        ),
     ]
 
 

@@ -39,6 +39,7 @@ from models import (
 from normalizer import parse_file, parse_jsonl_file
 from agent import (
     METHOD_DEFINITION_BY_ID,
+    _bundle_preserves_native_labels,
     MODEL_PRESETS,
     SYSTEM_PROMPT,
     _bundle_uses_detected_value_post_process,
@@ -95,6 +96,16 @@ FALLBACK_CHUNK_OVERLAP_CHARS = 200
 DEFAULT_CHUNK_PARALLEL_WORKERS = 4
 MAX_CHUNK_PARALLEL_WORKERS = 8
 PROMPT_LAB_ALLOWED_PRESET_METHODS = set(METHOD_DEFINITION_BY_ID.keys())
+DEIDENTIFY_V2_LEGACY_CHUNK_SIZE = 50_000
+DEIDENTIFY_V2_LABEL_ALIASES: dict[str, str] = {
+    "NAME": "PERSON",
+    "NAME_STUDENT": "PERSON",
+    "PHONE": "PHONE_NUMBER",
+    "DRIVER_LICENSE": "US_DRIVER_LICENSE",
+    "IP": "IP_ADDRESS",
+    "ADDRESS": "LOCATION",
+    "SCHOOL": "LOCATION",
+}
 
 COARSE_SIMPLE_LABEL_MAP: dict[str, str] = {
     # Simple labels remain unchanged.
@@ -2068,14 +2079,14 @@ def _normalize_label_projection(raw: object) -> Literal["native", "coarse_simple
     return value  # type: ignore[return-value]
 
 
-def _normalize_match_mode(raw: object) -> Literal["exact", "boundary", "overlap"]:
+def _normalize_match_mode(raw: object) -> Literal["exact", "boundary", "overlap", "substring"]:
     value = str(raw or "overlap").strip().lower()
-    if value not in {"exact", "boundary", "overlap"}:
+    if value not in {"exact", "boundary", "overlap", "substring"}:
         raise HTTPException(
             status_code=400,
-            detail="match_mode must be one of: exact, boundary, overlap",
+            detail="match_mode must be one of: exact, boundary, overlap, substring",
         )
-    return cast(Literal["exact", "boundary", "overlap"], value)
+    return cast(Literal["exact", "boundary", "overlap", "substring"], value)
 
 
 def _project_spans_to_coarse_simple(spans: list[CanonicalSpan]) -> list[CanonicalSpan]:
@@ -2105,6 +2116,80 @@ def _apply_label_projection(
             _project_spans_to_coarse_simple(hypothesis_spans),
         )
     return reference_spans, hypothesis_spans
+
+
+def _get_prompt_lab_allowed_preset_methods(*, method_bundle: str) -> set[str]:
+    return PROMPT_LAB_ALLOWED_PRESET_METHODS | {
+        str(method["id"])
+        for method in list_agent_methods(
+            method_bundle=_normalize_method_bundle(method_bundle)
+        )
+    }
+
+
+def _build_deidentify_v2_label_mapping(
+    pred_types: set[str],
+    gold_types: set[str],
+) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for pred_type in pred_types:
+        if pred_type in gold_types:
+            mapping[pred_type] = pred_type
+            continue
+        mapping[pred_type] = DEIDENTIFY_V2_LABEL_ALIASES.get(pred_type, pred_type)
+    return mapping
+
+
+def _map_span_labels(
+    spans: list[CanonicalSpan],
+    mapping: dict[str, str],
+) -> list[CanonicalSpan]:
+    return [
+        CanonicalSpan(
+            start=span.start,
+            end=span.end,
+            label=mapping.get(span.label, span.label),
+            text=span.text,
+        )
+        for span in spans
+    ]
+
+
+def _prepare_experiment_scoring_spans(
+    reference_spans: list[CanonicalSpan],
+    hypothesis_spans: list[CanonicalSpan],
+    *,
+    label_projection: Literal["native", "coarse_simple"],
+    method_bundle: str,
+    reference_label_set: set[str] | None = None,
+) -> tuple[list[CanonicalSpan], list[CanonicalSpan]]:
+    scored_hypothesis = hypothesis_spans
+    if _normalize_method_bundle(method_bundle) == "deidentify-v2":
+        scored_hypothesis = _map_span_labels(
+            hypothesis_spans,
+            _build_deidentify_v2_label_mapping(
+                {span.label for span in hypothesis_spans},
+                reference_label_set
+                if reference_label_set is not None
+                else {span.label for span in reference_spans},
+            ),
+        )
+    return _apply_label_projection(
+        reference_spans,
+        scored_hypothesis,
+        label_projection=label_projection,
+    )
+
+
+def _normalize_metrics_mode_for_method_bundle(
+    match_mode: str,
+    *,
+    method_bundle: str,
+) -> str:
+    normalized_bundle = _normalize_method_bundle(method_bundle)
+    if normalized_bundle == "deidentify-v2" and match_mode == "substring":
+        return "legacy_substring"
+    return match_mode
 
 
 def _normalize_chunk_mode(raw: object) -> Literal["auto", "off", "force"]:
@@ -2163,6 +2248,190 @@ def _build_text_chunks(doc: CanonicalDocument, chunk_size: int) -> list[tuple[in
             break
         start += step
     return chunks
+
+
+@dataclass(frozen=True)
+class _DeidentifyV2LegacyMessage:
+    id: int
+    text: str
+    prefix: str
+    global_start: int
+    global_end: int
+
+
+@dataclass(frozen=True)
+class _DeidentifyV2LegacyChunkEntry:
+    message_id: int
+    offset: int
+    prefix_len: int
+    text_len: int
+
+
+def _build_deidentify_v2_legacy_messages(
+    doc: CanonicalDocument,
+) -> list[_DeidentifyV2LegacyMessage]:
+    utterances = sorted(
+        [u for u in doc.utterances if 0 <= u.global_start <= u.global_end <= len(doc.raw_text)],
+        key=lambda u: (u.global_start, u.global_end),
+    )
+    if utterances:
+        return [
+            _DeidentifyV2LegacyMessage(
+                id=index,
+                text=utterance.text,
+                prefix=f"[MSG-{index + 1}:{utterance.speaker}] " if utterance.speaker else "",
+                global_start=utterance.global_start,
+                global_end=utterance.global_end,
+            )
+            for index, utterance in enumerate(utterances)
+        ]
+
+    return [
+        _DeidentifyV2LegacyMessage(
+            id=0,
+            text=doc.raw_text,
+            prefix="",
+            global_start=0,
+            global_end=len(doc.raw_text),
+        )
+    ]
+
+
+def _build_deidentify_v2_legacy_chunks(
+    messages: list[_DeidentifyV2LegacyMessage],
+) -> list[tuple[list[str], list[_DeidentifyV2LegacyChunkEntry], int, int]]:
+    chunks: list[tuple[list[str], list[_DeidentifyV2LegacyChunkEntry], int, int]] = []
+    parts: list[str] = []
+    entries: list[_DeidentifyV2LegacyChunkEntry] = []
+    size = 0
+    chunk_start = 0
+    chunk_end = 0
+
+    for message in messages:
+        part = f"{message.prefix}{message.text}"
+        added = len(part) + (1 if parts else 0)
+        if parts and size + added > DEIDENTIFY_V2_LEGACY_CHUNK_SIZE:
+            chunks.append((parts, entries, chunk_start, chunk_end))
+            parts, entries, size = [], [], 0
+
+        if not parts:
+            chunk_start = message.global_start
+            chunk_end = message.global_end
+
+        offset = size + (1 if parts else 0)
+        entries.append(
+            _DeidentifyV2LegacyChunkEntry(
+                message_id=message.id,
+                offset=offset,
+                prefix_len=len(message.prefix),
+                text_len=len(message.text),
+            )
+        )
+        parts.append(part)
+        size = offset + len(part)
+        chunk_end = message.global_end
+
+    if parts:
+        chunks.append((parts, entries, chunk_start, chunk_end))
+
+    return chunks
+
+
+def _find_deidentify_v2_chunk_entry(
+    entries: list[_DeidentifyV2LegacyChunkEntry],
+    char_offset: int,
+) -> _DeidentifyV2LegacyChunkEntry | None:
+    for entry in entries:
+        total = entry.prefix_len + entry.text_len
+        if entry.offset <= char_offset < entry.offset + total:
+            return entry
+    return None
+
+
+def _extract_deidentify_v2_chunk_local_spans(
+    *,
+    chunk_spans: list[CanonicalSpan],
+    entries: list[_DeidentifyV2LegacyChunkEntry],
+) -> dict[int, list[CanonicalSpan]]:
+    predicted: dict[int, list[CanonicalSpan]] = {}
+    for span in chunk_spans:
+        entry = _find_deidentify_v2_chunk_entry(entries, span.start)
+        if entry is None:
+            continue
+        local_start = span.start - entry.offset - entry.prefix_len
+        local_end = span.end - entry.offset - entry.prefix_len
+        if local_start < 0:
+            continue
+        local_end = min(local_end, entry.text_len)
+        if local_end <= local_start:
+            continue
+        text = span.text[: local_end - local_start]
+        predicted.setdefault(entry.message_id, []).append(
+            CanonicalSpan(
+                start=local_start,
+                end=local_end,
+                label=span.label,
+                text=text,
+            )
+        )
+    return predicted
+
+
+def _propagate_deidentify_v2_entities(
+    messages: list[_DeidentifyV2LegacyMessage],
+    predicted: dict[int, list[CanonicalSpan]],
+) -> None:
+    entities = {
+        (span.text, span.label)
+        for message in messages
+        for span in predicted.get(message.id, [])
+        if span.text
+    }
+
+    for text, label in sorted(entities, key=lambda item: -len(item[0])):
+        pattern = re.compile(re.escape(text))
+        for message in messages:
+            existing = {
+                (span.start, span.end)
+                for span in predicted.setdefault(message.id, [])
+            }
+            for match in pattern.finditer(message.text):
+                start, end = match.start(), match.end()
+                if any(
+                    existing_start <= start < existing_end
+                    or existing_start < end <= existing_end
+                    for existing_start, existing_end in existing
+                ):
+                    continue
+                predicted[message.id].append(
+                    CanonicalSpan(
+                        start=start,
+                        end=end,
+                        label=label,
+                        text=text,
+                    )
+                )
+                existing.add((start, end))
+
+
+def _project_deidentify_v2_predictions_to_global(
+    *,
+    messages: list[_DeidentifyV2LegacyMessage],
+    predicted: dict[int, list[CanonicalSpan]],
+) -> list[CanonicalSpan]:
+    projected: list[CanonicalSpan] = []
+    for message in messages:
+        for span in predicted.get(message.id, []):
+            projected.append(
+                CanonicalSpan(
+                    start=message.global_start + span.start,
+                    end=message.global_start + span.end,
+                    label=span.label,
+                    text=span.text,
+                )
+            )
+    projected.sort(key=lambda span: (span.start, span.end, span.label, span.text))
+    return projected
 
 
 def _shift_spans(spans: list[CanonicalSpan], offset: int) -> list[CanonicalSpan]:
@@ -2815,6 +3084,168 @@ def _build_chunk_diagnostic(
     )
 
 
+def _run_deidentify_v2_method_for_document(
+    *,
+    doc: CanonicalDocument,
+    method_id: str,
+    api_key: str | None,
+    api_base: str | None,
+    model: str,
+    system_prompt: str,
+    temperature: float,
+    reasoning_effort: str,
+    anthropic_thinking: bool,
+    anthropic_thinking_budget_tokens: int | None,
+    method_verify: bool | None,
+    timeout_seconds: float | None,
+    progress_callback: Callable[[int, int], None] | None = None,
+    runtime_progress_callback: Callable[[dict[str, object]], None] | None = None,
+) -> tuple[
+    list[CanonicalSpan],
+    list[str],
+    LLMConfidenceMetric | None,
+    list[AgentChunkDiagnostic],
+    list[CanonicalSpan],
+    list[ResolutionEvent],
+    str | None,
+    list[str],
+]:
+    def _emit_runtime_progress(
+        *,
+        chunk_index: int,
+        total_chunks: int,
+        start: int,
+        end: int,
+        pass_index: int | None = None,
+        pass_label: str | None = None,
+    ) -> None:
+        if runtime_progress_callback is None:
+            return
+        runtime_progress_callback(
+            {
+                "current_chunk_index": chunk_index,
+                "total_chunks": total_chunks,
+                "chunk_start": start,
+                "chunk_end": end,
+                "current_pass_index": pass_index,
+                "current_pass_label": pass_label,
+            }
+        )
+
+    messages = _build_deidentify_v2_legacy_messages(doc)
+    chunks = _build_deidentify_v2_legacy_chunks(messages)
+    message_by_id = {message.id: message for message in messages}
+    total_chunks = max(len(chunks), 1)
+    predicted: dict[int, list[CanonicalSpan]] = {message.id: [] for message in messages}
+    raw_predicted: dict[int, list[CanonicalSpan]] = {message.id: [] for message in messages}
+    warnings: list[str] = []
+    response_debug: list[str] = []
+    llm_metrics: list[LLMConfidenceMetric] = []
+    chunk_diagnostics: list[AgentChunkDiagnostic] = []
+
+    for idx, (parts, entries, chunk_start, chunk_end) in enumerate(chunks):
+        chunk_text = "\n".join(parts)
+        _emit_runtime_progress(
+            chunk_index=idx + 1,
+            total_chunks=total_chunks,
+            start=chunk_start,
+            end=chunk_end,
+        )
+        method_result = run_method_with_metadata(
+            text=chunk_text,
+            method_id=method_id,
+            api_key=api_key,
+            api_base=api_base,
+            model=model,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            reasoning_effort=reasoning_effort,  # type: ignore[arg-type]
+            anthropic_thinking=anthropic_thinking,
+            anthropic_thinking_budget_tokens=anthropic_thinking_budget_tokens,  # type: ignore[arg-type]
+            method_verify=method_verify,
+            timeout_seconds=timeout_seconds,
+            method_bundle="deidentify-v2",
+            progress_callback=(
+                lambda pass_index, pass_label: _emit_runtime_progress(
+                    chunk_index=idx + 1,
+                    total_chunks=total_chunks,
+                    start=chunk_start,
+                    end=chunk_end,
+                    pass_index=pass_index,
+                    pass_label=pass_label,
+                )
+            ),
+        )
+        local_spans = _extract_deidentify_v2_chunk_local_spans(
+            chunk_spans=list(method_result.spans),
+            entries=entries,
+        )
+        local_raw_spans = _extract_deidentify_v2_chunk_local_spans(
+            chunk_spans=list(getattr(method_result, "raw_spans", method_result.spans)),
+            entries=entries,
+        )
+        for message_id, spans in local_spans.items():
+            predicted.setdefault(message_id, []).extend(spans)
+        for message_id, spans in local_raw_spans.items():
+            raw_predicted.setdefault(message_id, []).extend(spans)
+
+        projected_chunk_spans = _project_deidentify_v2_predictions_to_global(
+            messages=[message_by_id[entry.message_id] for entry in entries],
+            predicted=local_spans,
+        )
+        if method_result.warnings:
+            warnings.extend(_format_chunk_warnings(idx, total_chunks, list(method_result.warnings)))
+        if getattr(method_result, "response_debug", None):
+            response_debug.extend(
+                _format_chunk_response_debug(
+                    idx,
+                    total_chunks,
+                    list(getattr(method_result, "response_debug", [])),
+                )
+            )
+        if getattr(method_result, "llm_confidence", None) is not None:
+            llm_metrics.append(method_result.llm_confidence)
+        chunk_diagnostics.append(
+            AgentChunkDiagnostic(
+                chunk_index=idx,
+                start=chunk_start,
+                end=chunk_end,
+                char_count=len(chunk_text),
+                span_count=len(projected_chunk_spans),
+                status="completed",
+                finish_reason=None,
+                warnings=list(method_result.warnings),
+            )
+        )
+        if progress_callback is not None:
+            progress_callback(idx + 1, total_chunks)
+
+    _propagate_deidentify_v2_entities(messages, predicted)
+    _propagate_deidentify_v2_entities(messages, raw_predicted)
+
+    spans = _normalize_and_validate_spans(
+        _project_deidentify_v2_predictions_to_global(messages=messages, predicted=predicted),
+        doc.raw_text,
+    )
+    raw_spans = _normalize_and_validate_spans(
+        _project_deidentify_v2_predictions_to_global(messages=messages, predicted=raw_predicted),
+        doc.raw_text,
+    )
+    aggregated_confidence = (
+        _aggregate_llm_confidence(llm_metrics) if llm_metrics else None
+    )
+    return (
+        spans,
+        warnings,
+        aggregated_confidence,
+        chunk_diagnostics,
+        raw_spans,
+        [],
+        None,
+        response_debug,
+    )
+
+
 def _summarize_suspicious_empty_retry(
     *,
     recovered_span_count: int,
@@ -3135,6 +3566,25 @@ def _run_method_for_document(
         )
 
     use_detected_value_post_process = _bundle_uses_detected_value_post_process(method_bundle)
+    preserve_native_labels = _bundle_preserves_native_labels(method_bundle)
+
+    if _normalize_method_bundle(method_bundle) == "deidentify-v2":
+        return _run_deidentify_v2_method_for_document(
+            doc=doc,
+            method_id=method_id,
+            api_key=api_key,
+            api_base=api_base,
+            model=model,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            reasoning_effort=reasoning_effort,
+            anthropic_thinking=anthropic_thinking,
+            anthropic_thinking_budget_tokens=anthropic_thinking_budget_tokens,
+            method_verify=method_verify,
+            timeout_seconds=timeout_seconds,
+            progress_callback=progress_callback,
+            runtime_progress_callback=runtime_progress_callback,
+        )
 
     if not _should_use_chunking(len(doc.raw_text), chunk_mode, chunk_size_chars):
         _emit_runtime_progress(
@@ -3169,15 +3619,25 @@ def _run_method_for_document(
                 )
             ),
         )
+        normalized_spans = (
+            list(method_result.spans)
+            if preserve_native_labels
+            else normalize_method_spans(method_result.spans, label_profile=label_profile)
+        )
+        normalized_raw_spans = (
+            list(getattr(method_result, "raw_spans", method_result.spans))
+            if preserve_native_labels
+            else normalize_method_spans(
+                getattr(method_result, "raw_spans", method_result.spans),
+                label_profile=label_profile,
+            )
+        )
         spans = _normalize_and_validate_spans(
-            normalize_method_spans(method_result.spans, label_profile=label_profile),
+            normalized_spans,
             doc.raw_text,
         )
         raw_spans = _normalize_and_validate_spans(
-            normalize_method_spans(
-                getattr(method_result, "raw_spans", method_result.spans),
-                label_profile=label_profile,
-            ),
+            normalized_raw_spans,
             doc.raw_text,
         )
         if use_detected_value_post_process:
@@ -3248,23 +3708,31 @@ def _run_method_for_document(
                 )
             ),
         )
-        shifted = _shift_spans(
-            normalize_method_spans(method_result.spans, label_profile=label_profile),
-            start,
+        normalized_shifted_spans = (
+            _shift_spans(list(method_result.spans), start)
+            if preserve_native_labels
+            else _shift_spans(
+                normalize_method_spans(method_result.spans, label_profile=label_profile),
+                start,
+            )
         )
-        raw_shifted = _shift_spans(
-            normalize_method_spans(
-                getattr(method_result, "raw_spans", method_result.spans),
-                label_profile=label_profile,
-            ),
-            start,
+        normalized_shifted_raw_spans = (
+            _shift_spans(list(getattr(method_result, "raw_spans", method_result.spans)), start)
+            if preserve_native_labels
+            else _shift_spans(
+                normalize_method_spans(
+                    getattr(method_result, "raw_spans", method_result.spans),
+                    label_profile=label_profile,
+                ),
+                start,
+            )
         )
         return _ChunkExecutionResult(
             idx=idx,
             start=start,
             end=end,
-            shifted_spans=shifted,
-            raw_shifted_spans=raw_shifted,
+            shifted_spans=normalized_shifted_spans,
+            raw_shifted_spans=normalized_shifted_raw_spans,
             warnings=list(method_result.warnings),
             response_debug=list(getattr(method_result, "response_debug", [])),
             llm_confidence=getattr(method_result, "llm_confidence", None),
@@ -3713,12 +4181,14 @@ class PromptLabRuntimeInput(BaseModel):
     api_key: str | None = None
     api_base: str | None = None
     temperature: float = 0.0
-    match_mode: Literal["exact", "boundary", "overlap"] = "overlap"
+    match_mode: Literal["exact", "boundary", "overlap", "substring"] = "overlap"
     reference_source: Literal["manual", "pre"] = "manual"
     fallback_reference_source: Literal["manual", "pre"] = "pre"
     label_profile: Literal["simple", "advanced"] = "simple"
     label_projection: Literal["native", "coarse_simple"] = "native"
-    method_bundle: Literal["legacy", "audited", "test", "v2", "v2+post-process"] = "audited"
+    method_bundle: Literal[
+        "legacy", "audited", "test", "v2", "v2+post-process", "deidentify-v2"
+    ] = "audited"
     chunk_mode: Literal["auto", "off", "force"] = "off"
     chunk_size_chars: int = DEFAULT_CHUNK_SIZE_CHARS
 
@@ -3744,12 +4214,14 @@ class MethodsLabRuntimeInput(BaseModel):
     api_key: str | None = None
     api_base: str | None = None
     temperature: float = 0.0
-    match_mode: Literal["exact", "boundary", "overlap"] = "overlap"
+    match_mode: Literal["exact", "boundary", "overlap", "substring"] = "overlap"
     reference_source: Literal["manual", "pre"] = "manual"
     fallback_reference_source: Literal["manual", "pre"] = "pre"
     label_profile: Literal["simple", "advanced"] = "simple"
     label_projection: Literal["native", "coarse_simple"] = "native"
-    method_bundle: Literal["legacy", "audited", "test", "v2", "v2+post-process"] = "audited"
+    method_bundle: Literal[
+        "legacy", "audited", "test", "v2", "v2+post-process", "deidentify-v2"
+    ] = "audited"
     chunk_mode: Literal["auto", "off", "force"] = "off"
     chunk_size_chars: int = DEFAULT_CHUNK_SIZE_CHARS
     task_timeout_seconds: float | None = None
@@ -3889,8 +4361,11 @@ def _validate_prompt_lab_request(body: PromptLabRunCreateBody, session_id: str =
                     status_code=400,
                     detail=f"preset_method_id required for preset variant at prompt index {index}",
                 )
-            if method_id not in PROMPT_LAB_ALLOWED_PRESET_METHODS:
-                allowed = ", ".join(sorted(PROMPT_LAB_ALLOWED_PRESET_METHODS))
+            allowed_preset_methods = _get_prompt_lab_allowed_preset_methods(
+                method_bundle=method_bundle
+            )
+            if method_id not in allowed_preset_methods:
+                allowed = ", ".join(sorted(allowed_preset_methods))
                 raise HTTPException(
                     status_code=400,
                     detail=(
@@ -3898,10 +4373,22 @@ def _validate_prompt_lab_request(body: PromptLabRunCreateBody, session_id: str =
                         f"Allowed presets: {allowed}"
                     ),
                 )
-            if get_method_definition_by_id(method_id, method_bundle=method_bundle) is None:
+            definition = get_method_definition_by_id(method_id, method_bundle=method_bundle)
+            if definition is None:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Unknown preset method: {method_id}",
+                )
+            if (
+                prompt.method_verify_override is not None
+                and not bool(definition.get("supports_verify_override"))
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"method_verify_override is not supported for preset method "
+                        f"'{method_id}' (prompt index {index})"
+                    ),
                 )
         prompt_id = (prompt.id or "").strip() or f"prompt_{index + 1}"
         if prompt_id in prompt_ids_seen:
@@ -4008,6 +4495,7 @@ def _initialize_prompt_lab_run(
             "fallback_reference_source": runtime["fallback_reference_source"],
             "label_profile": runtime["label_profile"],
             "label_projection": runtime["label_projection"],
+            "method_bundle": runtime["method_bundle"],
             "api_base": runtime["api_base"],
             "chunk_mode": runtime["chunk_mode"],
             "chunk_size_chars": runtime["chunk_size_chars"],
@@ -4136,21 +4624,31 @@ def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                 reference_source,  # type: ignore[arg-type]
                 fallback_reference_source,  # type: ignore[arg-type]
             )
-            projected_reference, projected_hypothesis = _apply_label_projection(
+            projected_reference, projected_hypothesis = _prepare_experiment_scoring_spans(
                 reference_spans,
                 hypothesis_spans,
                 label_projection=label_projection,  # type: ignore[arg-type]
+                method_bundle=method_bundle,
             )
-            projected_reference_raw, projected_hypothesis_raw = _apply_label_projection(
+            projected_reference_raw, projected_hypothesis_raw = _prepare_experiment_scoring_spans(
                 reference_spans,
                 raw_hypothesis_spans,
                 label_projection=label_projection,  # type: ignore[arg-type]
+                method_bundle=method_bundle,
+            )
+            scoring_match_mode = _normalize_metrics_mode_for_method_bundle(
+                match_mode,
+                method_bundle=method_bundle,
             )
             metrics = _serialize_metrics_payload(
-                compute_metrics(projected_reference, projected_hypothesis, match_mode)
+                compute_metrics(projected_reference, projected_hypothesis, scoring_match_mode)
             )
             raw_metrics = _serialize_metrics_payload(
-                compute_metrics(projected_reference_raw, projected_hypothesis_raw, match_mode)
+                compute_metrics(
+                    projected_reference_raw,
+                    projected_hypothesis_raw,
+                    scoring_match_mode,
+                )
             )
             return cell_id, doc_id, {
                 "status": "completed",
@@ -4399,8 +4897,11 @@ def _initialize_methods_lab_run(
         "runtime": {
             "temperature": runtime["temperature"],
             "match_mode": runtime["match_mode"],
+            "reference_source": runtime["reference_source"],
+            "fallback_reference_source": runtime["fallback_reference_source"],
             "label_profile": runtime["label_profile"],
             "label_projection": runtime["label_projection"],
+            "method_bundle": runtime["method_bundle"],
             "api_base": runtime["api_base"],
             "chunk_mode": runtime["chunk_mode"],
             "chunk_size_chars": runtime["chunk_size_chars"],
@@ -4421,6 +4922,7 @@ def _run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object
     match_mode = str(runtime["match_mode"])
     label_profile = str(runtime["label_profile"])
     label_projection = _normalize_label_projection(runtime.get("label_projection", "native"))
+    method_bundle = _normalize_method_bundle(runtime.get("method_bundle", "audited"))
     chunk_mode = str(runtime["chunk_mode"])
     chunk_size_chars = int(runtime["chunk_size_chars"])
 
@@ -4446,7 +4948,10 @@ def _run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object
         if not isinstance(method, dict):
             continue
         method_variant_id = str(method.get("id", ""))
-        method_definition = METHOD_DEFINITION_BY_ID.get(str(method.get("method_id", "")))
+        method_definition = get_method_definition_by_id(
+            str(method.get("method_id", "")),
+            method_bundle=method_bundle,
+        )
         if method_definition is None:
             continue
         if bool(method_definition.get("uses_llm")):
@@ -4478,7 +4983,10 @@ def _run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object
                 },
             )
 
-        definition = METHOD_DEFINITION_BY_ID.get(str(method_variant.get("method_id", "")))
+        definition = get_method_definition_by_id(
+            str(method_variant.get("method_id", "")),
+            method_bundle=method_bundle,
+        )
         if definition is None:
             return (
                 method_variant_id,
@@ -4559,22 +5067,33 @@ def _run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object
                 label_profile=label_profile,  # type: ignore[arg-type]
                 chunk_mode=chunk_mode,
                 chunk_size_chars=chunk_size_chars,
+                method_bundle=method_bundle,
             )
-            projected_reference, projected_hypothesis = _apply_label_projection(
+            projected_reference, projected_hypothesis = _prepare_experiment_scoring_spans(
                 enriched.manual_annotations,
                 hypothesis_spans,
                 label_projection=label_projection,  # type: ignore[arg-type]
+                method_bundle=method_bundle,
             )
-            projected_reference_raw, projected_hypothesis_raw = _apply_label_projection(
+            projected_reference_raw, projected_hypothesis_raw = _prepare_experiment_scoring_spans(
                 enriched.manual_annotations,
                 raw_hypothesis_spans,
                 label_projection=label_projection,  # type: ignore[arg-type]
+                method_bundle=method_bundle,
+            )
+            scoring_match_mode = _normalize_metrics_mode_for_method_bundle(
+                match_mode,
+                method_bundle=method_bundle,
             )
             metrics = _serialize_metrics_payload(
-                compute_metrics(projected_reference, projected_hypothesis, match_mode)
+                compute_metrics(projected_reference, projected_hypothesis, scoring_match_mode)
             )
             raw_metrics = _serialize_metrics_payload(
-                compute_metrics(projected_reference_raw, projected_hypothesis_raw, match_mode)
+                compute_metrics(
+                    projected_reference_raw,
+                    projected_hypothesis_raw,
+                    scoring_match_mode,
+                )
             )
             return (
                 method_variant_id,
@@ -6186,8 +6705,8 @@ async def list_model_presets():
 
 
 @app.get("/api/agent/methods")
-async def list_agent_method_catalog():
-    return {"methods": list_agent_methods()}
+async def list_agent_method_catalog(method_bundle: str = Query("audited")):
+    return {"methods": list_agent_methods(method_bundle=_normalize_method_bundle(method_bundle))}
 
 
 @app.get("/api/agent/credentials/status")

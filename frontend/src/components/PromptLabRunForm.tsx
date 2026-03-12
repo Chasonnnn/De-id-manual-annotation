@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { getAgentMethods } from "../api/client";
 import { MODEL_PRESETS, getModelPreset } from "../modelPresets";
 import type {
   AgentMethodOption,
@@ -199,6 +200,7 @@ function PromptLabConfigGrid({
           <option value="exact">Exact</option>
           <option value="boundary">Trim Space/Punct</option>
           <option value="overlap">Overlap</option>
+          <option value="substring">Substring</option>
         </select>
       </div>
 
@@ -290,6 +292,7 @@ function PromptLabConfigGrid({
           <option value="test">Test</option>
           <option value="v2">V2</option>
           <option value="v2+post-process">V2 + post-process</option>
+          <option value="deidentify-v2">Colleague demo V2</option>
           <option value="legacy">Legacy</option>
         </select>
         <div className="prompt-lab-config-note">Applies only to Experiment Preset variants.</div>
@@ -674,11 +677,30 @@ function usePromptLabRunFormController({
     chunkMode: "off",
     chunkSizeChars: 10000,
   });
+  const [bundleMethods, setBundleMethods] = useState<AgentMethodOption[]>(methods);
   const [uiState, setUiState] = useState<PromptLabUiState>({
     submitting: false,
     error: null,
     localCollapsed: false,
   });
+
+  useEffect(() => {
+    let cancelled = false;
+    getAgentMethods(runtimeState.methodBundle)
+      .then((nextMethods) => {
+        if (!cancelled) {
+          setBundleMethods(nextMethods);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setBundleMethods(methods);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [methods, runtimeState.methodBundle]);
 
   useEffect(() => {
     if (!selectedDocumentId) return;
@@ -714,8 +736,8 @@ function usePromptLabRunFormController({
 
   const presetMethodOptions = useMemo(
     () =>
-      methods.length > 0
-        ? methods
+      bundleMethods.length > 0
+        ? bundleMethods
         : FALLBACK_PRESET_METHOD_IDS.map((id) => ({
             id,
             label: id,
@@ -726,8 +748,23 @@ function usePromptLabRunFormController({
             available: true,
             unavailable_reason: null,
           })),
-    [methods],
+    [bundleMethods],
   );
+
+  useEffect(() => {
+    setFormState((prev) => ({
+      ...prev,
+      prompts: prev.prompts.map((prompt) =>
+        (prompt.variant_type ?? "prompt") === "preset" &&
+        !presetMethodOptions.some((method) => method.id === prompt.preset_method_id)
+          ? {
+              ...prompt,
+              preset_method_id: presetMethodOptions[0]?.id ?? null,
+            }
+          : prompt,
+      ),
+    }));
+  }, [presetMethodOptions]);
 
   const selectedFolderDocCount = formState.selectedFolderIds.reduce(
     (sum, folderId) => sum + (folderDocCountById[folderId] ?? 0),

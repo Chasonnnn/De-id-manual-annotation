@@ -65,6 +65,44 @@ class TestBoundaryMatch:
         assert m["micro"]["fn"] == 1
 
 
+class TestSubstringMatch:
+    def test_substring_counts_nested_same_label_as_match(self):
+        gold = [_span(0, 9, "NAME", "Mr. Evans")]
+        pred = [_span(4, 9, "NAME", "Evans")]
+
+        m = compute_metrics(gold, pred, mode="substring")
+
+        assert m["micro"]["precision"] == 1.0
+        assert m["micro"]["recall"] == 1.0
+        assert m["micro"]["f1"] == 1.0
+
+    def test_substring_keeps_label_matching_strict(self):
+        gold = [_span(0, 9, "NAME", "Mr. Evans")]
+        pred = [_span(4, 9, "EMAIL", "Evans")]
+
+        m = compute_metrics(gold, pred, mode="substring")
+
+        assert m["micro"]["tp"] == 0
+        assert m["micro"]["fp"] == 1
+        assert m["micro"]["fn"] == 1
+
+    def test_legacy_substring_preserves_old_greedy_matching_order(self):
+        gold = [
+            _span(0, 1, "NAME", "A"),
+            _span(0, 2, "NAME", "AA"),
+        ]
+        pred = [
+            _span(0, 1, "NAME", "A"),
+            _span(1, 3, "NAME", "AB"),
+        ]
+
+        m = compute_metrics(gold, pred, mode="legacy_substring")
+
+        assert m["micro"]["tp"] == 1
+        assert m["micro"]["fp"] == 1
+        assert m["micro"]["fn"] == 1
+
+
 class TestExactOverlapCompanion:
     def test_co_primary_uses_overlap_matching_for_all_labels(self):
         gold = [

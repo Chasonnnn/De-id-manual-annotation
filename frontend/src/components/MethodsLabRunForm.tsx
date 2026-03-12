@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { getAgentMethods } from "../api/client";
 import { MODEL_PRESETS, getModelPreset } from "../modelPresets";
 import type {
   AgentMethodOption,
@@ -198,6 +199,7 @@ function MethodsLabConfigGrid({
           <option value="exact">Exact</option>
           <option value="boundary">Trim Space/Punct</option>
           <option value="overlap">Overlap</option>
+          <option value="substring">Substring</option>
         </select>
       </div>
 
@@ -275,6 +277,7 @@ function MethodsLabConfigGrid({
           <option value="test">Test</option>
           <option value="v2">V2</option>
           <option value="v2+post-process">V2 + post-process</option>
+          <option value="deidentify-v2">Colleague demo V2</option>
           <option value="legacy">Legacy</option>
         </select>
       </div>
@@ -626,31 +629,6 @@ function useMethodsLabRunFormController({
       >,
     [folders],
   );
-  const methodOptions = useMemo(
-    () =>
-      methods.length > 0
-        ? methods
-        : FALLBACK_METHOD_IDS.map((id) => ({
-            id,
-            label: id,
-            description: "",
-            requires_presidio: id.includes("presidio"),
-            uses_llm: id !== "presidio",
-            supports_verify_override: id !== "presidio",
-            default_verify: id === "verified",
-            available: true,
-            unavailable_reason: null,
-          })),
-    [methods],
-  );
-
-  const [formState, setFormState] = useState<MethodsLabFormState>({
-    name: "",
-    selectedDocIds: [],
-    selectedFolderIds: [],
-    methodVariants: [makeMethod(0, methodOptions)],
-    models: [makeModel(0)],
-  });
   const [runtimeState, setRuntimeState] = useState<MethodsLabRuntimeState>({
     temperature: 0,
     matchMode: "overlap",
@@ -664,11 +642,54 @@ function useMethodsLabRunFormController({
     chunkMode: "off",
     chunkSizeChars: 10000,
   });
+  const [bundleMethods, setBundleMethods] = useState<AgentMethodOption[]>(methods);
+  const methodOptions = useMemo(
+    () =>
+      bundleMethods.length > 0
+        ? bundleMethods
+        : FALLBACK_METHOD_IDS.map((id) => ({
+            id,
+            label: id,
+            description: "",
+            requires_presidio: id.includes("presidio"),
+            uses_llm: id !== "presidio",
+            supports_verify_override: id !== "presidio",
+            default_verify: id === "verified",
+            available: true,
+            unavailable_reason: null,
+          })),
+    [bundleMethods],
+  );
+  const [formState, setFormState] = useState<MethodsLabFormState>({
+    name: "",
+    selectedDocIds: [],
+    selectedFolderIds: [],
+    methodVariants: [makeMethod(0, methodOptions)],
+    models: [makeModel(0)],
+  });
   const [uiState, setUiState] = useState<MethodsLabUiState>({
     submitting: false,
     error: null,
     localCollapsed: false,
   });
+
+  useEffect(() => {
+    let cancelled = false;
+    getAgentMethods(runtimeState.methodBundle)
+      .then((nextMethods) => {
+        if (!cancelled) {
+          setBundleMethods(nextMethods);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setBundleMethods(methods);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [methods, runtimeState.methodBundle]);
 
   useEffect(() => {
     if (!selectedDocumentId) return;
@@ -709,11 +730,28 @@ function useMethodsLabRunFormController({
   }, [runtimeState.apiBase]);
 
   useEffect(() => {
-    setFormState((prev) =>
-      prev.methodVariants.length > 0
-        ? prev
-        : { ...prev, methodVariants: [makeMethod(0, methodOptions)] },
-    );
+    setFormState((prev) => ({
+      ...prev,
+      methodVariants:
+        prev.methodVariants.length > 0
+          ? prev.methodVariants.map((variant, index) => {
+              const selected = methodOptions.find((item) => item.id === variant.method_id);
+              if (!selected) {
+                return makeMethod(index, methodOptions);
+              }
+              return {
+                ...variant,
+                label: selected.label,
+                method_verify_override:
+                  selected.supports_verify_override && variant.method_verify_override !== null
+                    ? variant.method_verify_override
+                    : selected.supports_verify_override
+                      ? (selected.default_verify ?? null)
+                      : null,
+              };
+            })
+          : [makeMethod(0, methodOptions)],
+    }));
   }, [methodOptions]);
 
   const selectedFolderDocCount = formState.selectedFolderIds.reduce(

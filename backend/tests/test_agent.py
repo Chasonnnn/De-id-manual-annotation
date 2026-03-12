@@ -1331,6 +1331,10 @@ def test_v2_method_contracts_validate_cleanly():
     assert agent.validate_method_contracts(method_bundle="v2") == []
 
 
+def test_deidentify_v2_method_contracts_validate_cleanly():
+    assert agent.validate_method_contracts(method_bundle="deidentify-v2") == []
+
+
 def test_test_bundle_prompt_wrapper_includes_examples_and_label_catalog():
     prompt = build_extraction_system_prompt(
         "Base prompt",
@@ -1351,6 +1355,10 @@ def test_normalize_method_bundle_accepts_v2_post_process():
 
 def test_normalize_method_bundle_accepts_v2():
     assert _normalize_method_bundle("v2") == "v2"
+
+
+def test_normalize_method_bundle_accepts_deidentify_v2():
+    assert _normalize_method_bundle("deidentify-v2") == "deidentify-v2"
 
 
 def test_expand_detected_value_occurrences_repeats_same_name():
@@ -1385,6 +1393,28 @@ def test_list_agent_methods_reports_profile_metadata_for_audited_bundle():
     assert "SCHOOL" in dual_split["output_labels_by_profile"]["simple"]
     assert "SCHOOL" in dual_split["output_labels_by_profile"]["advanced"]
     assert isinstance(dual_split["known_limitations"], list)
+
+
+def test_list_agent_methods_reports_deidentify_v2_catalog_entries():
+    methods = agent.list_agent_methods(method_bundle="deidentify-v2")
+
+    method_ids = {item["id"] for item in methods}
+
+    assert "dual-v2" in method_ids
+    assert "regex+dual-v2" in method_ids
+    assert "presidio-lite+extended-v2" in method_ids
+
+
+def test_deidentify_v2_dual_method_uses_exact_legacy_prompt_text():
+    definition = agent.get_method_definition_by_id("dual-v2", method_bundle="deidentify-v2")
+    assert definition is not None
+
+    names_prompt = definition["passes"][0]["prompt"]
+    identifiers_prompt = definition["passes"][1]["prompt"]
+
+    assert "reviewing tutoring chat transcripts per HIPAA Safe Harbor" in names_prompt
+    assert "Personal names are handled separately" in identifiers_prompt
+    assert "[SCHOOL]" in identifiers_prompt
 
 
 def test_audited_presidio_default_uses_residual_llm_scope():
@@ -1531,6 +1561,132 @@ def test_run_method_with_metadata_v2_post_process_expands_repeated_occurrences(m
     assert [(span.start, span.end, span.text) for span in result.spans] == [
         (0, 4, "Anna"),
         (9, 13, "Anna"),
+    ]
+
+
+def test_run_method_with_metadata_deidentify_v2_expands_text_matches(monkeypatch):
+    completion_calls: list[dict[str, object]] = []
+
+    def fake_completion(**kwargs):
+        completion_calls.append(kwargs)
+        if len(completion_calls) == 1:
+            content = json.dumps({"matches": [{"entity_type": "NAME", "text": "Anna"}]})
+        else:
+            content = json.dumps({"matches": []})
+        return _mock_completion_response(content)
+
+    monkeypatch.setattr("agent.completion", fake_completion)
+
+    result = run_method_with_metadata(
+        text="Anna met Anna.",
+        method_id="dual-v2",
+        api_key="k",
+        api_base="https://proxy.example.com/v1",
+        model="google.gemini-3.1-pro-preview",
+        system_prompt="",
+        temperature=0.0,
+        reasoning_effort="none",
+        anthropic_thinking=False,
+        anthropic_thinking_budget_tokens=None,
+        method_verify=False,
+        label_profile="simple",
+        method_bundle="deidentify-v2",
+    )
+
+    assert len(completion_calls) == 2
+    assert completion_calls[0]["response_format"]["json_schema"]["name"] == "pii_matches"
+    assert [(span.start, span.end, span.label, span.text) for span in result.raw_spans] == [
+        (0, 4, "NAME", "Anna"),
+        (9, 13, "NAME", "Anna"),
+    ]
+    assert [(span.start, span.end, span.label, span.text) for span in result.spans] == [
+        (0, 4, "NAME", "Anna"),
+        (9, 13, "NAME", "Anna"),
+    ]
+    assert result.resolution_events == []
+
+
+def test_run_method_with_metadata_deidentify_v2_respects_word_boundaries(monkeypatch):
+    completion_calls: list[dict[str, object]] = []
+
+    def fake_completion(**kwargs):
+        completion_calls.append(kwargs)
+        if len(completion_calls) == 1:
+            content = json.dumps({"matches": [{"entity_type": "ADDRESS", "text": "Chicago"}]})
+        else:
+            content = json.dumps({"matches": []})
+        return _mock_completion_response(content)
+
+    monkeypatch.setattr("agent.completion", fake_completion)
+
+    result = run_method_with_metadata(
+        text="Chicagoan Chicago",
+        method_id="dual-v2",
+        api_key="k",
+        api_base="https://proxy.example.com/v1",
+        model="google.gemini-3.1-pro-preview",
+        system_prompt="",
+        temperature=0.0,
+        reasoning_effort="none",
+        anthropic_thinking=False,
+        anthropic_thinking_budget_tokens=None,
+        method_verify=False,
+        label_profile="simple",
+        method_bundle="deidentify-v2",
+    )
+
+    assert [(span.start, span.end, span.label, span.text) for span in result.raw_spans] == [
+        (10, 17, "ADDRESS", "Chicago"),
+    ]
+
+
+def test_run_method_with_metadata_deidentify_v2_extended_uses_original_entity_order(
+    monkeypatch,
+):
+    completion_calls: list[dict[str, object]] = []
+
+    def fake_completion(**kwargs):
+        completion_calls.append(kwargs)
+        return _mock_completion_response(json.dumps({"matches": []}))
+
+    monkeypatch.setattr("agent.completion", fake_completion)
+
+    run_method_with_metadata(
+        text="Nothing to find here.",
+        method_id="presidio-lite+extended-v2",
+        api_key="k",
+        api_base="https://proxy.example.com/v1",
+        model="google.gemini-3.1-pro-preview",
+        system_prompt="",
+        temperature=0.0,
+        reasoning_effort="none",
+        anthropic_thinking=False,
+        anthropic_thinking_budget_tokens=None,
+        method_verify=False,
+        label_profile="simple",
+        method_bundle="deidentify-v2",
+    )
+
+    llm_call = completion_calls[0]
+    enum_values = llm_call["response_format"]["json_schema"]["schema"]["properties"]["matches"][
+        "items"
+    ]["properties"]["entity_type"]["enum"]
+    assert enum_values == [
+        "NAME",
+        "ADDRESS",
+        "DATE",
+        "PHONE_NUMBER",
+        "FAX_NUMBER",
+        "EMAIL",
+        "SSN",
+        "ACCOUNT_NUMBER",
+        "DEVICE_IDENTIFIER",
+        "URL",
+        "IP_ADDRESS",
+        "BIOMETRIC_IDENTIFIER",
+        "IMAGE",
+        "IDENTIFYING_NUMBER",
+        "SCHOOL",
     ]
 
 

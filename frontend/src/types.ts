@@ -7,7 +7,8 @@ export type MethodBundle =
   | "test"
   | "stable"
   | "v2"
-  | "v2+post-process";
+  | "v2+post-process"
+  | "deidentify-v2";
 export type ImportConflictPolicy = "replace" | "add_new" | "keep_current";
 
 export const PII_LABELS: PIILabel[] = [
@@ -756,7 +757,7 @@ export interface MethodsLabRunExport {
 }
 
 export type PaneType = "raw" | "pre" | "manual" | "agent" | "methods";
-export type MatchMode = "exact" | "boundary" | "overlap";
+export type MatchMode = "exact" | "boundary" | "overlap" | "substring";
 export type AgentView = "combined" | "rule" | "llm";
 export type MethodView = string;
 export type AnnotationSource =

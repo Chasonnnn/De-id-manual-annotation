@@ -558,6 +558,53 @@ def test_methods_cli_run_accepts_v2_method_bundle(monkeypatch, capsys):
     assert "bundle-test" in capsys.readouterr().out
 
 
+def test_methods_cli_run_accepts_deidentify_v2_method_bundle(monkeypatch, capsys):
+    captured: dict[str, object] = {}
+
+    def fake_create_methods_lab_run(
+        body,
+        *,
+        session_id: str = "default",
+        run_async: bool = False,
+        method_bundle: str = "audited",
+    ):
+        captured["session_id"] = session_id
+        captured["run_async"] = run_async
+        captured["method_bundle"] = method_bundle
+        return {
+            "id": "run-deidentify-v2",
+            "status": "completed",
+            "name": "bundle-test",
+            "matrix": {"cells": []},
+        }
+
+    monkeypatch.setattr("experiments_cli.create_methods_lab_run", fake_create_methods_lab_run)
+
+    exit_code = main(
+        [
+            "methods",
+            "--doc-id",
+            "c9c3cf4c",
+            "--method",
+            "Dual V2=dual-v2",
+            "--model",
+            "Gemini Pro=google.gemini-3.1-pro-preview",
+            "--api-key",
+            "request-key",
+            "--method-bundle",
+            "deidentify-v2",
+            "--match-mode",
+            "substring",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["session_id"] == "default"
+    assert captured["run_async"] is False
+    assert captured["method_bundle"] == "deidentify-v2"
+    assert "bundle-test" in capsys.readouterr().out
+
+
 def test_manifest_methods_run_forwards_internal_method_bundle(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
 
@@ -715,6 +762,60 @@ def test_manifest_methods_run_accepts_v2_method_bundle(monkeypatch, tmp_path):
     assert captured["session_id"] == "default"
     assert captured["run_async"] is False
     assert captured["method_bundle"] == "v2"
+
+
+def test_manifest_methods_run_accepts_deidentify_v2_method_bundle(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    def fake_create_methods_lab_run(
+        body,
+        *,
+        session_id: str = "default",
+        run_async: bool = False,
+        method_bundle: str = "audited",
+    ):
+        captured["session_id"] = session_id
+        captured["run_async"] = run_async
+        captured["method_bundle"] = method_bundle
+        return {
+            "id": "run-deidentify-v2",
+            "status": "completed",
+            "name": "manifest-bundle-test",
+            "matrix": {"cells": []},
+        }
+
+    monkeypatch.setattr("experiments_cli.create_methods_lab_run", fake_create_methods_lab_run)
+
+    manifest_path = tmp_path / "methods_manifest_deidentify_v2.yaml"
+    manifest_path.write_text(
+        "\n".join(
+            [
+                "kind: methods_lab",
+                "session: default",
+                "method_bundle: deidentify-v2",
+                "doc_ids:",
+                "  - c9c3cf4c",
+                "methods:",
+                "  - id: method_1",
+                "    label: Dual V2",
+                "    method_id: dual-v2",
+                "models:",
+                "  - id: model_1",
+                "    label: Codex",
+                "    model: openai.gpt-5.3-codex",
+                "runtime:",
+                "  api_key: request-key",
+                "  match_mode: substring",
+            ]
+        )
+    )
+
+    exit_code = main(["run", str(manifest_path)])
+
+    assert exit_code == 0
+    assert captured["session_id"] == "default"
+    assert captured["run_async"] is False
+    assert captured["method_bundle"] == "deidentify-v2"
 
 
 def test_build_method_bundle_ab_summary_reports_metric_and_stability_deltas():

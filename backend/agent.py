@@ -242,7 +242,14 @@ Output data following the provided JSON schema.
 
 
 ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh"]
-MethodBundleId = Literal["legacy", "audited", "test", "v2", "v2+post-process"]
+MethodBundleId = Literal[
+    "legacy",
+    "audited",
+    "test",
+    "v2",
+    "v2+post-process",
+    "deidentify-v2",
+]
 
 CONFIDENCE_HIGH_THRESHOLD = 0.9
 CONFIDENCE_MEDIUM_THRESHOLD = 0.75
@@ -1405,6 +1412,209 @@ V2_POST_PROCESS_METHOD_DEFINITIONS: list[dict[str, Any]] = copy.deepcopy(
 V2_POST_PROCESS_METHOD_DEFINITION_BY_ID: dict[str, dict[str, Any]] = {
     method["id"]: method for method in V2_POST_PROCESS_METHOD_DEFINITIONS
 }
+
+DEIDENTIFY_V2_EXTENDED_PROMPT = """\
+You are a PII/PHI analyst reviewing tutoring chat transcripts. Identify personally \
+identifiable information (PII) per HIPAA Safe Harbor (§164.514(b)(2)).
+Extract explicit identifiers only; do not infer missing data.
+Categories to detect:
+- First names, last names, nicknames, or usernames of real individuals participating \
+in or mentioned in the conversation [NAME]. Exclude historical figures, scientists, \
+mathematicians, public figures, fictional characters, and names appearing only as part \
+of a method or theorem (e.g., "Horner's method", "L'Hôpital's rule").
+- Street addresses, cities, or other geographic subdivisions smaller than a State that \
+identify where an individual lives or is located [ADDRESS]. Exclude countries, states, \
+and regions mentioned as general context.
+- Schools or universities that an individual attends or is associated with \
+(e.g., Jackson High, PS 123, University of Phoenix) [SCHOOL]. Exclude institutions \
+mentioned only as general references (e.g., "MIT research", "Stanford algorithm").
+- Birth dates, admission dates, discharge dates, or dates of death directly tied to a \
+specific individual (year may be kept); ages over 89 [DATE]. Exclude all other dates: \
+days of the week, times of day, due dates, class schedules, semesters, and dates or \
+date ranges appearing in math problems.
+- Phone numbers [PHONE_NUMBER]; fax numbers [FAX_NUMBER].
+- Email addresses [EMAIL].
+- Social Security numbers [SSN].
+- Actual account numbers (bank, insurance, etc.) [ACCOUNT_NUMBER]. Exclude general \
+mentions of accounts without a number.
+- Medical device serial numbers or unique device identifiers [DEVICE_IDENTIFIER].
+- URLs that identify or link to an individual [URL]. Exclude generic tool or platform URLs.
+- IP addresses [IP_ADDRESS].
+- Biometric identifiers such as fingerprints or voiceprints [BIOMETRIC_IDENTIFIER].
+- Photographs or images attached or shared that could identify an individual [IMAGE]. \
+Exclude descriptions of seeing or sharing images.
+- Any other unique identifying number such as student IDs, medical record numbers, \
+license numbers, or social media handles [IDENTIFYING_NUMBER]. Exclude problem numbers, \
+scores, grades, mathematical expressions, and numbers used in an educational context.
+Matches should be minimal exact spans of the sensitive value.
+Output data following the provided JSON schema."""
+
+DEIDENTIFY_V2_EXTENDED_TYPES: list[str] = [
+    "NAME",
+    "ADDRESS",
+    "DATE",
+    "PHONE_NUMBER",
+    "FAX_NUMBER",
+    "EMAIL",
+    "SSN",
+    "ACCOUNT_NUMBER",
+    "DEVICE_IDENTIFIER",
+    "URL",
+    "IP_ADDRESS",
+    "BIOMETRIC_IDENTIFIER",
+    "IMAGE",
+    "IDENTIFYING_NUMBER",
+    "SCHOOL",
+]
+
+DEIDENTIFY_V2_NAMES_PROMPT = """\
+You are a PII analyst reviewing tutoring chat transcripts per HIPAA Safe Harbor.
+Identify the names of real individuals participating in or mentioned in the conversation \
+[NAME]. This includes first names, last names, nicknames, and pseudonyms.
+Exclude historical figures, scientists, mathematicians (e.g., Einstein, Pythagoras), \
+public figures, celebrities, fictional characters, and names appearing only as part \
+of a method or theorem (e.g., "Horner's method", "L'Hôpital's rule").
+Matches should be minimal exact spans of just the name.
+Output data following the provided JSON schema."""
+
+DEIDENTIFY_V2_NAMES_TYPES = ["NAME"]
+
+DEIDENTIFY_V2_IDENTIFIERS_PROMPT = """\
+You are a PII analyst reviewing tutoring chat transcripts per HIPAA Safe Harbor. \
+Personal names are handled separately — do not detect names here.
+Categories to detect:
+- Street addresses, cities, or other geographic subdivisions smaller than a State that \
+identify where an individual lives or is located [ADDRESS]. Exclude countries, states, \
+and regions mentioned as general context.
+- Schools or universities that an individual attends or is associated with \
+(e.g., Jackson High, PS 123, University of Phoenix) [SCHOOL]. Exclude institutions \
+mentioned only as general references (e.g., "MIT research", "Stanford algorithm").
+- Birth dates, admission dates, discharge dates, or dates of death directly tied to a \
+specific individual (year may be kept); ages over 89 [DATE]. Exclude all other dates: \
+days of the week, times of day, due dates, class schedules, semesters, and dates or \
+date ranges appearing in math problems.
+- Email addresses [EMAIL].
+- URLs that identify or link to an individual [URL]. Exclude generic tool or platform URLs.
+- Phone numbers [PHONE_NUMBER]; fax numbers [FAX_NUMBER].
+- Social Security numbers [SSN].
+- Actual account numbers (bank, insurance, etc.) [ACCOUNT_NUMBER]. Exclude general \
+mentions of accounts without a number.
+- Medical device serial numbers or unique device identifiers [DEVICE_IDENTIFIER].
+- IP addresses [IP_ADDRESS].
+- Biometric identifiers such as fingerprints or voiceprints [BIOMETRIC_IDENTIFIER].
+- Photographs or images attached or shared that could identify an individual [IMAGE]. \
+Exclude descriptions of seeing or sharing images.
+- Any other unique identifying number such as student IDs, medical record numbers, \
+license numbers, or social media handles [IDENTIFYING_NUMBER]. Exclude problem numbers, \
+scores, grades, mathematical expressions, and numbers used in an educational context.
+Matches should be minimal exact spans of the sensitive value.
+Output data following the provided JSON schema."""
+
+DEIDENTIFY_V2_IDENTIFIERS_TYPES = [
+    "ADDRESS",
+    "SCHOOL",
+    "DATE",
+    "EMAIL",
+    "URL",
+    "PHONE_NUMBER",
+    "FAX_NUMBER",
+    "SSN",
+    "ACCOUNT_NUMBER",
+    "DEVICE_IDENTIFIER",
+    "IP_ADDRESS",
+    "BIOMETRIC_IDENTIFIER",
+    "IMAGE",
+    "IDENTIFYING_NUMBER",
+]
+
+DEIDENTIFY_V2_PRESIDIO_LITE_TYPES = ["EMAIL_ADDRESS", "PHONE_NUMBER", "IP_ADDRESS"]
+
+DEIDENTIFY_V2_METHOD_DEFINITIONS: list[dict[str, Any]] = [
+    {
+        "id": "presidio-lite+extended-v2",
+        "label": "Regex + LLM Extended v2",
+        "description": "Exact compatibility port of the colleague demo v2 hybrid method.",
+        "requires_presidio": True,
+        "uses_llm": True,
+        "supports_verify_override": False,
+        "default_verify": False,
+        "supported_label_profiles": ["advanced", "simple"],
+        "known_limitations": ["Compatibility path preserves legacy demo-v2 labels."],
+        "passes": [
+            {
+                "kind": "presidio",
+                "presidio_entities": list(DEIDENTIFY_V2_PRESIDIO_LITE_TYPES),
+                "entity_types": ["EMAIL", "PHONE_NUMBER", "IP_ADDRESS"],
+                "pass_label": "presidio-lite+extended-v2:presidio",
+            },
+            {
+                "kind": "llm",
+                "prompt": DEIDENTIFY_V2_EXTENDED_PROMPT,
+                "entity_types": list(DEIDENTIFY_V2_EXTENDED_TYPES),
+                "pass_label": "presidio-lite+extended-v2:llm",
+            },
+        ],
+    },
+    {
+        "id": "dual-v2",
+        "label": "Dual LLM v2",
+        "description": "Exact compatibility port of the colleague demo dual-v2 method.",
+        "requires_presidio": False,
+        "uses_llm": True,
+        "supports_verify_override": False,
+        "default_verify": False,
+        "supported_label_profiles": ["advanced", "simple"],
+        "known_limitations": ["Compatibility path preserves legacy demo-v2 labels."],
+        "passes": [
+            {
+                "kind": "llm",
+                "prompt": DEIDENTIFY_V2_NAMES_PROMPT,
+                "entity_types": list(DEIDENTIFY_V2_NAMES_TYPES),
+                "pass_label": "dual-v2:names",
+            },
+            {
+                "kind": "llm",
+                "prompt": DEIDENTIFY_V2_IDENTIFIERS_PROMPT,
+                "entity_types": list(DEIDENTIFY_V2_IDENTIFIERS_TYPES),
+                "pass_label": "dual-v2:identifiers",
+            },
+        ],
+    },
+    {
+        "id": "regex+dual-v2",
+        "label": "Regex + Dual LLM v2",
+        "description": "Exact compatibility port of the colleague demo regex+dual-v2 method.",
+        "requires_presidio": True,
+        "uses_llm": True,
+        "supports_verify_override": False,
+        "default_verify": False,
+        "supported_label_profiles": ["advanced", "simple"],
+        "known_limitations": ["Compatibility path preserves legacy demo-v2 labels."],
+        "passes": [
+            {
+                "kind": "presidio",
+                "presidio_entities": list(DEIDENTIFY_V2_PRESIDIO_LITE_TYPES),
+                "entity_types": ["EMAIL", "PHONE_NUMBER", "IP_ADDRESS"],
+                "pass_label": "regex+dual-v2:presidio",
+            },
+            {
+                "kind": "llm",
+                "prompt": DEIDENTIFY_V2_NAMES_PROMPT,
+                "entity_types": list(DEIDENTIFY_V2_NAMES_TYPES),
+                "pass_label": "regex+dual-v2:names",
+            },
+            {
+                "kind": "llm",
+                "prompt": DEIDENTIFY_V2_IDENTIFIERS_PROMPT,
+                "entity_types": list(DEIDENTIFY_V2_IDENTIFIERS_TYPES),
+                "pass_label": "regex+dual-v2:identifiers",
+            },
+        ],
+    },
+]
+DEIDENTIFY_V2_METHOD_DEFINITION_BY_ID: dict[str, dict[str, Any]] = {
+    method["id"]: method for method in DEIDENTIFY_V2_METHOD_DEFINITIONS
+}
 METHOD_DEFINITIONS = AUDITED_METHOD_DEFINITIONS
 METHOD_DEFINITION_BY_ID = AUDITED_METHOD_DEFINITION_BY_ID
 METHOD_DEFINITIONS_BY_BUNDLE: dict[MethodBundleId, list[dict[str, Any]]] = {
@@ -1413,6 +1623,7 @@ METHOD_DEFINITIONS_BY_BUNDLE: dict[MethodBundleId, list[dict[str, Any]]] = {
     "test": TEST_METHOD_DEFINITIONS,
     "v2": V2_METHOD_DEFINITIONS,
     "v2+post-process": V2_POST_PROCESS_METHOD_DEFINITIONS,
+    "deidentify-v2": DEIDENTIFY_V2_METHOD_DEFINITIONS,
 }
 METHOD_DEFINITION_BY_ID_BY_BUNDLE: dict[MethodBundleId, dict[str, dict[str, Any]]] = {
     "legacy": LEGACY_METHOD_DEFINITION_BY_ID,
@@ -1420,6 +1631,7 @@ METHOD_DEFINITION_BY_ID_BY_BUNDLE: dict[MethodBundleId, dict[str, dict[str, Any]
     "test": TEST_METHOD_DEFINITION_BY_ID,
     "v2": V2_METHOD_DEFINITION_BY_ID,
     "v2+post-process": V2_POST_PROCESS_METHOD_DEFINITION_BY_ID,
+    "deidentify-v2": DEIDENTIFY_V2_METHOD_DEFINITION_BY_ID,
 }
 
 _presidio_analyzer_lock = threading.Lock()
@@ -2512,9 +2724,10 @@ def normalize_method_spans(
 
 def _normalize_method_bundle(method_bundle: MethodBundleId | str | None) -> MethodBundleId:
     raw = str(method_bundle or DEFAULT_METHOD_BUNDLE).strip().lower()
-    if raw not in {"legacy", "audited", "test", "v2", "v2+post-process"}:
+    if raw not in {"legacy", "audited", "test", "v2", "v2+post-process", "deidentify-v2"}:
         raise ValueError(
-            "method_bundle must be one of: legacy, audited, test, v2, v2+post-process"
+            "method_bundle must be one of: legacy, audited, test, v2, "
+            "v2+post-process, deidentify-v2"
         )
     return raw  # type: ignore[return-value]
 
@@ -2639,6 +2852,9 @@ def validate_method_contracts(
     *,
     method_bundle: MethodBundleId = DEFAULT_METHOD_BUNDLE,
 ) -> list[str]:
+    if _normalize_method_bundle(method_bundle) == "deidentify-v2":
+        return []
+
     errors: list[str] = []
     for method in get_method_definitions(method_bundle=method_bundle):
         method_id = str(method.get("id", ""))
@@ -2727,10 +2943,43 @@ if _V2_POST_PROCESS_METHOD_CONTRACT_ERRORS:
     raise RuntimeError(f"V2+post-process method contract validation failed: {joined_errors}")
 
 
+_DEIDENTIFY_V2_METHOD_CONTRACT_ERRORS = tuple(
+    validate_method_contracts(method_bundle="deidentify-v2")
+)
+if _DEIDENTIFY_V2_METHOD_CONTRACT_ERRORS:
+    joined_errors = "; ".join(_DEIDENTIFY_V2_METHOD_CONTRACT_ERRORS)
+    raise RuntimeError(f"deidentify-v2 method contract validation failed: {joined_errors}")
+
+
 def _bundle_uses_detected_value_post_process(
     method_bundle: MethodBundleId | str | None,
 ) -> bool:
     return _normalize_method_bundle(method_bundle) == "v2+post-process"
+
+
+def _bundle_preserves_native_labels(
+    method_bundle: MethodBundleId | str | None,
+) -> bool:
+    return _normalize_method_bundle(method_bundle) == "deidentify-v2"
+
+
+def _compute_native_method_output_labels(method: dict[str, Any]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for method_pass in method.get("passes", []):
+        if not isinstance(method_pass, dict):
+            continue
+        requested = _resolve_method_pass_requested_labels(
+            method_pass,
+            label_profile="simple",
+        )
+        for label in requested:
+            normalized = str(label).strip().upper()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(normalized)
+    return ordered
 
 
 def _is_word_char(value: str) -> bool:
@@ -2894,9 +3143,10 @@ def list_agent_methods(
     *,
     method_bundle: MethodBundleId = DEFAULT_METHOD_BUNDLE,
 ) -> list[dict[str, Any]]:
+    bundle = _normalize_method_bundle(method_bundle)
     presidio_error = _presidio_runtime_error()
     methods: list[dict[str, Any]] = []
-    for method in get_method_definitions(method_bundle=method_bundle):
+    for method in get_method_definitions(method_bundle=bundle):
         unavailable_reason = None
         if method["requires_presidio"] and presidio_error:
             unavailable_reason = presidio_error
@@ -2928,13 +3178,19 @@ def list_agent_methods(
                 }
             )
         supported_profiles = _supported_profiles_for_method(method)
-        output_labels_by_profile = {
-            profile: _compute_method_output_labels(
-                method,
-                label_profile=profile,  # type: ignore[arg-type]
-            )
-            for profile in supported_profiles
-        }
+        if bundle == "deidentify-v2":
+            native_output_labels = _compute_native_method_output_labels(method)
+            output_labels_by_profile = {
+                profile: list(native_output_labels) for profile in supported_profiles
+            }
+        else:
+            output_labels_by_profile = {
+                profile: _compute_method_output_labels(
+                    method,
+                    label_profile=profile,  # type: ignore[arg-type]
+                )
+                for profile in supported_profiles
+            }
         methods.append(
             {
                 "id": method["id"],
@@ -3133,6 +3389,184 @@ def _filter_method_pass_spans(
     ]
 
 
+_DEIDENTIFY_V2_PRESIDIO_LABEL_MAP: dict[str, str] = {
+    "PERSON": "NAME",
+    "LOCATION": "ADDRESS",
+    "DATE_TIME": "DATE",
+    "EMAIL_ADDRESS": "EMAIL",
+    "US_SSN": "SSN",
+    "US_BANK_NUMBER": "ACCOUNT_NUMBER",
+    "CREDIT_CARD": "ACCOUNT_NUMBER",
+}
+
+
+def _build_deidentify_v2_response_format(entity_types: list[str]) -> dict[str, Any]:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "pii_matches",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "matches": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "entity_type": {"type": "string", "enum": list(entity_types)},
+                                "text": {"type": "string"},
+                            },
+                            "required": ["entity_type", "text"],
+                            "additionalProperties": False,
+                        },
+                    }
+                },
+                "required": ["matches"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _map_deidentify_v2_presidio_spans(spans: list[CanonicalSpan]) -> list[CanonicalSpan]:
+    return [
+        CanonicalSpan(
+            start=span.start,
+            end=span.end,
+            label=_DEIDENTIFY_V2_PRESIDIO_LABEL_MAP.get(span.label, span.label),
+            text=span.text,
+        )
+        for span in spans
+    ]
+
+
+def _parse_deidentify_v2_matches(content: str | None) -> list[dict[str, str]]:
+    payload = json.loads(content or '{"matches":[]}')
+    if not isinstance(payload, dict):
+        return []
+    matches = payload.get("matches", [])
+    if not isinstance(matches, list):
+        return []
+
+    parsed: list[dict[str, str]] = []
+    for item in matches:
+        if not isinstance(item, dict):
+            continue
+        entity_type = str(item.get("entity_type", "")).strip()
+        text = str(item.get("text", ""))
+        if not entity_type or not text:
+            continue
+        parsed.append({"entity_type": entity_type, "text": text})
+    return parsed
+
+
+def _run_deidentify_v2_llm_pass(
+    *,
+    text: str,
+    api_key: str,
+    api_base: str | None,
+    model: str,
+    prompt: str,
+    entity_types: list[str],
+) -> tuple[list[CanonicalSpan], str]:
+    use_openai_gateway_format = bool(api_base) and "/" not in model and "." in model
+    request_kwargs: dict[str, Any] = {
+        "model": f"openai/{model}" if use_openai_gateway_format else model,
+        "messages": [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": text},
+        ],
+        "response_format": _build_deidentify_v2_response_format(entity_types),
+        "api_key": api_key,
+        "num_retries": 1,
+    }
+    if api_base:
+        request_kwargs["api_base"] = api_base
+
+    response = completion(**request_kwargs)
+    matches = _parse_deidentify_v2_matches(_extract_response_content(response))
+    seed_spans = [
+        CanonicalSpan(start=0, end=0, label=item["entity_type"], text=item["text"])
+        for item in matches
+    ]
+    spans = merge_method_spans(_expand_detected_value_occurrences(text, seed_spans))
+    return spans, _build_response_debug_summary(response)
+
+
+def _run_deidentify_v2_method_with_metadata(
+    *,
+    text: str,
+    method: dict[str, Any],
+    method_id: str,
+    api_key: str | None,
+    api_base: str | None,
+    model: str,
+    system_prompt: str,
+    method_verify: bool | None,
+    progress_callback: Callable[[int, str], None] | None = None,
+) -> MethodRunResult:
+    if method["requires_presidio"]:
+        runtime_error = _presidio_runtime_error()
+        if runtime_error is not None:
+            raise ValueError(runtime_error)
+
+    if method["uses_llm"] and not api_key:
+        raise ValueError(
+            f"Method '{method_id}' requires an API key. Set LITELLM_API_KEY or provide api_key."
+        )
+
+    warnings: list[str] = []
+    if system_prompt.strip():
+        warnings.append(
+            "deidentify-v2 compatibility methods ignore additional system prompt constraints "
+            "to preserve the colleague demo prompts exactly."
+        )
+    if method_verify:
+        warnings.append(
+            "deidentify-v2 compatibility methods do not attach a verifier; "
+            "method_verify was ignored."
+        )
+
+    all_raw_spans: list[CanonicalSpan] = []
+    response_debug: list[str] = []
+
+    for idx, method_pass in enumerate(method["passes"]):
+        pass_label = str(method_pass.get("pass_label") or f"{method_id}:pass_{idx + 1}")
+        if progress_callback is not None:
+            progress_callback(idx + 1, pass_label)
+
+        if str(method_pass.get("kind")) == "presidio":
+            raw_spans = _run_presidio_pass(
+                text=text,
+                entity_types=[str(item) for item in method_pass.get("presidio_entities", [])],
+            )
+            all_raw_spans.extend(_map_deidentify_v2_presidio_spans(raw_spans))
+            continue
+
+        spans, debug_summary = _run_deidentify_v2_llm_pass(
+            text=text,
+            api_key=api_key or "",
+            api_base=api_base,
+            model=model,
+            prompt=str(method_pass.get("prompt") or SYSTEM_PROMPT),
+            entity_types=[str(item) for item in method_pass.get("entity_types", [])],
+        )
+        response_debug.append(f"Pass {idx + 1}: {debug_summary}")
+        all_raw_spans.extend(spans)
+
+    raw_spans = merge_method_spans(all_raw_spans)
+    return MethodRunResult(
+        spans=list(raw_spans),
+        warnings=warnings,
+        llm_confidence=None,
+        response_debug=response_debug,
+        raw_spans=raw_spans,
+        resolution_events=[],
+        resolution_policy_version=None,
+    )
+
+
 def run_method_with_metadata(
     *,
     text: str,
@@ -3151,9 +3585,23 @@ def run_method_with_metadata(
     progress_callback: Callable[[int, str], None] | None = None,
     method_bundle: MethodBundleId = DEFAULT_METHOD_BUNDLE,
 ) -> MethodRunResult:
-    method = get_method_definition_by_id(method_id, method_bundle=method_bundle)
+    normalized_method_bundle = _normalize_method_bundle(method_bundle)
+    method = get_method_definition_by_id(method_id, method_bundle=normalized_method_bundle)
     if method is None:
         raise ValueError(f"Unknown method: {method_id}")
+
+    if normalized_method_bundle == "deidentify-v2":
+        return _run_deidentify_v2_method_with_metadata(
+            text=text,
+            method=method,
+            method_id=method_id,
+            api_key=api_key,
+            api_base=api_base,
+            model=model,
+            system_prompt=system_prompt,
+            method_verify=method_verify,
+            progress_callback=progress_callback,
+        )
 
     if method["requires_presidio"]:
         runtime_error = _presidio_runtime_error()
@@ -3229,7 +3677,7 @@ def run_method_with_metadata(
             label_profile=label_profile,
             timeout_seconds=call_timeout_seconds,
             enable_deterministic_augmentation=False,
-            method_bundle=method_bundle,
+            method_bundle=normalized_method_bundle,
         )
         llm_metrics.append(llm_result.llm_confidence)
         response_debug.extend(
@@ -3248,7 +3696,7 @@ def run_method_with_metadata(
             warnings.append(f"Pass {idx + 1}: {warning}")
 
     raw_spans = merge_method_spans(all_raw_spans)
-    if _bundle_uses_detected_value_post_process(method_bundle):
+    if _bundle_uses_detected_value_post_process(normalized_method_bundle):
         raw_spans = merge_method_spans(_expand_detected_value_occurrences(text, raw_spans))
     pre_verify_resolved, pre_verify_events = resolve_spans(
         text,

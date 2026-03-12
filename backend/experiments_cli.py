@@ -176,9 +176,17 @@ def _load_manifest(path_value: str) -> tuple[str, str, Any, Path, str]:
     kind = str(data.get("kind") or "").strip()
     session_id = str(data.get("session") or "default").strip() or "default"
     method_bundle = str(data.get("method_bundle") or "audited").strip().lower() or "audited"
-    if method_bundle not in {"legacy", "audited", "test", "v2", "v2+post-process"}:
+    if method_bundle not in {
+        "legacy",
+        "audited",
+        "test",
+        "v2",
+        "v2+post-process",
+        "deidentify-v2",
+    }:
         raise ValueError(
-            "method_bundle must be one of 'legacy', 'audited', 'test', 'v2', or 'v2+post-process'."
+            "method_bundle must be one of 'legacy', 'audited', 'test', 'v2', "
+            "'v2+post-process', or 'deidentify-v2'."
         )
     body_payload = {key: value for key, value in data.items() if key not in {"kind", "session"}}
     body_payload.pop("method_bundle", None)
@@ -977,7 +985,7 @@ def _add_runtime_args(parser: argparse.ArgumentParser, *, prompt_mode: bool) -> 
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument(
         "--match-mode",
-        choices=["exact", "boundary", "overlap"],
+        choices=["exact", "boundary", "overlap", "substring"],
         default="exact",
     )
     parser.add_argument(
@@ -1022,7 +1030,7 @@ def _add_runtime_args(parser: argparse.ArgumentParser, *, prompt_mode: bool) -> 
         parser.add_argument("--method", action="append", default=[])
         parser.add_argument(
             "--method-bundle",
-            choices=["legacy", "audited", "test", "v2", "v2+post-process"],
+            choices=["legacy", "audited", "test", "v2", "v2+post-process", "deidentify-v2"],
             default="audited",
         )
         parser.add_argument("--task-timeout-seconds", type=float)

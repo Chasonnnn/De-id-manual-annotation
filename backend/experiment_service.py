@@ -309,8 +309,11 @@ def validate_prompt_lab_request(
                         f"at prompt index {index}"
                     ),
                 )
-            if method_id not in srv.PROMPT_LAB_ALLOWED_PRESET_METHODS:
-                allowed = ", ".join(sorted(srv.PROMPT_LAB_ALLOWED_PRESET_METHODS))
+            allowed_preset_methods = srv._get_prompt_lab_allowed_preset_methods(
+                method_bundle=method_bundle
+            )
+            if method_id not in allowed_preset_methods:
+                allowed = ", ".join(sorted(allowed_preset_methods))
                 raise HTTPException(
                     status_code=400,
                     detail=(
@@ -325,6 +328,22 @@ def validate_prompt_lab_request(
                 raise HTTPException(
                     status_code=400,
                     detail=f"Unknown preset method: {method_id}",
+                )
+            definition = srv.get_method_definition_by_id(
+                method_id,
+                method_bundle=method_bundle,  # type: ignore[arg-type]
+            )
+            if (
+                prompt.method_verify_override is not None
+                and isinstance(definition, dict)
+                and not bool(definition.get("supports_verify_override"))
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"method_verify_override is not supported for preset method "
+                        f"'{method_id}' (prompt index {index})"
+                    ),
                 )
         prompt_id = (prompt.id or "").strip() or f"prompt_{index + 1}"
         if prompt_id in prompt_ids_seen:
@@ -353,6 +372,29 @@ def _resolve_prompt_lab_reference(
         return reference_source, primary
     fallback = doc.manual_annotations if fallback_reference_source == "manual" else doc.pre_annotations
     return fallback_reference_source, fallback
+
+
+def _collect_reference_label_set(
+    *,
+    doc_ids: list[str],
+    session_id: str,
+    reference_source: str,
+    fallback_reference_source: str,
+) -> set[str]:
+    srv = _server()
+    labels: set[str] = set()
+    for doc_id in doc_ids:
+        doc = srv._load_doc(str(doc_id), session_id)
+        if doc is None:
+            continue
+        enriched = srv._enrich_doc(doc, session_id)
+        _resolved_source, reference_spans = _resolve_prompt_lab_reference(
+            enriched,
+            reference_source,
+            fallback_reference_source,
+        )
+        labels.update(str(span.label) for span in reference_spans)
+    return labels
 
 
 def initialize_prompt_lab_run(
@@ -771,7 +813,15 @@ def build_prompt_lab_matrix(run: dict) -> dict:
 
 def _read_method_bundle_for_summary(value: object) -> str:
     raw = str(value or "audited").strip().lower()
-    if raw in {"legacy", "audited", "test", "v2+post-process", "stable", "v2"}:
+    if raw in {
+        "legacy",
+        "audited",
+        "test",
+        "v2+post-process",
+        "stable",
+        "v2",
+        "deidentify-v2",
+    }:
         return raw
     return "audited"
 
@@ -935,6 +985,12 @@ def run_prompt_lab_job(
 
     model_by_id = {str(model["id"]): model for model in run.get("models", [])}
     prompt_by_id = {str(prompt["id"]): prompt for prompt in run.get("prompts", [])}
+    reference_label_set = _collect_reference_label_set(
+        doc_ids=[str(doc_id) for doc_id in run.get("doc_ids", [])],
+        session_id=session_id,
+        reference_source=reference_source,
+        fallback_reference_source=fallback_reference_source,
+    )
 
     def _execute_task(cell_id: str, doc_id: str, model_id: str) -> tuple[str, str, dict]:
         cell = run.get("cells", {}).get(cell_id, {})
@@ -1030,21 +1086,37 @@ def run_prompt_lab_job(
                 reference_source,
                 fallback_reference_source,
             )
-            projected_reference, projected_hypothesis = srv._apply_label_projection(
+            projected_reference, projected_hypothesis = srv._prepare_experiment_scoring_spans(
                 reference_spans,
                 hypothesis_spans,
                 label_projection=label_projection,  # type: ignore[arg-type]
+                method_bundle=method_bundle,
+                reference_label_set=reference_label_set,
             )
-            projected_reference_raw, projected_hypothesis_raw = srv._apply_label_projection(
+            projected_reference_raw, projected_hypothesis_raw = srv._prepare_experiment_scoring_spans(
                 reference_spans,
                 raw_hypothesis_spans,
                 label_projection=label_projection,  # type: ignore[arg-type]
+                method_bundle=method_bundle,
+                reference_label_set=reference_label_set,
+            )
+            scoring_match_mode = srv._normalize_metrics_mode_for_method_bundle(
+                match_mode,
+                method_bundle=method_bundle,
             )
             metrics = srv._serialize_metrics_payload(
-                srv.compute_metrics(projected_reference, projected_hypothesis, match_mode)
+                srv.compute_metrics(
+                    projected_reference,
+                    projected_hypothesis,
+                    scoring_match_mode,
+                )
             )
             raw_metrics = srv._serialize_metrics_payload(
-                srv.compute_metrics(projected_reference_raw, projected_hypothesis_raw, match_mode)
+                srv.compute_metrics(
+                    projected_reference_raw,
+                    projected_hypothesis_raw,
+                    scoring_match_mode,
+                )
             )
             return cell_id, doc_id, {
                 "status": "completed",
@@ -1781,6 +1853,12 @@ def run_methods_lab_job(
         str(method["id"]): method for method in methods if isinstance(method, dict)
     }
     all_model_ids = [str(model.get("id", "")) for model in models if isinstance(model, dict)]
+    reference_label_set = _collect_reference_label_set(
+        doc_ids=[str(doc_id) for doc_id in doc_ids],
+        session_id=session_id,
+        reference_source=reference_source,
+        fallback_reference_source=fallback_reference_source,
+    )
 
     tasks: list[tuple[str, str, str | None]] = []
     for method in methods:
@@ -2017,21 +2095,37 @@ def run_methods_lab_job(
                     )
                 finally:
                     task_executor.shutdown(wait=not timed_out, cancel_futures=timed_out)
-            projected_reference, projected_hypothesis = srv._apply_label_projection(
+            projected_reference, projected_hypothesis = srv._prepare_experiment_scoring_spans(
                 reference_spans,
                 hypothesis_spans,
                 label_projection=label_projection,  # type: ignore[arg-type]
+                method_bundle=method_bundle,
+                reference_label_set=reference_label_set,
             )
-            projected_reference_raw, projected_hypothesis_raw = srv._apply_label_projection(
+            projected_reference_raw, projected_hypothesis_raw = srv._prepare_experiment_scoring_spans(
                 reference_spans,
                 raw_hypothesis_spans,
                 label_projection=label_projection,  # type: ignore[arg-type]
+                method_bundle=method_bundle,
+                reference_label_set=reference_label_set,
+            )
+            scoring_match_mode = srv._normalize_metrics_mode_for_method_bundle(
+                match_mode,
+                method_bundle=method_bundle,
             )
             metrics = srv._serialize_metrics_payload(
-                srv.compute_metrics(projected_reference, projected_hypothesis, match_mode)
+                srv.compute_metrics(
+                    projected_reference,
+                    projected_hypothesis,
+                    scoring_match_mode,
+                )
             )
             raw_metrics = srv._serialize_metrics_payload(
-                srv.compute_metrics(projected_reference_raw, projected_hypothesis_raw, match_mode)
+                srv.compute_metrics(
+                    projected_reference_raw,
+                    projected_hypothesis_raw,
+                    scoring_match_mode,
+                )
             )
             return (
                 method_variant_id,
