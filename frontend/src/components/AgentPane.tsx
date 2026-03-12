@@ -418,7 +418,7 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
                 {!showApiKeyInput ? (
                   <>
                     <div className="field-label">API Key</div>
-                    <div style={{ fontSize: 12, color: "#666", lineHeight: 1.4 }}>
+                    <div style={{ fontSize: 12, color: "var(--app-text-dim)", lineHeight: 1.4 }}>
                       {hasLocalApiKeyOverride
                         ? "Local override saved in this browser session."
                         : credentialStatus?.has_api_key
@@ -431,7 +431,7 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
                           marginLeft: 8,
                           border: "none",
                           background: "none",
-                          color: "#4a6cf7",
+                          color: "var(--app-interactive)",
                           cursor: "pointer",
                           padding: 0,
                         }}
@@ -455,7 +455,7 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
                       onChange={(e) => handleApiKeyChange(e.target.value)}
                       placeholder="LiteLLM gateway key or provider key"
                     />
-                    <span style={{ fontSize: 10, color: "#888" }}>
+                    <span style={{ fontSize: 10, color: "var(--app-text-faint)" }}>
                       Uses LITELLM_API_KEY first, then provider env vars as fallback
                     </span>
                   </>
@@ -465,7 +465,7 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
                 {!showApiBaseInput ? (
                   <>
                     <div className="field-label">LiteLLM Base URL (optional)</div>
-                    <div style={{ fontSize: 12, color: "#666", lineHeight: 1.4 }}>
+                    <div style={{ fontSize: 12, color: "var(--app-text-dim)", lineHeight: 1.4 }}>
                       {hasLocalApiBaseOverride
                         ? "Local override saved in this browser session."
                         : credentialStatus?.has_api_base
@@ -478,7 +478,7 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
                           marginLeft: 8,
                           border: "none",
                           background: "none",
-                          color: "#4a6cf7",
+                          color: "var(--app-interactive)",
                           cursor: "pointer",
                           padding: 0,
                         }}
@@ -502,7 +502,7 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
                       onChange={(e) => handleApiBaseChange(e.target.value)}
                       placeholder="https://your-litellm-gateway/v1"
                     />
-                    <span style={{ fontSize: 10, color: "#888" }}>
+                    <span style={{ fontSize: 10, color: "var(--app-text-faint)" }}>
                       Uses LITELLM_BASE_URL env var when not set here
                     </span>
                   </>
@@ -535,9 +535,10 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
           onScroll={(e) => onScroll((e.target as HTMLDivElement).scrollTop)}
         >
           {spans.length === 0 && !running ? (
-            <span style={{ color: "#888" }}>
-              No agent annotations yet. Configure and run the agent above.
-            </span>
+            <div className="pane-empty">
+              <div className="pane-empty-title">No agent annotations yet</div>
+              <div className="pane-empty-hint">Configure and run the agent above.</div>
+            </div>
           ) : (
             <AnnotatedText text={text} spans={spans} diffSpans={diffSpans} />
           )}

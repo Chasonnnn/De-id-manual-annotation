@@ -5,6 +5,7 @@ interface Props {
   x: number;
   y: number;
   labels: string[];
+  currentLabel?: string;
   onSelect: (label: string) => void;
   onDelete?: () => void;
   onClose: () => void;
@@ -14,6 +15,7 @@ export default function AnnotationPopup({
   x,
   y,
   labels,
+  currentLabel,
   onSelect,
   onDelete,
   onClose,
@@ -72,6 +74,7 @@ export default function AnnotationPopup({
         {labels.map((label) => (
           <button
             key={label}
+            className={label === currentLabel ? "current-label" : ""}
             style={{ background: getLabelColor(label) }}
             onClick={() => onSelect(label)}
           >

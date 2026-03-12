@@ -92,7 +92,7 @@ function cloneValue<T>(value: T): T {
 function makeRunSummary(
   id: string,
   name: string,
-  methodBundle: "legacy" | "audited" | "test" = "audited",
+  methodBundle: "legacy" | "audited" | "stable" | "v2" = "v2",
 ): PromptLabRunSummary {
   return {
     id,
@@ -390,9 +390,9 @@ describe("PromptLabTab", () => {
     expect(await screen.findByText(/Legacy methods/i)).toBeTruthy();
   });
 
-  it("shows the test method bundle in run history", async () => {
-    const testSummary = makeRunSummary("test-run", "prompt_lab__test", "test");
-    const testDetail = makeRunDetail(testSummary, {
+  it("shows the stable method bundle in run history", async () => {
+    const stableSummary = makeRunSummary("stable-run", "prompt_lab__stable", "stable");
+    const stableDetail = makeRunDetail(stableSummary, {
       docId: "doc-1",
       cellId: "model_1__prompt_1",
       modelId: "model_1",
@@ -400,11 +400,11 @@ describe("PromptLabTab", () => {
       promptId: "prompt_1",
       promptLabel: "Preset",
     });
-    clientMocks.listPromptLabRuns.mockResolvedValue([testSummary]);
-    clientMocks.getPromptLabRun.mockResolvedValue(testDetail);
+    clientMocks.listPromptLabRuns.mockResolvedValue([stableSummary]);
+    clientMocks.getPromptLabRun.mockResolvedValue(stableDetail);
     clientMocks.getPromptLabDocResult.mockResolvedValue(
-      makeDocResult(testDetail, {
-        cellId: testDetail.matrix.cells[0]!.id,
+      makeDocResult(stableDetail, {
+        cellId: stableDetail.matrix.cells[0]!.id,
         docId: "doc-1",
       }),
     );
@@ -418,7 +418,7 @@ describe("PromptLabTab", () => {
       />,
     );
 
-    expect(await screen.findByText(/Test methods/i)).toBeTruthy();
+    expect(await screen.findByText(/Stable methods/i)).toBeTruthy();
   });
 
   it("loads experiment diagnostics and passes them to the selected run view", async () => {
@@ -553,8 +553,6 @@ describe("PromptLabTab", () => {
       currentRuns = [claudeSummary];
       return { ok: true, id: openAiSummary.id };
     });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-
     render(
       <PromptLabTab
         documents={documents}
@@ -567,6 +565,7 @@ describe("PromptLabTab", () => {
     await screen.findByText("15fad00a:codex_xhigh__baseline_raw:doc-1");
 
     fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[0]!);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
 
     await screen.findByText("Create or select a Prompt Lab run.");
 
@@ -613,8 +612,6 @@ describe("PromptLabTab", () => {
       id: runningSummary.id,
       status: "cancelling",
     });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-
     render(
       <PromptLabTab
         documents={documents}
@@ -627,6 +624,7 @@ describe("PromptLabTab", () => {
     await screen.findByText("15fad00a:codex_xhigh__baseline_raw:doc-1");
 
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
 
     await waitFor(() => {
       expect(clientMocks.stopPromptLabRun).toHaveBeenCalledWith("15fad00a");

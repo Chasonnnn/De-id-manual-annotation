@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { MODEL_PRESETS, getModelPreset } from "../modelPresets";
 import type {
+  ActiveMethodBundle,
   AgentMethodOption,
   DocumentSummary,
   FolderSummary,
   MatchMode,
-  MethodBundle,
   MethodsLabMethodInput,
   MethodsLabRunCreateRequest,
   PromptLabModelInput,
@@ -40,7 +40,7 @@ type MethodsLabRuntimeState = {
   concurrency: number;
   labelProfile: "simple" | "advanced";
   labelProjection: "native" | "coarse_simple";
-  methodBundle: MethodBundle;
+  methodBundle: ActiveMethodBundle;
   chunkMode: "auto" | "off" | "force";
   chunkSizeChars: number;
 };
@@ -268,12 +268,10 @@ function MethodsLabConfigGrid({
           id="methods-lab-method-bundle"
           value={runtime.methodBundle}
           onChange={(e) =>
-            onRuntimeChange({ methodBundle: e.target.value as MethodBundle })
+            onRuntimeChange({ methodBundle: e.target.value as ActiveMethodBundle })
           }
         >
-          <option value="audited">Audited</option>
-          <option value="test">Test</option>
-          <option value="legacy">Legacy</option>
+          <option value="v2">V2</option>
         </select>
       </div>
 
@@ -658,7 +656,7 @@ function useMethodsLabRunFormController({
     concurrency: 10,
     labelProfile: "simple",
     labelProjection: "native",
-    methodBundle: "audited",
+    methodBundle: "v2",
     chunkMode: "off",
     chunkSizeChars: 10000,
   });

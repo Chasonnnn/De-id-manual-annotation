@@ -293,6 +293,7 @@ const ManualAnnotationPane = forwardRef<HTMLDivElement, Props>(
             x={popup.x}
             y={popup.y}
             labels={labels}
+            currentLabel={popup.editIndex !== null ? spans[popup.editIndex]?.label : undefined}
             onSelect={handleLabelSelect}
             onDelete={popup.editIndex !== null ? handleDelete : undefined}
             onClose={() => setPopup(null)}

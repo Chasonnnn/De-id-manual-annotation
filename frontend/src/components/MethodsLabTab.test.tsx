@@ -92,7 +92,7 @@ function cloneValue<T>(value: T): T {
 function makeRunSummary(
   id: string,
   name: string,
-  methodBundle: "legacy" | "audited" | "test" = "audited",
+  methodBundle: "legacy" | "audited" | "stable" | "v2" = "v2",
 ): MethodsLabRunSummary {
   return {
     id,
@@ -390,9 +390,9 @@ describe("MethodsLabTab", () => {
     expect(await screen.findByText(/Legacy methods/i)).toBeTruthy();
   });
 
-  it("shows the test method bundle in run history", async () => {
-    const testSummary = makeRunSummary("test-run", "methods_lab__test", "test");
-    const testDetail = makeRunDetail(testSummary, {
+  it("shows the stable method bundle in run history", async () => {
+    const stableSummary = makeRunSummary("stable-run", "methods_lab__stable", "stable");
+    const stableDetail = makeRunDetail(stableSummary, {
       docId: "doc-1",
       cellId: "model_1__method_1",
       modelId: "model_1",
@@ -400,11 +400,11 @@ describe("MethodsLabTab", () => {
       methodId: "method_1",
       methodLabel: "Default",
     });
-    clientMocks.listMethodsLabRuns.mockResolvedValue([testSummary]);
-    clientMocks.getMethodsLabRun.mockResolvedValue(testDetail);
+    clientMocks.listMethodsLabRuns.mockResolvedValue([stableSummary]);
+    clientMocks.getMethodsLabRun.mockResolvedValue(stableDetail);
     clientMocks.getMethodsLabDocResult.mockResolvedValue(
-      makeDocResult(testDetail, {
-        cellId: testDetail.matrix.cells[0]!.id,
+      makeDocResult(stableDetail, {
+        cellId: stableDetail.matrix.cells[0]!.id,
         docId: "doc-1",
       }),
     );
@@ -418,7 +418,7 @@ describe("MethodsLabTab", () => {
       />,
     );
 
-    expect(await screen.findByText(/Test methods/i)).toBeTruthy();
+    expect(await screen.findByText(/Stable methods/i)).toBeTruthy();
   });
 
   it("loads experiment diagnostics and passes them to the selected run view", async () => {
@@ -470,8 +470,6 @@ describe("MethodsLabTab", () => {
       currentRuns = [geminiSummary];
       return { ok: true, id: codexSummary.id };
     });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-
     render(
       <MethodsLabTab
         documents={documents}
@@ -484,6 +482,7 @@ describe("MethodsLabTab", () => {
     await screen.findByText("5bcf6ed4:model_1__method_1:doc-1");
 
     fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[0]!);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
 
     await screen.findByText("Create or select a Methods Lab run.");
 
@@ -530,8 +529,6 @@ describe("MethodsLabTab", () => {
       id: runningSummary.id,
       status: "cancelling",
     });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-
     render(
       <MethodsLabTab
         documents={documents}
@@ -544,6 +541,7 @@ describe("MethodsLabTab", () => {
     await screen.findByText("5bcf6ed4:model_1__method_1:doc-1");
 
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
 
     await waitFor(() => {
       expect(clientMocks.stopMethodsLabRun).toHaveBeenCalledWith("5bcf6ed4");

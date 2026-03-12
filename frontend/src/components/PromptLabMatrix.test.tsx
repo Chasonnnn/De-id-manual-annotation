@@ -227,12 +227,12 @@ describe("PromptLabMatrix", () => {
     ).not.toBeNull();
   });
 
-  it("renders the test bundle label in diagnostics", () => {
+  it("renders the stable bundle label in diagnostics", () => {
     const run = {
       id: "run_2",
-      name: "prompt_run_test",
+      name: "prompt_run_stable",
       status: "completed",
-      method_bundle: "test",
+      method_bundle: "stable",
       cancellable: false,
       created_at: "2026-03-09T00:00:00Z",
       started_at: "2026-03-09T00:00:00Z",
@@ -263,7 +263,7 @@ describe("PromptLabMatrix", () => {
         fallback_reference_source: "pre",
         label_profile: "simple",
         label_projection: "native",
-        method_bundle: "test",
+        method_bundle: "stable",
         chunk_mode: "auto",
         chunk_size_chars: 10000,
       },
@@ -294,6 +294,76 @@ describe("PromptLabMatrix", () => {
 
     render(<PromptLabMatrix run={run} selectedCellId={null} onSelectCell={vi.fn()} />);
 
-    expect(screen.getByText("Bundle Test methods")).not.toBeNull();
+    expect(screen.getByText("Bundle Stable methods")).not.toBeNull();
+  });
+
+  it("renders the v2 bundle label in diagnostics", () => {
+    const run = {
+      id: "run_3",
+      name: "prompt_run_v2",
+      status: "completed",
+      method_bundle: "v2",
+      cancellable: false,
+      created_at: "2026-03-09T00:00:00Z",
+      started_at: "2026-03-09T00:00:00Z",
+      finished_at: "2026-03-09T00:01:00Z",
+      doc_count: 1,
+      prompt_count: 1,
+      model_count: 1,
+      total_tasks: 1,
+      completed_tasks: 1,
+      failed_tasks: 0,
+      doc_ids: ["doc-1"],
+      folder_ids: [],
+      prompts: [{ id: "baseline_raw", label: "baseline_raw", variant_type: "prompt", system_prompt: "test" }],
+      models: [
+        {
+          id: "gemini_pro",
+          label: "gemini_pro",
+          model: "google.gemini-3.1-pro-preview",
+          reasoning_effort: "none",
+          anthropic_thinking: false,
+          anthropic_thinking_budget_tokens: null,
+        },
+      ],
+      runtime: {
+        temperature: 0,
+        match_mode: "exact",
+        reference_source: "manual",
+        fallback_reference_source: "pre",
+        label_profile: "simple",
+        label_projection: "native",
+        method_bundle: "v2",
+        chunk_mode: "auto",
+        chunk_size_chars: 10000,
+      },
+      concurrency: 1,
+      warnings: [],
+      errors: [],
+      diagnostics: {
+        requested_concurrency: 16,
+        effective_worker_count: 1,
+        max_allowed_concurrency: 16,
+        total_tasks: 1,
+        clamped_by_task_count: true,
+        clamped_by_server_cap: false,
+        api_base_host: "api.ai.it.cornell.edu",
+      },
+      matrix: {
+        models: [{ id: "gemini_pro", label: "gemini_pro" }],
+        prompts: [{ id: "baseline_raw", label: "baseline_raw" }],
+        available_labels: [],
+        cells: [],
+      },
+      progress: {
+        total_tasks: 1,
+        completed_tasks: 1,
+        failed_tasks: 0,
+      },
+    } as PromptLabRunDetail;
+
+    render(<PromptLabMatrix run={run} selectedCellId={null} onSelectCell={vi.fn()} />);
+
+    expect(screen.getByText("Bundle V2 methods")).not.toBeNull();
   });
 });

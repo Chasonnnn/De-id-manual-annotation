@@ -1,0 +1,83 @@
+kind: methods_lab
+session: default
+name: saga27-models3-audited
+method_bundle: audited
+doc_ids:
+  - "56f8e098"
+  - "35a27087"
+  - "26028249"
+  - "c9c3cf4c"
+  - "ad20d7f7"
+  - "a5a42a0d"
+  - "a85b85ba"
+  - "fe8b0fe8"
+  - "d4df4c18"
+  - "c7ca76b6"
+  - "9bb358ed"
+  - "80648041"
+  - "49ac97a8"
+  - "efc03354"
+  - "35abe043"
+  - "f5d5b0e9"
+  - "855bd282"
+  - "f597c901"
+  - "e5c9e8d1"
+  - "ad829ee8"
+  - "1a6406cb"
+  - "bbad34c0"
+  - "7702e855"
+  - "552735d9"
+  - "3c1b8b81"
+  - "b25a00a8"
+  - "1b9e143a"
+methods:
+  - id: default
+    label: Default
+    method_id: default
+  - id: extended
+    label: Extended
+    method_id: extended
+  - id: verified
+    label: Verified
+    method_id: verified
+  - id: dual
+    label: Dual
+    method_id: dual
+  - id: dual_split
+    label: Dual Split
+    method_id: dual-split
+  - id: presidio
+    label: Presidio
+    method_id: presidio
+  - id: presidio_default
+    label: Presidio + Default
+    method_id: presidio+default
+  - id: presidio_llm_split
+    label: Presidio + LLM Split
+    method_id: presidio+llm-split
+models:
+  - id: gemini_pro
+    label: Gemini 3.1 Pro
+    model: google.gemini-3.1-pro-preview
+    reasoning_effort: none
+    anthropic_thinking: false
+  - id: gemini_flash_lite
+    label: Gemini 3.1 Flash Lite
+    model: google.gemini-3.1-flash-lite-preview
+    reasoning_effort: none
+    anthropic_thinking: false
+  - id: sonnet_46
+    label: Claude Sonnet 4.6
+    model: anthropic.claude-4.6-sonnet
+    reasoning_effort: none
+    anthropic_thinking: false
+runtime:
+  temperature: 0.0
+  match_mode: overlap
+  reference_source: manual
+  fallback_reference_source: pre
+  label_profile: simple
+  label_projection: native
+  chunk_mode: auto
+  chunk_size_chars: 10000
+concurrency: 16

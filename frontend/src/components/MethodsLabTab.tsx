@@ -24,6 +24,7 @@ import type {
   MethodsLabRunSummary,
 } from "../types";
 import { formatExperimentModelLabel, getExperimentModelLabelById } from "../modelDisplay";
+import ConfirmDialog from "./ConfirmDialog";
 import MethodsLabCellDetail from "./MethodsLabCellDetail";
 import MethodsLabMatrix from "./MethodsLabMatrix";
 import MethodsLabRunForm from "./MethodsLabRunForm";
@@ -60,6 +61,13 @@ function readSessionStorageValue(key: string): string | undefined {
   }
 }
 
+type PendingConfirm = {
+  title: string;
+  message: string;
+  destructive?: boolean;
+  onConfirm: () => void;
+};
+
 function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
   const [setupCollapsed, setSetupCollapsed] = useState(false);
   const [runs, setRuns] = useState<MethodsLabRunSummary[]>([]);
@@ -84,6 +92,7 @@ function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
     null,
   );
   const [toasts, setToasts] = useState<MethodsLabToast[]>([]);
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
   const previousRunStatusRef = useRef<Record<string, string>>({});
   const previousCellCompletedRef = useRef<Record<string, number>>({});
   const previousCellErrorsRef = useRef<Record<string, number>>({});
@@ -465,6 +474,7 @@ function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
         models: [selectedModel],
         runtime: {
           ...runDetail.runtime,
+          method_bundle: "v2",
           api_key: readSessionStorageValue("methods_lab_api_key"),
           api_base:
             readSessionStorageValue("methods_lab_api_base") ?? runDetail.runtime.api_base,
@@ -484,11 +494,8 @@ function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
     }
   }, [createAndSelectRun, pushToast, runDetail, selectedCell]);
 
-  const handleDeleteRun = useCallback(
+  const doDeleteRun = useCallback(
     async (run: MethodsLabRunSummary) => {
-      const confirmed = window.confirm(`Delete Methods Lab run "${run.name}"?`);
-      if (!confirmed) return;
-
       setDeletingRunId(run.id);
       try {
         await deleteMethodsLabRun(run.id);
@@ -519,11 +526,23 @@ function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
     [clearSelectedDocState, pushToast, selectedRunId],
   );
 
-  const handleStopRun = useCallback(
-    async (run: MethodsLabRunSummary) => {
-      const confirmed = window.confirm(`Stop Methods Lab run "${run.name}"?`);
-      if (!confirmed) return;
+  const handleDeleteRun = useCallback(
+    (run: MethodsLabRunSummary) => {
+      setPendingConfirm({
+        title: "Delete Run",
+        message: `Delete Methods Lab run "${run.name}"?`,
+        destructive: true,
+        onConfirm: () => {
+          setPendingConfirm(null);
+          void doDeleteRun(run);
+        },
+      });
+    },
+    [doDeleteRun],
+  );
 
+  const doStopRun = useCallback(
+    async (run: MethodsLabRunSummary) => {
       setStoppingRunId(run.id);
       try {
         await stopMethodsLabRun(run.id);
@@ -542,6 +561,20 @@ function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
       }
     },
     [pushToast, refreshRunDetail, refreshRuns, selectedRunId],
+  );
+
+  const handleStopRun = useCallback(
+    (run: MethodsLabRunSummary) => {
+      setPendingConfirm({
+        title: "Stop Run",
+        message: `Stop Methods Lab run "${run.name}"?`,
+        onConfirm: () => {
+          setPendingConfirm(null);
+          void doStopRun(run);
+        },
+      });
+    },
+    [doStopRun],
   );
 
   return {
@@ -563,8 +596,10 @@ function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
     experimentLimits,
     experimentDiagnostics,
     toasts,
+    pendingConfirm,
     selectedCell,
     dismissToast,
+    setPendingConfirm,
     refreshRuns,
     handleCreateRun,
     handleDeleteRun,
@@ -602,8 +637,10 @@ export default function MethodsLabTab({
     experimentLimits,
     experimentDiagnostics,
     toasts,
+    pendingConfirm,
     selectedCell,
     dismissToast,
+    setPendingConfirm,
     refreshRuns,
     handleCreateRun,
     handleDeleteRun,
@@ -725,6 +762,15 @@ export default function MethodsLabTab({
             </button>
           ))}
         </div>
+      )}
+      {pendingConfirm && (
+        <ConfirmDialog
+          title={pendingConfirm.title}
+          message={pendingConfirm.message}
+          destructive={pendingConfirm.destructive}
+          onConfirm={pendingConfirm.onConfirm}
+          onCancel={() => setPendingConfirm(null)}
+        />
       )}
     </div>
   );

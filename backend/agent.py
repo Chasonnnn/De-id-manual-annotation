@@ -71,12 +71,30 @@ STRICT OUTPUT REQUIREMENTS:
 - Do not include confidence fields or extra commentary.
 """
 
+MATCHES_FORMAT_GUARDRAIL = """\
+STRICT OUTPUT REQUIREMENTS:
+- Return valid JSON only (no prose, no markdown, no code fences).
+- Return exactly one JSON object with key "matches" containing an array of matches.
+- If there are no matches, return {"matches": []}.
+- Each match item MUST include: entity_type (str), text (str).
+- Do not include offsets, confidence fields, or extra commentary.
+"""
+
 JSON_REPAIR_PROMPT = """\
 You repair malformed JSON output for a PII span extractor.
 Return valid JSON only.
 - Top-level must be {"spans": [...]}.
 - If there are no spans, return {"spans": []}.
 - Each span must include: start (int), end (int), label (str), text (str).
+- Do not add prose, markdown, or extra keys.
+"""
+
+MATCHES_JSON_REPAIR_PROMPT = """\
+You repair malformed JSON output for a text-match PII extractor.
+Return valid JSON only.
+- Top-level must be {"matches": [...]}.
+- If there are no matches, return {"matches": []}.
+- Each match must include: entity_type (str), text (str).
 - Do not add prose, markdown, or extra keys.
 """
 
@@ -240,19 +258,42 @@ reasonably be considered PII.
 Output data following the provided JSON schema.
 """
 
+STABLE_EXACT_ENTITY_TYPES = [
+    "NAME",
+    "ADDRESS",
+    "DATE",
+    "PHONE_NUMBER",
+    "FAX_NUMBER",
+    "EMAIL",
+    "SSN",
+    "ACCOUNT_NUMBER",
+    "DEVICE_IDENTIFIER",
+    "URL",
+    "IP_ADDRESS",
+    "BIOMETRIC_IDENTIFIER",
+    "IMAGE",
+    "IDENTIFYING_NUMBER",
+]
+
 
 ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh"]
-MethodBundleId = Literal["legacy", "audited", "test"]
+HistoricalMethodBundleId = Literal["legacy", "audited", "stable", "v2"]
+MethodBundleId = Literal["v2"]
+ResponseContract = Literal["spans", "matches"]
+MatchResolutionPolicy = Literal["unique_or_warn", "all_occurrences_word_boundary"]
 
 CONFIDENCE_HIGH_THRESHOLD = 0.9
 CONFIDENCE_MEDIUM_THRESHOLD = 0.75
-DEFAULT_METHOD_BUNDLE: MethodBundleId = "audited"
+DEFAULT_METHOD_BUNDLE: MethodBundleId = "v2"
 DEFAULT_LLM_EXTRACTION_TIMEOUT_SECONDS = 60.0
 DEFAULT_LLM_VERIFIER_TIMEOUT_SECONDS = 30.0
 DEFAULT_LLM_REPAIR_TIMEOUT_SECONDS = 30.0
 DEFAULT_LLM_EXTRACTION_MAX_TOKENS = 4096
 DEFAULT_LLM_VERIFIER_MAX_TOKENS = 1024
 DEFAULT_LLM_REPAIR_MAX_TOKENS = 1024
+V2_LLM_EXTRACTION_MAX_TOKENS = 2048
+V2_LLM_VERIFIER_MAX_TOKENS = 768
+V2_LLM_REPAIR_MAX_TOKENS = 768
 
 
 MODEL_PRESETS: list[dict[str, Any]] = [
@@ -413,22 +454,25 @@ def build_extraction_system_prompt(
     base_prompt: str,
     label_profile: Literal["simple", "advanced"] = "simple",
     method_bundle: MethodBundleId = DEFAULT_METHOD_BUNDLE,
+    response_contract: ResponseContract = "spans",
+    requested_labels: list[str] | None = None,
 ) -> str:
     prompt = str(base_prompt or "").strip() or SYSTEM_PROMPT.strip()
-    allowed_labels = ", ".join(_labels_for_profile(label_profile))
+    effective_labels = requested_labels or _labels_for_profile(label_profile)
+    allowed_labels = ", ".join(effective_labels)
     bundle = _normalize_method_bundle(method_bundle)
+    contract_guardrail = (
+        MATCHES_FORMAT_GUARDRAIL if response_contract == "matches" else FORMAT_GUARDRAIL
+    )
     formatted_prompt = (
         f"{prompt}\n\n"
-        f"{FORMAT_GUARDRAIL}\n"
+        f"{contract_guardrail}\n"
         f'- Allowed labels for this run: {allowed_labels}.\n'
-        '- The "label" field must be one of the allowed labels above.\n'
-        '- The "text" field must exactly match transcript[start:end].\n'
+        f'- The "{("entity_type" if response_contract == "matches" else "label")}" field must be one of the allowed labels above.\n'
+        '- The "text" field must match the exact sensitive value from the transcript.\n'
     )
-    if bundle == "test":
-        formatted_prompt = (
-            f"{formatted_prompt}"
-            f"{_build_test_bundle_prompt_contract(label_profile)}\n"
-        )
+    if response_contract == "spans":
+        formatted_prompt = f'{formatted_prompt}- The "text" field must exactly match transcript[start:end].\n'
     return formatted_prompt
 
 ADVANCED_TOOL_LABEL_MAP: dict[str, str] = {
@@ -775,37 +819,6 @@ def _render_prompt_category_catalog(
     return "; ".join(parts)
 
 
-def _build_test_bundle_prompt_contract(
-    label_profile: Literal["simple", "advanced"],
-) -> str:
-    labels = _labels_for_profile(label_profile)
-    example_label = "PERSON" if label_profile == "advanced" else "NAME"
-    category_catalog = _render_prompt_category_catalog(labels, label_profile=label_profile)
-    example_payload = json.dumps(
-        {
-            "spans": [
-                {
-                    "start": 12,
-                    "end": 20,
-                    "label": example_label,
-                    "text": "John Doe",
-                }
-            ]
-        },
-        separators=(",", ":"),
-    )
-    empty_payload = json.dumps({"spans": []}, separators=(",", ":"))
-    return (
-        "TEST BUNDLE EXTRACTION CONTRACT:\n"
-        f"- Use only these exact label strings: {', '.join(labels)}.\n"
-        f"- Expected categories for this run: {category_catalog}.\n"
-        "- If the text uses a legacy taxonomy name, map it to the closest allowed label above.\n"
-        "- Do not invent new label names or add extra JSON keys.\n"
-        f"- Example valid JSON response: {example_payload}\n"
-        f"- Example empty JSON response: {empty_payload}"
-    )
-
-
 def _build_profile_default_prompt(
     label_profile: Literal["simple", "advanced"],
 ) -> str:
@@ -997,6 +1010,29 @@ _PRESIDIO_SPLIT_ADVANCED_RESIDUAL = _ordered_difference(
     ADVANCED_LABELS,
     set(_PRESIDIO_SPLIT_ADVANCED_OUTPUT),
 )
+_STABLE_STRUCTURED_POLICY_BY_PROFILE: dict[str, dict[str, MatchResolutionPolicy]] = {
+    "simple": {
+        "EMAIL": "all_occurrences_word_boundary",
+        "MISC_ID": "all_occurrences_word_boundary",
+        "PHONE": "all_occurrences_word_boundary",
+        "URL": "all_occurrences_word_boundary",
+    },
+    "advanced": {
+        "EMAIL_ADDRESS": "all_occurrences_word_boundary",
+        "IP_ADDRESS": "all_occurrences_word_boundary",
+        "PHONE_NUMBER": "all_occurrences_word_boundary",
+        "SOCIAL_HANDLE": "all_occurrences_word_boundary",
+        "URL": "all_occurrences_word_boundary",
+        "US_BANK_NUMBER": "all_occurrences_word_boundary",
+        "US_DRIVER_LICENSE": "all_occurrences_word_boundary",
+        "US_PASSPORT": "all_occurrences_word_boundary",
+        "US_SSN": "all_occurrences_word_boundary",
+    },
+}
+_STABLE_NAME_ONLY_POLICY_BY_PROFILE: dict[str, dict[str, MatchResolutionPolicy]] = {
+    "simple": {"NAME": "all_occurrences_word_boundary"},
+    "advanced": {"PERSON": "all_occurrences_word_boundary"},
+}
 
 _AUDITED_DUAL_REMAINING_PROMPTS = {
     "simple": _build_profile_remaining_prompt(
@@ -1391,21 +1427,37 @@ AUDITED_METHOD_DEFINITIONS: list[dict[str, Any]] = [
 AUDITED_METHOD_DEFINITION_BY_ID: dict[str, dict[str, Any]] = {
     method["id"]: method for method in AUDITED_METHOD_DEFINITIONS
 }
-TEST_METHOD_DEFINITIONS: list[dict[str, Any]] = copy.deepcopy(AUDITED_METHOD_DEFINITIONS)
-TEST_METHOD_DEFINITION_BY_ID: dict[str, dict[str, Any]] = {
-    method["id"]: method for method in TEST_METHOD_DEFINITIONS
+
+
+def _copy_match_policy_mapping(
+    values: dict[str, dict[str, MatchResolutionPolicy]],
+) -> dict[str, dict[str, MatchResolutionPolicy]]:
+    return {
+        str(profile): {str(label): policy for label, policy in mapping.items()}
+        for profile, mapping in values.items()
+    }
+
+
+def _build_v2_method_definitions() -> list[dict[str, Any]]:
+    methods = copy.deepcopy(LEGACY_METHOD_DEFINITIONS)
+    for method in methods:
+        for method_pass in method.get("passes", []):
+            if method_pass.get("kind") == "llm" and method_pass.get("entity_types") is None:
+                method_pass["entity_types"] = list(STABLE_EXACT_ENTITY_TYPES)
+    return methods
+
+
+V2_METHOD_DEFINITIONS: list[dict[str, Any]] = _build_v2_method_definitions()
+V2_METHOD_DEFINITION_BY_ID: dict[str, dict[str, Any]] = {
+    method["id"]: method for method in V2_METHOD_DEFINITIONS
 }
-METHOD_DEFINITIONS = AUDITED_METHOD_DEFINITIONS
-METHOD_DEFINITION_BY_ID = AUDITED_METHOD_DEFINITION_BY_ID
+METHOD_DEFINITIONS = V2_METHOD_DEFINITIONS
+METHOD_DEFINITION_BY_ID = V2_METHOD_DEFINITION_BY_ID
 METHOD_DEFINITIONS_BY_BUNDLE: dict[MethodBundleId, list[dict[str, Any]]] = {
-    "legacy": LEGACY_METHOD_DEFINITIONS,
-    "audited": METHOD_DEFINITIONS,
-    "test": TEST_METHOD_DEFINITIONS,
+    "v2": METHOD_DEFINITIONS,
 }
 METHOD_DEFINITION_BY_ID_BY_BUNDLE: dict[MethodBundleId, dict[str, dict[str, Any]]] = {
-    "legacy": LEGACY_METHOD_DEFINITION_BY_ID,
-    "audited": METHOD_DEFINITION_BY_ID,
-    "test": TEST_METHOD_DEFINITION_BY_ID,
+    "v2": METHOD_DEFINITION_BY_ID,
 }
 
 _presidio_analyzer_lock = threading.Lock()
@@ -1434,6 +1486,169 @@ class MethodRunResult:
     raw_spans: list[CanonicalSpan] = field(default_factory=list)
     resolution_events: list[ResolutionEvent] = field(default_factory=list)
     resolution_policy_version: str | None = None
+
+
+def _build_stable_exact_match_response_format(entity_types: list[str]) -> dict[str, Any]:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "pii_matches",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "matches": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "entity_type": {
+                                    "type": "string",
+                                    "enum": list(entity_types),
+                                },
+                                "text": {"type": "string"},
+                            },
+                            "required": ["entity_type", "text"],
+                            "additionalProperties": False,
+                        },
+                    }
+                },
+                "required": ["matches"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _build_stable_exact_verifier_response_format() -> dict[str, Any]:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "pii_verification",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "decisions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "index": {"type": "integer"},
+                                "keep": {"type": "boolean"},
+                            },
+                            "required": ["index", "keep"],
+                            "additionalProperties": False,
+                        },
+                    }
+                },
+                "required": ["decisions"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _stable_exact_is_word_char(ch: str) -> bool:
+    return ch.isalnum() or ch == "_"
+
+
+def _stable_exact_at_word_boundary(text: str, start: int, end: int) -> bool:
+    if start > 0 and _stable_exact_is_word_char(text[start - 1]) and _stable_exact_is_word_char(
+        text[start]
+    ):
+        return False
+    if end < len(text) and _stable_exact_is_word_char(text[end - 1]) and _stable_exact_is_word_char(
+        text[end]
+    ):
+        return False
+    return True
+
+
+def _stable_exact_match_to_spans(text: str, matches: list[dict[str, Any]]) -> list[CanonicalSpan]:
+    spans: list[CanonicalSpan] = []
+    seen: set[tuple[str, str]] = set()
+    sorted_matches = sorted(matches, key=lambda item: len(str(item.get("text", ""))), reverse=True)
+
+    for match in sorted_matches:
+        value = str(match.get("text", ""))
+        entity_type = str(match.get("entity_type", ""))
+        if not value:
+            continue
+
+        key = (entity_type, value)
+        if key in seen:
+            continue
+
+        start_index = 0
+        while start_index < len(text):
+            found = text.find(value, start_index)
+            if found == -1:
+                break
+
+            new_start = found
+            new_end = found + len(value)
+            if not _stable_exact_at_word_boundary(text, new_start, new_end):
+                start_index = found + 1
+                continue
+
+            overlapping: int | None = None
+            for index, existing in enumerate(spans):
+                if new_end > existing.start and new_start < existing.end:
+                    overlapping = index
+                    break
+
+            candidate = CanonicalSpan(
+                start=new_start,
+                end=new_end,
+                label=entity_type,
+                text=value,
+            )
+            if overlapping is None:
+                spans.append(candidate)
+            else:
+                existing = spans[overlapping]
+                if (new_end - new_start) > (existing.end - existing.start):
+                    spans[overlapping] = candidate
+
+            start_index = found + len(value)
+
+        seen.add(key)
+
+    return spans
+
+
+def _stable_exact_merge_spans(spans: list[CanonicalSpan]) -> list[CanonicalSpan]:
+    if not spans:
+        return []
+
+    sorted_spans = sorted(spans, key=lambda span: (span.start, -(span.end - span.start)))
+    merged: list[CanonicalSpan] = [sorted_spans[0]]
+    for span in sorted_spans[1:]:
+        last = merged[-1]
+        if span.start < last.end:
+            if (span.end - span.start) > (last.end - last.start):
+                merged[-1] = span
+        else:
+            merged.append(span)
+    return merged
+
+
+def _stable_exact_candidate_lines(spans: list[CanonicalSpan]) -> str:
+    return "\n".join(
+        [
+            f'[{i}] {span.label}: "{span.text}" (chars {span.start}-{span.end})'
+            for i, span in enumerate(spans)
+        ]
+    )
+
+
+@dataclass(frozen=True)
+class ExtractedMatch:
+    entity_type: str
+    text: str
+    source_pass: str | None = None
+    resolution_policy: MatchResolutionPolicy = "unique_or_warn"
 
 
 def _strip_code_fences(content: str) -> str:
@@ -1816,7 +2031,24 @@ def _compute_llm_confidence_metric(
     )
 
 
-def _parse_spans_from_response(resp: Any) -> list[CanonicalSpan]:
+def _extract_json_candidate(text: str) -> str | None:
+    starts = [idx for idx, ch in enumerate(text) if ch in "[{"]
+    for start in starts:
+        stack: list[str] = []
+        for idx in range(start, len(text)):
+            ch = text[idx]
+            if ch in "[{":
+                stack.append("]" if ch == "[" else "}")
+            elif ch in "]}":
+                if not stack or ch != stack[-1]:
+                    break
+                stack.pop()
+                if not stack:
+                    return text[start : idx + 1]
+    return None
+
+
+def _load_json_response_object(resp: Any, *, expected_key: str) -> dict[str, Any]:
     content = _extract_response_content(resp)
     if not content.strip():
         finish_reason = _extract_finish_reason(resp)
@@ -1828,22 +2060,6 @@ def _parse_spans_from_response(resp: Any) -> list[CanonicalSpan]:
             )
         raise ValueError(f"LLM returned empty output content. response_debug={response_debug}")
     content = _strip_code_fences(content)
-
-    def _extract_json_candidate(text: str) -> str | None:
-        starts = [idx for idx, ch in enumerate(text) if ch in "[{"]
-        for start in starts:
-            stack: list[str] = []
-            for idx in range(start, len(text)):
-                ch = text[idx]
-                if ch in "[{":
-                    stack.append("]" if ch == "[" else "}")
-                elif ch in "]}":
-                    if not stack or ch != stack[-1]:
-                        break
-                    stack.pop()
-                    if not stack:
-                        return text[start : idx + 1]
-        return None
 
     try:
         raw: Any = json.loads(content)
@@ -1862,18 +2078,32 @@ def _parse_spans_from_response(resp: Any) -> list[CanonicalSpan]:
                 f"LLM returned invalid JSON: {exc}. Raw response: {content[:500]}"
             ) from exc
 
-    if not isinstance(raw, dict) or "spans" not in raw:
+    if not isinstance(raw, dict) or expected_key not in raw:
         raise ValueError(
-            "Expected top-level object with key 'spans', "
+            f"Expected top-level object with key '{expected_key}', "
             f"got {type(raw).__name__}: {content[:500]}"
         )
-    raw = raw["spans"]
+    return raw
+
+
+def _parse_spans_from_response(resp: Any) -> list[CanonicalSpan]:
+    raw = _load_json_response_object(resp, expected_key="spans")["spans"]
 
     if not isinstance(raw, list):
         raise ValueError(f"Expected 'spans' to be a JSON array, got {type(raw).__name__}.")
     return [
         CanonicalSpan(start=s["start"], end=s["end"], label=s["label"], text=s["text"])
         for s in raw
+    ]
+
+
+def _parse_matches_from_response(resp: Any) -> list[ExtractedMatch]:
+    raw = _load_json_response_object(resp, expected_key="matches")["matches"]
+    if not isinstance(raw, list):
+        raise ValueError(f"Expected 'matches' to be a JSON array, got {type(raw).__name__}.")
+    return [
+        ExtractedMatch(entity_type=str(item["entity_type"]), text=str(item["text"]))
+        for item in raw
     ]
 
 
@@ -1911,6 +2141,47 @@ def _recover_partial_spans_from_truncated_output(raw_content: str) -> list[Canon
                     start=int(payload["start"]),
                     end=int(payload["end"]),
                     label=str(payload["label"]),
+                    text=str(payload["text"]),
+                )
+            )
+        except Exception:
+            break
+        idx += consumed
+    return recovered
+
+
+def _recover_partial_matches_from_truncated_output(raw_content: str) -> list[ExtractedMatch]:
+    content = _strip_code_fences(raw_content).strip()
+    if not content:
+        return []
+
+    matches_key_index = content.find('"matches"')
+    if matches_key_index < 0:
+        return []
+    array_start = content.find("[", matches_key_index)
+    if array_start < 0:
+        return []
+
+    decoder = json.JSONDecoder()
+    recovered: list[ExtractedMatch] = []
+    idx = array_start + 1
+    while idx < len(content):
+        while idx < len(content) and content[idx] in " \t\r\n,":
+            idx += 1
+        if idx >= len(content) or content[idx] == "]":
+            break
+        if content[idx] != "{":
+            break
+        try:
+            payload, consumed = decoder.raw_decode(content[idx:])
+        except json.JSONDecodeError:
+            break
+        if not isinstance(payload, dict):
+            break
+        try:
+            recovered.append(
+                ExtractedMatch(
+                    entity_type=str(payload["entity_type"]),
                     text=str(payload["text"]),
                 )
             )
@@ -1967,6 +2238,35 @@ def _build_span_response_format(
                     }
                 },
                 "required": ["spans"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _build_match_response_format(*, allowed_labels: list[str]) -> dict[str, Any]:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "pii_matches",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "matches": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "entity_type": {"type": "string", "enum": allowed_labels},
+                                "text": {"type": "string"},
+                            },
+                            "required": ["entity_type", "text"],
+                            "additionalProperties": False,
+                        },
+                    }
+                },
+                "required": ["matches"],
                 "additionalProperties": False,
             },
         },
@@ -2095,6 +2395,20 @@ def _is_plausible_name_span(raw_text: str, span: CanonicalSpan) -> bool:
     return _has_name_word_boundaries(raw_text, span.start, span.end)
 
 
+def _is_word_char(ch: str) -> bool:
+    return ch.isalnum() or ch == "_"
+
+
+def _at_word_boundary(raw_text: str, start: int, end: int) -> bool:
+    if not (0 <= start < end <= len(raw_text)):
+        return False
+    if start > 0 and _is_word_char(raw_text[start - 1]) and _is_word_char(raw_text[start]):
+        return False
+    if end < len(raw_text) and _is_word_char(raw_text[end - 1]) and _is_word_char(raw_text[end]):
+        return False
+    return True
+
+
 def _find_occurrences(text: str, needle: str) -> list[tuple[int, int]]:
     if not needle:
         return []
@@ -2154,6 +2468,90 @@ def _resolve_offsets_from_text(
         if occurrence is not None:
             return occurrence
     return None
+
+
+def _candidate_match_variants(value: str) -> list[str]:
+    variants: list[str] = []
+    if value:
+        variants.append(value)
+    stripped = value.strip()
+    if stripped and stripped not in variants:
+        variants.append(stripped)
+    collapsed_ws = " ".join(stripped.split())
+    if collapsed_ws and collapsed_ws not in variants:
+        variants.append(collapsed_ws)
+    return variants
+
+
+def _find_word_boundary_occurrences(raw_text: str, value: str) -> list[tuple[int, int]]:
+    occurrences: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+    for variant in _candidate_match_variants(value):
+        variant_occurrences = [
+            occurrence
+            for occurrence in _find_occurrences(raw_text, variant)
+            if _at_word_boundary(raw_text, occurrence[0], occurrence[1])
+        ]
+        if not variant_occurrences:
+            continue
+        for occurrence in variant_occurrences:
+            if occurrence in seen:
+                continue
+            seen.add(occurrence)
+            occurrences.append(occurrence)
+        if occurrences:
+            break
+    return occurrences
+
+
+def _resolve_extracted_matches(
+    raw_text: str,
+    matches: list[ExtractedMatch],
+    *,
+    label_profile: Literal["simple", "advanced"] = "simple",
+    default_policy: MatchResolutionPolicy = "unique_or_warn",
+    policy_by_label: dict[str, MatchResolutionPolicy] | None = None,
+) -> tuple[list[CanonicalSpan], list[str]]:
+    resolved: list[CanonicalSpan] = []
+    warnings: list[str] = []
+    seen_matches: set[tuple[str, str, str]] = set()
+    policies = policy_by_label or {}
+
+    for match in matches:
+        normalized_label = normalize_method_label(match.entity_type, label_profile=label_profile)
+        if not normalized_label:
+            continue
+        policy = policies.get(normalized_label, match.resolution_policy or default_policy)
+        key = (normalized_label, match.text, policy)
+        if key in seen_matches:
+            continue
+        seen_matches.add(key)
+
+        occurrences = _find_word_boundary_occurrences(raw_text, match.text)
+        if not occurrences:
+            warnings.append(
+                f"Could not resolve match {match.text!r} for label {normalized_label} to transcript offsets."
+            )
+            continue
+        if policy == "unique_or_warn":
+            if len(occurrences) != 1:
+                warnings.append(
+                    f"Ambiguous match {match.text!r} for label {normalized_label}; found {len(occurrences)} occurrences and dropped it."
+                )
+                continue
+            occurrences = occurrences[:1]
+
+        for start, end in occurrences:
+            resolved.append(
+                CanonicalSpan(
+                    start=start,
+                    end=end,
+                    label=normalized_label,
+                    text=raw_text[start:end],
+                )
+            )
+
+    return _dedupe_exact_spans(resolved), warnings
 
 
 def _repair_offset_mismatches(
@@ -2319,7 +2717,8 @@ def _parse_with_one_repair_retry(
     warnings: list[str],
     repair_timeout_seconds: float,
     repair_max_tokens: int,
-) -> tuple[list[CanonicalSpan], Any, dict[str, Any] | None, Any | None]:
+    response_contract: ResponseContract = "spans",
+) -> tuple[list[CanonicalSpan] | list[ExtractedMatch], Any, dict[str, Any] | None, Any | None]:
     raw_content = _extract_response_content(resp)
     if not raw_content.strip():
         finish_reason = _extract_finish_reason(resp)
@@ -2331,12 +2730,23 @@ def _parse_with_one_repair_retry(
             )
         raise ValueError(f"LLM returned empty output content. response_debug={response_debug}")
 
+    parser = _parse_matches_from_response if response_contract == "matches" else _parse_spans_from_response
+    recover_partial = (
+        _recover_partial_matches_from_truncated_output
+        if response_contract == "matches"
+        else _recover_partial_spans_from_truncated_output
+    )
+    repair_prompt = (
+        MATCHES_JSON_REPAIR_PROMPT if response_contract == "matches" else JSON_REPAIR_PROMPT
+    )
+    contract_noun = "matches" if response_contract == "matches" else "spans"
+
     try:
-        return _parse_spans_from_response(resp), resp, None, None
+        return parser(resp), resp, None, None
     except Exception as parse_exc:
         finish_reason = _extract_finish_reason(resp)
-        partial_spans = (
-            _recover_partial_spans_from_truncated_output(raw_content)
+        partial_items = (
+            recover_partial(raw_content)
             if finish_reason == "length"
             else []
         )
@@ -2346,13 +2756,13 @@ def _parse_with_one_repair_retry(
             if key not in {"messages", "logprobs", "thinking"}
         }
         repair_kwargs["messages"] = [
-            {"role": "system", "content": JSON_REPAIR_PROMPT},
+            {"role": "system", "content": repair_prompt},
             {
                 "role": "user",
                 "content": (
                     "Fix this invalid extractor output into valid JSON.\n"
-                    "Use only spans recoverable from INVALID_OUTPUT. "
-                    "Do not invent new spans or add prose.\n\n"
+                    f"Use only {contract_noun} recoverable from INVALID_OUTPUT. "
+                    f"Do not invent new {contract_noun} or add prose.\n\n"
                     f"INVALID_OUTPUT:\n{raw_content}"
                 ),
             },
@@ -2366,16 +2776,20 @@ def _parse_with_one_repair_retry(
         repair_resp: Any | None = None
         try:
             repair_resp = completion(**repair_kwargs)
-            repaired_spans = _parse_spans_from_response(repair_resp)
+            repaired_spans = parser(repair_resp)
             warnings.append("Recovered invalid LLM JSON with one repair retry.")
             return repaired_spans, repair_resp, repair_kwargs, repair_resp
         except Exception as repair_exc:
-            if partial_spans:
-                warnings.append(
-                    "Recovered "
-                    f"{len(partial_spans)} span(s) from truncated LLM output after repair retry failed."
+            if partial_items:
+                recovery_label = (
+                    f"{len(partial_items)} span(s)"
+                    if response_contract == "spans"
+                    else f"{len(partial_items)} matches"
                 )
-                return partial_spans, resp, repair_kwargs, repair_resp
+                warnings.append(
+                    f"Recovered {recovery_label} from truncated LLM output after repair retry failed."
+                )
+                return partial_items, resp, repair_kwargs, repair_resp
             raise ValueError(
                 f"Failed to parse LLM output and one repair retry failed: {repair_exc}"
             ) from parse_exc
@@ -2496,10 +2910,19 @@ def normalize_method_spans(
     return normalized
 
 
+def _normalize_historical_method_bundle(
+    method_bundle: HistoricalMethodBundleId | str | None,
+) -> HistoricalMethodBundleId:
+    raw = str(method_bundle or DEFAULT_METHOD_BUNDLE).strip().lower()
+    if raw not in {"legacy", "audited", "stable", "v2"}:
+        return DEFAULT_METHOD_BUNDLE
+    return raw  # type: ignore[return-value]
+
+
 def _normalize_method_bundle(method_bundle: MethodBundleId | str | None) -> MethodBundleId:
     raw = str(method_bundle or DEFAULT_METHOD_BUNDLE).strip().lower()
-    if raw not in {"legacy", "audited", "test"}:
-        raise ValueError("method_bundle must be one of: legacy, audited, test")
+    if raw != "v2":
+        raise ValueError("method_bundle must be one of: v2")
     return raw  # type: ignore[return-value]
 
 
@@ -2580,6 +3003,50 @@ def _resolve_method_pass_requested_labels(
     return entity_types or []
 
 
+def _resolve_method_pass_response_contract(method_pass: dict[str, Any]) -> ResponseContract:
+    raw_value = str(method_pass.get("response_contract") or "spans").strip().lower()
+    if raw_value in {"spans", "matches"}:
+        return raw_value  # type: ignore[return-value]
+    raise ValueError(f"Unsupported response contract: {raw_value}")
+
+
+def _resolve_method_pass_match_resolution_policy(
+    method_pass: dict[str, Any],
+) -> MatchResolutionPolicy:
+    raw_value = str(method_pass.get("match_resolution_policy") or "unique_or_warn").strip().lower()
+    if raw_value in {"unique_or_warn", "all_occurrences_word_boundary"}:
+        return raw_value  # type: ignore[return-value]
+    raise ValueError(f"Unsupported match resolution policy: {raw_value}")
+
+
+def _resolve_method_pass_match_resolution_policies(
+    method_pass: dict[str, Any],
+    *,
+    label_profile: Literal["simple", "advanced"],
+) -> dict[str, MatchResolutionPolicy]:
+    raw_by_profile = method_pass.get("match_resolution_policy_by_label_by_profile")
+    raw_mapping = method_pass.get("match_resolution_policy_by_label")
+    mapping: dict[str, Any] | None = None
+    if isinstance(raw_by_profile, dict):
+        candidate = raw_by_profile.get(label_profile)
+        if isinstance(candidate, dict):
+            mapping = candidate
+    elif isinstance(raw_mapping, dict):
+        mapping = raw_mapping
+    if not mapping:
+        return {}
+    resolved: dict[str, MatchResolutionPolicy] = {}
+    for label, policy in mapping.items():
+        normalized_label = normalize_method_label(str(label), label_profile=label_profile)
+        normalized_policy = str(policy).strip().lower()
+        if normalized_label and normalized_policy in {
+            "unique_or_warn",
+            "all_occurrences_word_boundary",
+        }:
+            resolved[normalized_label] = normalized_policy  # type: ignore[assignment]
+    return resolved
+
+
 def _resolve_presidio_pass_entities(
     method_pass: dict[str, Any],
     *,
@@ -2632,6 +3099,11 @@ def validate_method_contracts(
                 if not isinstance(method_pass, dict):
                     continue
                 pass_label = str(method_pass.get("pass_label") or f"{method_id}:pass_{index}")
+                response_contract = str(method_pass.get("response_contract") or "spans").strip().lower()
+                if response_contract not in {"spans", "matches"}:
+                    errors.append(
+                        f"{method_id}/{label_profile}/{pass_label} uses unsupported response contract: {response_contract}"
+                    )
                 requested = _resolve_method_pass_requested_labels(
                     method_pass,
                     label_profile=label_profile,
@@ -2665,6 +3137,40 @@ def validate_method_contracts(
                             f"{method_id}/{label_profile}/{pass_label} drops prompt-requested "
                             f"labels via entity filter: {', '.join(missing)}"
                         )
+                match_policy = str(
+                    method_pass.get("match_resolution_policy") or "unique_or_warn"
+                ).strip().lower()
+                if match_policy not in {"unique_or_warn", "all_occurrences_word_boundary"}:
+                    errors.append(
+                        f"{method_id}/{label_profile}/{pass_label} uses unsupported match resolution policy: {match_policy}"
+                    )
+                raw_policy_by_profile = method_pass.get("match_resolution_policy_by_label_by_profile")
+                raw_policy_by_label = method_pass.get("match_resolution_policy_by_label")
+                policy_mapping: dict[str, Any] | None = None
+                if isinstance(raw_policy_by_profile, dict):
+                    candidate = raw_policy_by_profile.get(label_profile)
+                    if isinstance(candidate, dict):
+                        policy_mapping = candidate
+                elif isinstance(raw_policy_by_label, dict):
+                    policy_mapping = raw_policy_by_label
+                if policy_mapping:
+                    for label, policy in policy_mapping.items():
+                        normalized_label = normalize_method_label(
+                            str(label),
+                            label_profile=label_profile,
+                        )
+                        if normalized_label not in allowed_labels:
+                            errors.append(
+                                f"{method_id}/{label_profile}/{pass_label} configures match policy for unsupported label: {label}"
+                            )
+                        normalized_policy = str(policy).strip().lower()
+                        if normalized_policy not in {
+                            "unique_or_warn",
+                            "all_occurrences_word_boundary",
+                        }:
+                            errors.append(
+                                f"{method_id}/{label_profile}/{pass_label} uses unsupported per-label match resolution policy: {policy}"
+                            )
                 if str(method_pass.get("kind")) == "presidio":
                     presidio_entities = _resolve_presidio_pass_entities(
                         method_pass,
@@ -2686,15 +3192,22 @@ def validate_method_contracts(
     return errors
 
 
-_AUDITED_METHOD_CONTRACT_ERRORS = tuple(validate_method_contracts(method_bundle="audited"))
-if _AUDITED_METHOD_CONTRACT_ERRORS:
-    joined_errors = "; ".join(_AUDITED_METHOD_CONTRACT_ERRORS)
-    raise RuntimeError(f"Audited method contract validation failed: {joined_errors}")
+_V2_METHOD_CONTRACT_ERRORS = tuple(validate_method_contracts(method_bundle="v2"))
+if _V2_METHOD_CONTRACT_ERRORS:
+    joined_errors = "; ".join(_V2_METHOD_CONTRACT_ERRORS)
+    raise RuntimeError(f"V2 method contract validation failed: {joined_errors}")
 
-_TEST_METHOD_CONTRACT_ERRORS = tuple(validate_method_contracts(method_bundle="test"))
-if _TEST_METHOD_CONTRACT_ERRORS:
-    joined_errors = "; ".join(_TEST_METHOD_CONTRACT_ERRORS)
-    raise RuntimeError(f"Test method contract validation failed: {joined_errors}")
+
+def _dedupe_exact_spans(spans: list[CanonicalSpan]) -> list[CanonicalSpan]:
+    seen: set[tuple[int, int, str]] = set()
+    deduped: list[CanonicalSpan] = []
+    for span in spans:
+        key = (span.start, span.end, span.label)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(span)
+    return deduped
 
 
 def merge_method_spans(spans: list[CanonicalSpan]) -> list[CanonicalSpan]:
@@ -2720,15 +3233,7 @@ def merge_method_spans(spans: list[CanonicalSpan]) -> list[CanonicalSpan]:
         merged.append(span)
 
     # Remove exact duplicates, preserving deterministic order.
-    seen: set[tuple[int, int, str]] = set()
-    deduped: list[CanonicalSpan] = []
-    for span in merged:
-        key = (span.start, span.end, span.label)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(span)
-    return deduped
+    return _dedupe_exact_spans(merged)
 
 
 @lru_cache(maxsize=1)
@@ -2894,6 +3399,7 @@ def _run_llm_verifier(
     api_base: str | None,
     model: str,
     timeout_seconds: float | None = None,
+    method_bundle: MethodBundleId = DEFAULT_METHOD_BUNDLE,
 ) -> tuple[list[CanonicalSpan], list[str]]:
     if not spans:
         return [], []
@@ -2933,6 +3439,11 @@ def _run_llm_verifier(
     }
 
     use_openai_gateway_format = bool(api_base) and "/" not in model and "." in model
+    effective_max_tokens = (
+        V2_LLM_VERIFIER_MAX_TOKENS
+        if _normalize_method_bundle(method_bundle) == "v2"
+        else DEFAULT_LLM_VERIFIER_MAX_TOKENS
+    )
     base_request_kwargs: dict[str, Any] = {
         "model": f"openai/{model}" if use_openai_gateway_format else model,
         "messages": [
@@ -2945,7 +3456,7 @@ def _run_llm_verifier(
             timeout_seconds,
             default_timeout_seconds=DEFAULT_LLM_VERIFIER_TIMEOUT_SECONDS,
         ),
-        "max_tokens": DEFAULT_LLM_VERIFIER_MAX_TOKENS,
+        "max_tokens": effective_max_tokens,
     }
 
     warnings: list[str] = []
@@ -2974,6 +3485,94 @@ def _run_llm_verifier(
     if last_exc is not None:
         raise last_exc
     return spans, warnings
+
+
+def _run_stable_exact_llm_pass(
+    *,
+    text: str,
+    api_key: str,
+    api_base: str | None,
+    model: str,
+    system_prompt: str,
+    entity_types: list[str] | None,
+    timeout_seconds: float | None,
+) -> tuple[list[CanonicalSpan], LLMConfidenceMetric, list[str]]:
+    provider = _infer_provider(model)
+    use_openai_gateway_format = bool(api_base) and "/" not in model and "." in model
+    request_kwargs: dict[str, Any] = {
+        "model": f"openai/{model}" if use_openai_gateway_format else model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text},
+        ],
+        "response_format": _build_stable_exact_match_response_format(
+            entity_types or STABLE_EXACT_ENTITY_TYPES
+        ),
+        "num_retries": 1,
+    }
+    if api_key:
+        request_kwargs["api_key"] = api_key
+    if api_base:
+        request_kwargs["api_base"] = api_base
+    if timeout_seconds is not None:
+        request_kwargs["timeout"] = _clamp_call_timeout_seconds(
+            timeout_seconds,
+            default_timeout_seconds=DEFAULT_LLM_EXTRACTION_TIMEOUT_SECONDS,
+        )
+
+    response = completion(**request_kwargs)
+    content = _extract_response_content(response)
+    data = json.loads(content)
+    spans = _stable_exact_match_to_spans(text, data.get("matches", []))
+    return (
+        spans,
+        _build_unavailable_confidence_metric(provider, model, "missing_logprobs"),
+        [f"stable_exact response: {_build_response_debug_summary(response)}"],
+    )
+
+
+def _run_stable_exact_verifier(
+    *,
+    text: str,
+    spans: list[CanonicalSpan],
+    api_key: str,
+    api_base: str | None,
+    model: str,
+    timeout_seconds: float | None,
+) -> list[CanonicalSpan]:
+    if not spans:
+        return []
+
+    use_openai_gateway_format = bool(api_base) and "/" not in model and "." in model
+    request_kwargs: dict[str, Any] = {
+        "model": f"openai/{model}" if use_openai_gateway_format else model,
+        "messages": [
+            {"role": "system", "content": VERIFIER_PROMPT},
+            {
+                "role": "user",
+                "content": f"TEXT:\n{text}\n\nCANDIDATES:\n{_stable_exact_candidate_lines(spans)}",
+            },
+        ],
+        "response_format": _build_stable_exact_verifier_response_format(),
+        "num_retries": 1,
+    }
+    if api_key:
+        request_kwargs["api_key"] = api_key
+    if api_base:
+        request_kwargs["api_base"] = api_base
+    if timeout_seconds is not None:
+        request_kwargs["timeout"] = _clamp_call_timeout_seconds(
+            timeout_seconds,
+            default_timeout_seconds=DEFAULT_LLM_VERIFIER_TIMEOUT_SECONDS,
+        )
+
+    response = completion(**request_kwargs)
+    data = json.loads(_extract_response_content(response))
+    rejected: set[int] = set()
+    for decision in data.get("decisions", []):
+        if not decision.get("keep", True):
+            rejected.add(decision["index"])
+    return [span for index, span in enumerate(spans) if index not in rejected]
 
 
 def _run_presidio_pass(
@@ -3026,6 +3625,98 @@ def _filter_method_pass_spans(
     ]
 
 
+def _run_stable_exact_method_with_metadata(
+    *,
+    text: str,
+    method: dict[str, Any],
+    method_id: str,
+    api_key: str | None,
+    api_base: str | None,
+    model: str,
+    system_prompt: str,
+    method_verify: bool | None,
+    label_profile: Literal["simple", "advanced"],
+    timeout_seconds: float | None,
+    progress_callback: Callable[[int, str], None] | None,
+) -> MethodRunResult:
+    should_verify = method["default_verify"] if method_verify is None else method_verify
+    warnings: list[str] = []
+    all_raw_spans: list[CanonicalSpan] = []
+    llm_metrics: list[LLMConfidenceMetric] = []
+    response_debug: list[str] = []
+    deadline_monotonic = (
+        time.monotonic() + float(timeout_seconds)
+        if timeout_seconds is not None
+        else None
+    )
+
+    for idx, method_pass in enumerate(method.get("passes", [])):
+        pass_label = str(method_pass.get("pass_label") or f"{method_id}:pass_{idx + 1}")
+        if progress_callback is not None:
+            progress_callback(idx + 1, pass_label)
+
+        if method_pass.get("kind") == "presidio":
+            presidio_entities = _resolve_presidio_pass_entities(
+                method_pass,
+                label_profile=label_profile,
+            )
+            all_raw_spans.extend(
+                _run_presidio_pass(
+                    text=text,
+                    entity_types=presidio_entities,
+                )
+            )
+            continue
+
+        prompt = _resolve_method_pass_prompt(
+            method_pass,
+            label_profile=label_profile,
+        )
+        if system_prompt.strip():
+            prompt = f"{prompt}\n\nAdditional constraints:\n{system_prompt.strip()}"
+
+        pass_spans, llm_metric, pass_debug = _run_stable_exact_llm_pass(
+            text=text,
+            api_key=api_key or "",
+            api_base=api_base,
+            model=model,
+            system_prompt=prompt,
+            entity_types=_resolve_method_pass_entity_types(
+                method_pass,
+                label_profile=label_profile,
+            ),
+            timeout_seconds=_remaining_timeout_seconds(deadline_monotonic),
+        )
+        all_raw_spans.extend(pass_spans)
+        llm_metrics.append(llm_metric)
+        response_debug.extend([f"Pass {idx + 1}: {item}" for item in pass_debug])
+
+    merged_raw = _stable_exact_merge_spans(all_raw_spans)
+    if should_verify:
+        if progress_callback is not None:
+            progress_callback(len(method["passes"]) + 1, f"{method_id}:verifier")
+        merged_raw = _run_stable_exact_verifier(
+            text=text,
+            spans=merged_raw,
+            api_key=api_key or "",
+            api_base=api_base,
+            model=model,
+            timeout_seconds=_remaining_timeout_seconds(deadline_monotonic),
+        )
+
+    normalized_raw = normalize_method_spans(merged_raw, label_profile=label_profile)
+    final_spans = _dedupe_exact_spans(normalized_raw)
+    return MethodRunResult(
+        spans=final_spans,
+        warnings=warnings,
+        llm_confidence=_aggregate_llm_confidence_metrics(llm_metrics),
+        response_debug=response_debug,
+        raw_spans=normalized_raw,
+        resolution_events=[],
+        resolution_policy_version=None,
+    )
+
+
 def run_method_with_metadata(
     *,
     text: str,
@@ -3063,6 +3754,29 @@ def run_method_with_metadata(
         raise ValueError(
             f"Method '{method_id}' verification requires an API key. Set LITELLM_API_KEY or provide api_key."
         )
+
+    bundle = _normalize_method_bundle(method_bundle)
+    v2_bundle = bundle == "v2"
+    if v2_bundle:
+        return _run_stable_exact_method_with_metadata(
+            text=text,
+            method=method,
+            method_id=method_id,
+            api_key=api_key,
+            api_base=api_base,
+            model=model,
+            system_prompt=system_prompt,
+            method_verify=method_verify,
+            label_profile=label_profile,
+            timeout_seconds=timeout_seconds,
+            progress_callback=progress_callback,
+        )
+
+    effective_reasoning_effort: ReasoningEffort = "none" if v2_bundle else reasoning_effort
+    effective_anthropic_thinking = False if v2_bundle else anthropic_thinking
+    effective_anthropic_thinking_budget_tokens = (
+        None if v2_bundle else anthropic_thinking_budget_tokens
+    )
 
     warnings: list[str] = []
     all_raw_spans: list[CanonicalSpan] = []
@@ -3109,6 +3823,16 @@ def run_method_with_metadata(
             prompt = f"{prompt}\n\nAdditional constraints:\n{system_prompt.strip()}"
 
         call_timeout_seconds = _remaining_timeout_seconds(deadline_monotonic)
+        requested_labels = _resolve_method_pass_requested_labels(
+            method_pass,
+            label_profile=label_profile,
+        )
+        response_contract = _resolve_method_pass_response_contract(method_pass)
+        match_resolution_policy = _resolve_method_pass_match_resolution_policy(method_pass)
+        match_resolution_policy_by_label = _resolve_method_pass_match_resolution_policies(
+            method_pass,
+            label_profile=label_profile,
+        )
         llm_result = run_llm_with_metadata(
             text=text,
             api_key=api_key or "",
@@ -3116,38 +3840,48 @@ def run_method_with_metadata(
             model=model,
             system_prompt=prompt,
             temperature=temperature,
-            reasoning_effort=reasoning_effort,
-            anthropic_thinking=anthropic_thinking,
-            anthropic_thinking_budget_tokens=anthropic_thinking_budget_tokens,
+            reasoning_effort=effective_reasoning_effort,
+            anthropic_thinking=effective_anthropic_thinking,
+            anthropic_thinking_budget_tokens=effective_anthropic_thinking_budget_tokens,
             label_profile=label_profile,
             timeout_seconds=call_timeout_seconds,
             enable_deterministic_augmentation=False,
-            method_bundle=method_bundle,
+            method_bundle=bundle,
+            requested_labels=requested_labels,
+            response_contract=response_contract,
+            match_resolution_policy=match_resolution_policy,
+            match_resolution_policy_by_label=match_resolution_policy_by_label,
         )
         llm_metrics.append(llm_result.llm_confidence)
         response_debug.extend(
             [f"Pass {idx + 1}: {item}" for item in getattr(llm_result, "response_debug", [])]
         )
-        raw_pass_spans = _filter_method_pass_spans(
-            normalize_method_spans(
-                getattr(llm_result, "raw_spans", llm_result.spans),
-                label_profile=label_profile,
-            ),
-            pass_entity_types,
+        raw_pass_spans = normalize_method_spans(
+            getattr(llm_result, "raw_spans", llm_result.spans),
             label_profile=label_profile,
         )
+        if not v2_bundle:
+            raw_pass_spans = _filter_method_pass_spans(
+                raw_pass_spans,
+                pass_entity_types,
+                label_profile=label_profile,
+            )
         all_raw_spans.extend(raw_pass_spans)
         for warning in llm_result.warnings:
             warnings.append(f"Pass {idx + 1}: {warning}")
 
-    raw_spans = merge_method_spans(all_raw_spans)
+    raw_spans = _dedupe_exact_spans(all_raw_spans) if v2_bundle else merge_method_spans(all_raw_spans)
     pre_verify_resolved, pre_verify_events = resolve_spans(
         text,
         raw_spans,
         label_profile=label_profile,
         enable_augmentation=False,
     )
-    merged = merge_method_spans(pre_verify_resolved)
+    merged = (
+        _dedupe_exact_spans(pre_verify_resolved)
+        if v2_bundle
+        else merge_method_spans(pre_verify_resolved)
+    )
 
     if should_verify:
         try:
@@ -3157,7 +3891,7 @@ def run_method_with_metadata(
             response_debug.append(
                 "Verifier settings: "
                 f"timeout={_clamp_call_timeout_seconds(verifier_timeout_seconds, default_timeout_seconds=DEFAULT_LLM_VERIFIER_TIMEOUT_SECONDS):g}; "
-                f"max_tokens={DEFAULT_LLM_VERIFIER_MAX_TOKENS}"
+                f"max_tokens={(V2_LLM_VERIFIER_MAX_TOKENS if v2_bundle else DEFAULT_LLM_VERIFIER_MAX_TOKENS)}"
             )
             verified_spans, verify_warnings = _run_llm_verifier(
                 text=text,
@@ -3166,9 +3900,16 @@ def run_method_with_metadata(
                 api_base=api_base,
                 model=model,
                 timeout_seconds=verifier_timeout_seconds,
+                method_bundle=bundle,
             )
-            merged = merge_method_spans(
-                normalize_method_spans(verified_spans, label_profile=label_profile)
+            merged = (
+                _dedupe_exact_spans(
+                    normalize_method_spans(verified_spans, label_profile=label_profile)
+                )
+                if v2_bundle
+                else merge_method_spans(
+                    normalize_method_spans(verified_spans, label_profile=label_profile)
+                )
             )
             warnings.extend(verify_warnings)
         except Exception as exc:
@@ -3217,8 +3958,14 @@ def run_llm_with_metadata(
     timeout_seconds: float | None = None,
     enable_deterministic_augmentation: bool = True,
     method_bundle: MethodBundleId = DEFAULT_METHOD_BUNDLE,
+    requested_labels: list[str] | None = None,
+    response_contract: ResponseContract = "spans",
+    match_resolution_policy: MatchResolutionPolicy = "unique_or_warn",
+    match_resolution_policy_by_label: dict[str, MatchResolutionPolicy] | None = None,
 ) -> LLMRunResult:
     """Run LLM-based PII detection with provider-aware advanced parameters."""
+    bundle = _normalize_method_bundle(method_bundle)
+    v2_bundle = bundle == "v2"
     provider = _infer_provider(model)
     is_openai_model = _is_openai_model(provider, model)
     supports_reasoning = _supports_reasoning_effort(model, provider)
@@ -3229,10 +3976,18 @@ def run_llm_with_metadata(
     warnings: list[str] = []
     extra_body: dict[str, Any] = {}
     effective_temperature: float | None = temperature
+    effective_reasoning_effort: ReasoningEffort = "none" if v2_bundle else reasoning_effort
+    effective_anthropic_thinking = False if v2_bundle else anthropic_thinking
+    effective_anthropic_thinking_budget_tokens = (
+        None if v2_bundle else anthropic_thinking_budget_tokens
+    )
+    effective_requested_labels = requested_labels or _labels_for_profile(label_profile)
     effective_system_prompt = build_extraction_system_prompt(
         system_prompt,
         label_profile=label_profile,
-        method_bundle=method_bundle,
+        method_bundle=bundle,
+        response_contract=response_contract,
+        requested_labels=effective_requested_labels,
     )
     deadline_monotonic = (
         time.monotonic() + float(timeout_seconds)
@@ -3243,9 +3998,16 @@ def run_llm_with_metadata(
         timeout_seconds,
         default_timeout_seconds=DEFAULT_LLM_EXTRACTION_TIMEOUT_SECONDS,
     )
-    effective_max_tokens = DEFAULT_LLM_EXTRACTION_MAX_TOKENS
+    effective_max_tokens = (
+        V2_LLM_EXTRACTION_MAX_TOKENS
+        if v2_bundle
+        else DEFAULT_LLM_EXTRACTION_MAX_TOKENS
+    )
+    repair_max_tokens = (
+        V2_LLM_REPAIR_MAX_TOKENS if v2_bundle else DEFAULT_LLM_REPAIR_MAX_TOKENS
+    )
 
-    if anthropic_thinking and supports_thinking:
+    if effective_anthropic_thinking and supports_thinking:
         if temperature != 1.0:
             warnings.append(
                 f"Model '{model}' requires temperature=1 when thinking is enabled; "
@@ -3267,26 +4029,34 @@ def run_llm_with_metadata(
     supports_logprobs = _supports_logprobs(
         model,
         provider,
-        reasoning_effort=reasoning_effort,
+        reasoning_effort=effective_reasoning_effort,
     )
-    if supports_logprobs:
+    if supports_logprobs and not v2_bundle:
         base_request_kwargs["logprobs"] = True
-    elif model.lower() in {"openai.gpt-5.2-chat", "openai/gpt-5.2-chat", "gpt-5.2-chat"}:
+    elif (
+        not v2_bundle
+        and model.lower() in {"openai.gpt-5.2-chat", "openai/gpt-5.2-chat", "gpt-5.2-chat"}
+    ):
         warnings.append(
             "Token logprobs are currently unavailable for model 'openai.gpt-5.2-chat' on this API route."
         )
     elif (
         _is_openai_model(provider, model)
         and ("gpt-5" in model.lower() or "gpt5" in model.lower())
-        and reasoning_effort != "none"
+        and effective_reasoning_effort != "none"
     ):
         warnings.append(
             "Logprobs are unavailable for this GPT-5 run when reasoning_effort is not 'none'. "
             "Set reasoning_effort='none' to enable logprob confidence."
         )
-    base_request_kwargs["response_format"] = _build_span_response_format(
-        label_profile=label_profile
-    )
+    if response_contract == "matches":
+        base_request_kwargs["response_format"] = _build_match_response_format(
+            allowed_labels=effective_requested_labels
+        )
+    else:
+        base_request_kwargs["response_format"] = _build_span_response_format(
+            label_profile=label_profile
+        )
     if effective_temperature is not None:
         base_request_kwargs["temperature"] = effective_temperature
     elif not supports_custom_temperature and temperature not in (0.0, 1.0):
@@ -3294,25 +4064,25 @@ def run_llm_with_metadata(
             f"Model '{model}' only supports default temperature; custom value ignored."
         )
 
-    if reasoning_effort != "none":
+    if effective_reasoning_effort != "none":
         if supports_reasoning:
             if use_openai_gateway_format:
-                extra_body["reasoning_effort"] = reasoning_effort
+                extra_body["reasoning_effort"] = effective_reasoning_effort
             else:
-                base_request_kwargs["reasoning_effort"] = reasoning_effort
+                base_request_kwargs["reasoning_effort"] = effective_reasoning_effort
         else:
             warnings.append(
                 f"Model '{model}' does not support reasoning_effort; ignored."
             )
 
-    if anthropic_thinking:
+    if effective_anthropic_thinking:
         if supports_thinking:
             thinking: dict[str, Any] = {"type": "enabled"}
-            if anthropic_thinking_budget_tokens is not None:
-                thinking["budget_tokens"] = anthropic_thinking_budget_tokens
+            if effective_anthropic_thinking_budget_tokens is not None:
+                thinking["budget_tokens"] = effective_anthropic_thinking_budget_tokens
                 effective_max_tokens = max(
-                    anthropic_thinking_budget_tokens + 256,
-                    DEFAULT_LLM_EXTRACTION_MAX_TOKENS,
+                    effective_anthropic_thinking_budget_tokens + 256,
+                    effective_max_tokens,
                 )
             if use_openai_gateway_format:
                 extra_body["thinking"] = thinking
@@ -3320,7 +4090,7 @@ def run_llm_with_metadata(
                 base_request_kwargs["thinking"] = thinking
         else:
             warnings.append(f"Model '{model}' does not support anthropic thinking; ignored.")
-    if use_openai_gateway_format and anthropic_thinking and supports_thinking:
+    if use_openai_gateway_format and effective_anthropic_thinking and supports_thinking:
         extra_body["max_tokens"] = effective_max_tokens
     else:
         base_request_kwargs["max_tokens"] = effective_max_tokens
@@ -3343,7 +4113,8 @@ def run_llm_with_metadata(
                 "request_settings: "
                 f"provider={provider}; timeout={effective_timeout_seconds:g}; "
                 f"max_tokens={effective_max_tokens}; label_profile={label_profile}; "
-                f"reasoning_effort={reasoning_effort}; anthropic_thinking={anthropic_thinking}",
+                f"reasoning_effort={effective_reasoning_effort}; anthropic_thinking={effective_anthropic_thinking}; "
+                f"response_contract={response_contract}",
                 _build_response_debug_summary(resp),
             ]
             repair_timeout_seconds = _clamp_call_timeout_seconds(
@@ -3356,7 +4127,8 @@ def run_llm_with_metadata(
                 text=text,
                 warnings=warnings,
                 repair_timeout_seconds=repair_timeout_seconds,
-                repair_max_tokens=DEFAULT_LLM_REPAIR_MAX_TOKENS,
+                repair_max_tokens=repair_max_tokens,
+                response_contract=response_contract,
             )
             if repair_kwargs is not None:
                 response_debug.append(
@@ -3365,13 +4137,25 @@ def run_llm_with_metadata(
                 )
                 if repair_resp is not None:
                     response_debug.append(f"repair: {_build_response_debug_summary(repair_resp)}")
-            spans, repair_warnings = _repair_offset_mismatches(
-                text,
-                spans,
-                label_profile=label_profile,
-            )
-            warnings.extend(repair_warnings)
-            raw_spans = normalize_method_spans(spans, label_profile=label_profile)
+            raw_spans: list[CanonicalSpan]
+            if response_contract == "matches":
+                resolved_spans, match_warnings = _resolve_extracted_matches(
+                    text,
+                    spans,  # type: ignore[arg-type]
+                    label_profile=label_profile,
+                    default_policy=match_resolution_policy,
+                    policy_by_label=match_resolution_policy_by_label,
+                )
+                warnings.extend(match_warnings)
+                raw_spans = normalize_method_spans(resolved_spans, label_profile=label_profile)
+            else:
+                repaired_spans, repair_warnings = _repair_offset_mismatches(
+                    text,
+                    spans,  # type: ignore[arg-type]
+                    label_profile=label_profile,
+                )
+                warnings.extend(repair_warnings)
+                raw_spans = normalize_method_spans(repaired_spans, label_profile=label_profile)
             spans, resolution_events = resolve_spans(
                 text,
                 raw_spans,
@@ -3410,7 +4194,11 @@ def run_llm_with_metadata(
                     "LLM output may be truncated (finish_reason=length); results can be incomplete."
                 )
             llm_confidence = _compute_llm_confidence_metric(parsed_resp, provider, model)
-            if llm_confidence.reason == "missing_logprobs" and _is_openai_model(provider, model):
+            if (
+                not v2_bundle
+                and llm_confidence.reason == "missing_logprobs"
+                and _is_openai_model(provider, model)
+            ):
                 warnings.append(
                     "Model response did not include token logprobs. "
                     "This can happen with some gateway/model combinations even when the request succeeds."

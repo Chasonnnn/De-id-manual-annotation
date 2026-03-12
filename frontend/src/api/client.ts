@@ -534,7 +534,8 @@ function normalizePromptLabRunSummary(raw: Record<string, unknown>): PromptLabRu
   const methodBundleRaw =
     raw.method_bundle === "legacy" ||
     raw.method_bundle === "audited" ||
-    raw.method_bundle === "test"
+    raw.method_bundle === "stable" ||
+    raw.method_bundle === "v2"
       ? raw.method_bundle
       : runtimeRaw.method_bundle;
   return {
@@ -560,7 +561,8 @@ function normalizeMethodsLabRunSummary(raw: Record<string, unknown>): MethodsLab
   const methodBundleRaw =
     raw.method_bundle === "legacy" ||
     raw.method_bundle === "audited" ||
-    raw.method_bundle === "test"
+    raw.method_bundle === "stable" ||
+    raw.method_bundle === "v2"
       ? raw.method_bundle
       : runtimeRaw.method_bundle;
   return {
@@ -1334,9 +1336,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function normalizeMethodBundle(value: unknown): MethodBundle {
-  return value === "legacy" || value === "audited" || value === "test"
+  return value === "legacy" || value === "audited" || value === "stable" || value === "v2"
     ? value
-    : "audited";
+    : "v2";
 }
 
 function toNumber(value: unknown, fallback: number): number {

@@ -24,6 +24,7 @@ import type {
   PromptLabRunSummary,
 } from "../types";
 import { formatExperimentModelLabel, getExperimentModelLabelById } from "../modelDisplay";
+import ConfirmDialog from "./ConfirmDialog";
 import PromptLabCellDetail from "./PromptLabCellDetail";
 import PromptLabMatrix from "./PromptLabMatrix";
 import PromptLabRunForm from "./PromptLabRunForm";
@@ -60,6 +61,13 @@ function readSessionStorageValue(key: string): string | undefined {
   }
 }
 
+type PendingConfirm = {
+  title: string;
+  message: string;
+  destructive?: boolean;
+  onConfirm: () => void;
+};
+
 function usePromptLabTabController(onSelectDocument: (docId: string) => void) {
   const [setupCollapsed, setSetupCollapsed] = useState(false);
   const [runs, setRuns] = useState<PromptLabRunSummary[]>([]);
@@ -84,6 +92,7 @@ function usePromptLabTabController(onSelectDocument: (docId: string) => void) {
     null,
   );
   const [toasts, setToasts] = useState<PromptLabToast[]>([]);
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
   const previousRunStatusRef = useRef<Record<string, string>>({});
   const previousCellCompletedRef = useRef<Record<string, number>>({});
   const previousCellErrorsRef = useRef<Record<string, number>>({});
@@ -474,6 +483,7 @@ function usePromptLabTabController(onSelectDocument: (docId: string) => void) {
         models: [selectedModel],
         runtime: {
           ...runDetail.runtime,
+          method_bundle: "v2",
           api_key: readSessionStorageValue("prompt_lab_api_key"),
           api_base:
             readSessionStorageValue("prompt_lab_api_base") ?? runDetail.runtime.api_base,
@@ -493,11 +503,8 @@ function usePromptLabTabController(onSelectDocument: (docId: string) => void) {
     }
   }, [createAndSelectRun, pushToast, runDetail, selectedCell]);
 
-  const handleDeleteRun = useCallback(
+  const doDeleteRun = useCallback(
     async (run: PromptLabRunSummary) => {
-      const confirmed = window.confirm(`Delete Prompt Lab run "${run.name}"?`);
-      if (!confirmed) return;
-
       setDeletingRunId(run.id);
       try {
         await deletePromptLabRun(run.id);
@@ -528,11 +535,23 @@ function usePromptLabTabController(onSelectDocument: (docId: string) => void) {
     [clearSelectedDocState, pushToast, selectedRunId],
   );
 
-  const handleStopRun = useCallback(
-    async (run: PromptLabRunSummary) => {
-      const confirmed = window.confirm(`Stop Prompt Lab run "${run.name}"?`);
-      if (!confirmed) return;
+  const handleDeleteRun = useCallback(
+    (run: PromptLabRunSummary) => {
+      setPendingConfirm({
+        title: "Delete Run",
+        message: `Delete Prompt Lab run "${run.name}"?`,
+        destructive: true,
+        onConfirm: () => {
+          setPendingConfirm(null);
+          void doDeleteRun(run);
+        },
+      });
+    },
+    [doDeleteRun],
+  );
 
+  const doStopRun = useCallback(
+    async (run: PromptLabRunSummary) => {
       setStoppingRunId(run.id);
       try {
         await stopPromptLabRun(run.id);
@@ -551,6 +570,20 @@ function usePromptLabTabController(onSelectDocument: (docId: string) => void) {
       }
     },
     [pushToast, refreshRunDetail, refreshRuns, selectedRunId],
+  );
+
+  const handleStopRun = useCallback(
+    (run: PromptLabRunSummary) => {
+      setPendingConfirm({
+        title: "Stop Run",
+        message: `Stop Prompt Lab run "${run.name}"?`,
+        onConfirm: () => {
+          setPendingConfirm(null);
+          void doStopRun(run);
+        },
+      });
+    },
+    [doStopRun],
   );
 
   return {
@@ -572,8 +605,10 @@ function usePromptLabTabController(onSelectDocument: (docId: string) => void) {
     experimentLimits,
     experimentDiagnostics,
     toasts,
+    pendingConfirm,
     selectedCell,
     dismissToast,
+    setPendingConfirm,
     refreshRuns,
     handleCreateRun,
     handleDeleteRun,
@@ -611,8 +646,10 @@ export default function PromptLabTab({
     experimentLimits,
     experimentDiagnostics,
     toasts,
+    pendingConfirm,
     selectedCell,
     dismissToast,
+    setPendingConfirm,
     refreshRuns,
     handleCreateRun,
     handleDeleteRun,
@@ -738,6 +775,15 @@ export default function PromptLabTab({
             </button>
           ))}
         </div>
+      )}
+      {pendingConfirm && (
+        <ConfirmDialog
+          title={pendingConfirm.title}
+          message={pendingConfirm.message}
+          destructive={pendingConfirm.destructive}
+          onConfirm={pendingConfirm.onConfirm}
+          onCancel={() => setPendingConfirm(null)}
+        />
       )}
     </div>
   );

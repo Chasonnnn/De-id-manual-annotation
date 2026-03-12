@@ -1,7 +1,8 @@
 export type PIILabel = string;
 export type LabelProfile = "simple" | "advanced";
 export type LabelProjection = "native" | "coarse_simple";
-export type MethodBundle = "legacy" | "audited" | "test";
+export type ActiveMethodBundle = "v2";
+export type MethodBundle = "legacy" | "audited" | "stable" | "v2";
 export type ImportConflictPolicy = "replace" | "add_new" | "keep_current";
 
 export const PII_LABELS: PIILabel[] = [
@@ -475,7 +476,7 @@ export interface PromptLabRuntimeInput {
   fallback_reference_source: "manual" | "pre";
   label_profile?: LabelProfile;
   label_projection?: LabelProjection;
-  method_bundle?: MethodBundle;
+  method_bundle?: ActiveMethodBundle;
   chunk_mode?: "auto" | "off" | "force";
   chunk_size_chars?: number;
 }
@@ -506,7 +507,7 @@ export interface MethodsLabRuntimeInput {
   fallback_reference_source?: "manual" | "pre";
   label_profile?: LabelProfile;
   label_projection?: LabelProjection;
-  method_bundle?: MethodBundle;
+  method_bundle?: ActiveMethodBundle;
   chunk_mode?: "auto" | "off" | "force";
   chunk_size_chars?: number;
   task_timeout_seconds?: number | null;
@@ -594,12 +595,17 @@ export interface PromptLabRunSummary {
   failed_tasks: number;
 }
 
+export type PromptLabRuntimeSnapshot = Omit<PromptLabRuntimeInput, "api_key" | "method_bundle"> & {
+  api_base?: string;
+  method_bundle?: MethodBundle;
+};
+
 export interface PromptLabRunDetail extends PromptLabRunSummary {
   doc_ids: string[];
   folder_ids: string[];
   prompts: PromptLabPromptInput[];
   models: PromptLabModelInput[];
-  runtime: Omit<PromptLabRuntimeInput, "api_key"> & { api_base?: string };
+  runtime: PromptLabRuntimeSnapshot;
   concurrency: number;
   diagnostics: ExperimentRunDiagnostics;
   warnings: string[];
@@ -703,12 +709,20 @@ export interface MethodsLabRunSummary {
   failed_tasks: number;
 }
 
+export type MethodsLabRuntimeSnapshot = Omit<
+  MethodsLabRuntimeInput,
+  "api_key" | "method_bundle"
+> & {
+  api_base?: string;
+  method_bundle?: MethodBundle;
+};
+
 export interface MethodsLabRunDetail extends MethodsLabRunSummary {
   doc_ids: string[];
   folder_ids: string[];
   methods: MethodsLabMethodInput[];
   models: PromptLabModelInput[];
-  runtime: Omit<MethodsLabRuntimeInput, "api_key"> & { api_base?: string };
+  runtime: MethodsLabRuntimeSnapshot;
   concurrency: number;
   diagnostics: ExperimentRunDiagnostics;
   warnings: string[];

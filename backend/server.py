@@ -41,6 +41,7 @@ from agent import (
     METHOD_DEFINITION_BY_ID,
     MODEL_PRESETS,
     SYSTEM_PROMPT,
+    _normalize_historical_method_bundle,
     _normalize_method_bundle,
     _drop_implausible_name_spans,
     build_extraction_system_prompt,
@@ -2632,7 +2633,7 @@ def _build_llm_prompt_snapshot(
     requested_system_prompt: str,
     *,
     label_profile: Literal["simple", "advanced"],
-    method_bundle: str = "audited",
+    method_bundle: str = "v2",
 ) -> dict[str, Any]:
     requested = str(requested_system_prompt or "")
     return {
@@ -2652,7 +2653,7 @@ def _build_method_prompt_snapshot(
     additional_constraints: str,
     method_verify: bool | None,
     label_profile: Literal["simple", "advanced"],
-    method_bundle: str = "audited",
+    method_bundle: str = "v2",
 ) -> dict[str, Any]:
     normalized_method_bundle = _normalize_method_bundle(method_bundle)
     method_definition = get_method_definition_by_id(
@@ -2841,7 +2842,7 @@ def _run_llm_for_document(
     chunk_size_chars: int,
     enable_suspicious_empty_retry: bool = True,
     progress_callback: Callable[[int, int], None] | None = None,
-    method_bundle: str = "audited",
+    method_bundle: str = "v2",
 ) -> tuple[
     list[CanonicalSpan],
     list[str],
@@ -3099,7 +3100,7 @@ def _run_method_for_document(
     progress_callback: Callable[[int, int], None] | None = None,
     runtime_progress_callback: Callable[[dict[str, object]], None] | None = None,
     timeout_seconds: float | None = None,
-    method_bundle: str = "audited",
+    method_bundle: str = "v2",
 ) -> tuple[
     list[CanonicalSpan],
     list[str],
@@ -3701,7 +3702,7 @@ class PromptLabRuntimeInput(BaseModel):
     fallback_reference_source: Literal["manual", "pre"] = "pre"
     label_profile: Literal["simple", "advanced"] = "simple"
     label_projection: Literal["native", "coarse_simple"] = "native"
-    method_bundle: Literal["legacy", "audited", "test"] = "audited"
+    method_bundle: Literal["v2"] = "v2"
     chunk_mode: Literal["auto", "off", "force"] = "off"
     chunk_size_chars: int = DEFAULT_CHUNK_SIZE_CHARS
 
@@ -3732,7 +3733,7 @@ class MethodsLabRuntimeInput(BaseModel):
     fallback_reference_source: Literal["manual", "pre"] = "pre"
     label_profile: Literal["simple", "advanced"] = "simple"
     label_projection: Literal["native", "coarse_simple"] = "native"
-    method_bundle: Literal["legacy", "audited", "test"] = "audited"
+    method_bundle: Literal["v2"] = "v2"
     chunk_mode: Literal["auto", "off", "force"] = "off"
     chunk_size_chars: int = DEFAULT_CHUNK_SIZE_CHARS
     task_timeout_seconds: float | None = None
@@ -4013,7 +4014,7 @@ def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
     fallback_reference_source = runtime["fallback_reference_source"]
     label_profile = str(runtime["label_profile"])
     label_projection = _normalize_label_projection(runtime.get("label_projection", "native"))
-    method_bundle = _normalize_method_bundle(runtime.get("method_bundle", "audited"))
+    method_bundle = _normalize_method_bundle(runtime.get("method_bundle", "v2"))
     chunk_mode = str(runtime["chunk_mode"])
     chunk_size_chars = int(runtime["chunk_size_chars"])
 

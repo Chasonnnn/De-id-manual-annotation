@@ -7,7 +7,7 @@ from typing import Literal
 import pytest
 from fastapi.testclient import TestClient
 
-from experiments_cli import _build_method_bundle_ab_summary, main
+from experiments_cli import _build_method_bundle_comparison_summary, main
 from models import CanonicalSpan, LLMConfidenceMetric
 from server import (
     _load_methods_lab_index,
@@ -386,7 +386,7 @@ def test_methods_cli_run_forwards_internal_method_bundle(monkeypatch, capsys):
         *,
         session_id: str = "default",
         run_async: bool = False,
-        method_bundle: str = "audited",
+        method_bundle: str = "v2",
     ):
         captured["session_id"] = session_id
         captured["run_async"] = run_async
@@ -412,60 +412,37 @@ def test_methods_cli_run_forwards_internal_method_bundle(monkeypatch, capsys):
             "--api-key",
             "request-key",
             "--method-bundle",
-            "legacy",
+            "v2",
         ]
     )
 
     assert exit_code == 0
     assert captured["session_id"] == "default"
     assert captured["run_async"] is False
-    assert captured["method_bundle"] == "legacy"
+    assert captured["method_bundle"] == "v2"
     assert "bundle-test" in capsys.readouterr().out
 
 
-def test_methods_cli_run_accepts_test_method_bundle(monkeypatch, capsys):
-    captured: dict[str, object] = {}
+@pytest.mark.parametrize("bundle", ["legacy", "audited", "stable", "test"])
+def test_methods_cli_rejects_old_method_bundle(bundle):
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "methods",
+                "--doc-id",
+                "c9c3cf4c",
+                "--method",
+                "Default=default",
+                "--model",
+                "Gemini Pro=google.gemini-3.1-pro-preview",
+                "--api-key",
+                "request-key",
+                "--method-bundle",
+                bundle,
+            ]
+        )
 
-    def fake_create_methods_lab_run(
-        body,
-        *,
-        session_id: str = "default",
-        run_async: bool = False,
-        method_bundle: str = "audited",
-    ):
-        captured["session_id"] = session_id
-        captured["run_async"] = run_async
-        captured["method_bundle"] = method_bundle
-        return {
-            "id": "run-test",
-            "status": "completed",
-            "name": "bundle-test",
-            "matrix": {"cells": []},
-        }
-
-    monkeypatch.setattr("experiments_cli.create_methods_lab_run", fake_create_methods_lab_run)
-
-    exit_code = main(
-        [
-            "methods",
-            "--doc-id",
-            "c9c3cf4c",
-            "--method",
-            "Default=default",
-            "--model",
-            "Gemini Pro=google.gemini-3.1-pro-preview",
-            "--api-key",
-            "request-key",
-            "--method-bundle",
-            "test",
-        ]
-    )
-
-    assert exit_code == 0
-    assert captured["session_id"] == "default"
-    assert captured["run_async"] is False
-    assert captured["method_bundle"] == "test"
-    assert "bundle-test" in capsys.readouterr().out
+    assert exc_info.value.code == 2
 
 
 def test_manifest_methods_run_forwards_internal_method_bundle(monkeypatch, tmp_path):
@@ -476,7 +453,7 @@ def test_manifest_methods_run_forwards_internal_method_bundle(monkeypatch, tmp_p
         *,
         session_id: str = "default",
         run_async: bool = False,
-        method_bundle: str = "audited",
+        method_bundle: str = "v2",
     ):
         captured["session_id"] = session_id
         captured["run_async"] = run_async
@@ -496,7 +473,7 @@ def test_manifest_methods_run_forwards_internal_method_bundle(monkeypatch, tmp_p
             [
                 "kind: methods_lab",
                 "session: default",
-                "method_bundle: legacy",
+                "method_bundle: v2",
                 "doc_ids:",
                 "  - c9c3cf4c",
                 "methods:",
@@ -518,13 +495,45 @@ def test_manifest_methods_run_forwards_internal_method_bundle(monkeypatch, tmp_p
     assert exit_code == 0
     assert captured["session_id"] == "default"
     assert captured["run_async"] is False
-    assert captured["method_bundle"] == "legacy"
+    assert captured["method_bundle"] == "v2"
 
 
-def test_build_method_bundle_ab_summary_reports_metric_and_stability_deltas():
-    legacy_run = {
-        "id": "legacy-run",
-        "name": "Legacy",
+@pytest.mark.parametrize("bundle", ["legacy", "audited", "stable", "test"])
+def test_manifest_methods_run_rejects_old_method_bundle(tmp_path, capsys, bundle):
+    manifest_path = tmp_path / "methods_manifest_invalid_bundle.yaml"
+    manifest_path.write_text(
+        "\n".join(
+            [
+                "kind: methods_lab",
+                "session: default",
+                f"method_bundle: {bundle}",
+                "doc_ids:",
+                "  - c9c3cf4c",
+                "methods:",
+                "  - id: method_1",
+                "    label: Default",
+                "    method_id: default",
+                "models:",
+                "  - id: model_1",
+                "    label: Codex",
+                "    model: openai.gpt-5.3-codex",
+                "runtime:",
+                "  api_key: request-key",
+            ]
+        )
+    )
+
+    exit_code = main(["run", str(manifest_path)])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "v2" in captured.err
+
+
+def test_build_method_bundle_comparison_summary_reports_metric_and_stability_deltas():
+    audited_run = {
+        "id": "audited-run",
+        "name": "Audited",
         "doc_ids": ["doc1", "doc2", "doc3"],
         "methods": [{"id": "method_1", "label": "Default", "method_id": "default"}],
         "models": [{"id": "model_1", "label": "Codex", "model": "openai.gpt-5.3-codex"}],
@@ -560,9 +569,9 @@ def test_build_method_bundle_ab_summary_reports_metric_and_stability_deltas():
             }
         },
     }
-    audited_run = {
-        "id": "audited-run",
-        "name": "Audited",
+    v2_run = {
+        "id": "v2-run",
+        "name": "V2",
         "doc_ids": ["doc1", "doc2", "doc3"],
         "methods": [{"id": "method_1", "label": "Default", "method_id": "default"}],
         "models": [{"id": "model_1", "label": "Codex", "model": "openai.gpt-5.3-codex"}],
@@ -597,32 +606,93 @@ def test_build_method_bundle_ab_summary_reports_metric_and_stability_deltas():
         },
     }
 
-    summary = _build_method_bundle_ab_summary(
-        legacy_run=legacy_run,
-        audited_run=audited_run,
+    summary = _build_method_bundle_comparison_summary(
+        baseline_bundle="audited",
+        baseline_run=audited_run,
+        candidate_bundle="v2",
+        candidate_run=v2_run,
     )
 
     bundle_stats = summary["bundles"]
-    assert bundle_stats["legacy"]["timeout_count"] == 1
-    assert bundle_stats["legacy"]["empty_content_truncation_count"] == 1
-    assert bundle_stats["audited"]["completed_count"] == 3
-    assert bundle_stats["audited"]["failed_count"] == 0
+    assert bundle_stats["audited"]["timeout_count"] == 1
+    assert bundle_stats["audited"]["empty_content_truncation_count"] == 1
+    assert bundle_stats["v2"]["completed_count"] == 3
+    assert bundle_stats["v2"]["failed_count"] == 0
 
     pair_summary = summary["pairs"][0]
     assert pair_summary["model"] == "openai.gpt-5.3-codex"
     assert pair_summary["method_id"] == "default"
-    assert pair_summary["delta_vs_legacy"]["micro_f1"] > 0.0
-    assert pair_summary["delta_vs_legacy"]["failed_count"] < 0
-    assert pair_summary["documents"]["doc2"]["legacy"]["status"] == "failed"
-    assert pair_summary["documents"]["doc2"]["audited"]["status"] == "completed"
+    assert pair_summary["delta_vs_audited"]["micro_f1"] > 0.0
+    assert pair_summary["delta_vs_audited"]["failed_count"] < 0
+    assert pair_summary["documents"]["doc2"]["audited"]["status"] == "failed"
+    assert pair_summary["documents"]["doc2"]["v2"]["status"] == "completed"
 
 
-def test_benchmark_method_bundles_writes_separate_artifacts(monkeypatch, tmp_path):
-    calls: list[str] = []
+def test_compare_method_runs_writes_artifacts_from_json_files(tmp_path):
+    baseline_path = tmp_path / "audited-run.json"
+    candidate_path = tmp_path / "v2-run.json"
+    for path, run_id, tp in (
+        (baseline_path, "audited-run", 1),
+        (candidate_path, "v2-run", 2),
+    ):
+        path.write_text(
+            json.dumps(
+                {
+                    "id": run_id,
+                    "name": run_id,
+                    "doc_ids": ["doc1"],
+                    "methods": [{"id": "method_1", "label": "Default", "method_id": "default"}],
+                    "models": [{"id": "model_1", "label": "Codex", "model": "openai.gpt-5.3-codex"}],
+                    "cells": {
+                        "model_1__method_1": {
+                            "id": "model_1__method_1",
+                            "model_id": "model_1",
+                            "method_id": "method_1",
+                            "documents": {
+                                "doc1": {
+                                    "status": "completed",
+                                    "metrics": {"micro": {"tp": tp, "fp": 0, "fn": 0}},
+                                    "updated_at": "2026-03-10T12:01:00+00:00",
+                                    "runtime_diagnostics": {"started_at": "2026-03-10T12:00:00+00:00"},
+                                }
+                            },
+                        }
+                    },
+                    "runtime": {"method_bundle": run_id.split("-")[0]},
+                }
+            )
+        )
+
+    output_dir = tmp_path / "compare-output"
+    exit_code = main(
+        [
+            "compare-method-runs",
+            "--baseline",
+            str(baseline_path),
+            "--candidate",
+            str(candidate_path),
+            "--baseline-label",
+            "audited",
+            "--candidate-label",
+            "v2",
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+
+    assert exit_code == 0
+    assert (output_dir / "methods-bundle-ab_audited.json").exists()
+    assert (output_dir / "methods-bundle-ab_v2.json").exists()
+    assert (output_dir / "methods-bundle-ab_comparison.json").exists()
+    assert (output_dir / "methods-bundle-ab_comparison.csv").exists()
+    assert (output_dir / "methods-bundle-ab_comparison.md").exists()
+
+
+def test_compare_method_runs_accepts_run_ids(monkeypatch, tmp_path):
     raw_runs = {
-        "legacy-run": {
-            "id": "legacy-run",
-            "name": "Legacy",
+        "audited-run": {
+            "id": "audited-run",
+            "name": "Audited",
             "doc_ids": ["doc1"],
             "methods": [{"id": "method_1", "label": "Default", "method_id": "default"}],
             "models": [{"id": "model_1", "label": "Codex", "model": "openai.gpt-5.3-codex"}],
@@ -641,10 +711,11 @@ def test_benchmark_method_bundles_writes_separate_artifacts(monkeypatch, tmp_pat
                     },
                 }
             },
+            "runtime": {"method_bundle": "audited"},
         },
-        "audited-run": {
-            "id": "audited-run",
-            "name": "Audited",
+        "v2-run": {
+            "id": "v2-run",
+            "name": "V2",
             "doc_ids": ["doc1"],
             "methods": [{"id": "method_1", "label": "Default", "method_id": "default"}],
             "models": [{"id": "model_1", "label": "Codex", "model": "openai.gpt-5.3-codex"}],
@@ -663,52 +734,30 @@ def test_benchmark_method_bundles_writes_separate_artifacts(monkeypatch, tmp_pat
                     },
                 }
             },
+            "runtime": {"method_bundle": "v2"},
         },
     }
 
-    def fake_create_methods_lab_run(
-        body,
-        *,
-        session_id: str = "default",
-        run_async: bool = False,
-        method_bundle: str = "audited",
-    ):
-        calls.append(method_bundle)
-        run_id = "legacy-run" if method_bundle == "legacy" else "audited-run"
-        return {"id": run_id, "status": "completed", "name": body.name or "benchmark", "matrix": {"cells": []}}
-
-    monkeypatch.setattr("experiments_cli.create_methods_lab_run", fake_create_methods_lab_run)
     monkeypatch.setattr(
         "experiments_cli._load_methods_lab_run",
         lambda run_id, session_id="default": raw_runs.get(run_id),
     )
 
-    output_dir = tmp_path / "bundle-benchmark"
     exit_code = main(
         [
-            "benchmark-method-bundles",
-            "--name",
-            "Simple Audit",
-            "--doc-id",
-            "c9c3cf4c",
-            "--method",
-            "Default=default",
-            "--model",
-            "Codex=openai.gpt-5.3-codex",
-            "--api-key",
-            "request-key",
-            "--output-dir",
-            str(output_dir),
+            "compare-method-runs",
+            "--baseline",
+            "audited-run",
+            "--candidate",
+            "v2-run",
+            "--baseline-label",
+            "audited",
+            "--candidate-label",
+            "v2",
         ]
     )
 
     assert exit_code == 0
-    assert calls == ["legacy", "audited"]
-    assert (output_dir / "simple-audit_legacy.json").exists()
-    assert (output_dir / "simple-audit_audited.json").exists()
-    assert (output_dir / "simple-audit_comparison.json").exists()
-    assert (output_dir / "simple-audit_comparison.csv").exists()
-    assert (output_dir / "simple-audit_comparison.md").exists()
 
 
 def test_manifest_prompt_run_accepts_folder_ids(client, monkeypatch, tmp_path):
@@ -1380,7 +1429,7 @@ def test_manifest_doc_ids_are_normalized_to_strings(tmp_path):
     assert kind == "methods_lab"
     assert session_id == "default"
     assert body.doc_ids == ["26028249"]
-    assert method_bundle == "audited"
+    assert method_bundle == "v2"
 
 
 def test_list_commands_emit_machine_readable_json(client, capsys):

@@ -211,7 +211,7 @@ def resolve_prompt_lab_runtime(runtime: Any) -> dict[str, object]:
     chunk_size_chars = srv._normalize_chunk_size(runtime.chunk_size_chars)
     label_profile = srv._normalize_label_profile(runtime.label_profile)
     label_projection = srv._normalize_label_projection(runtime.label_projection)
-    method_bundle = srv._normalize_method_bundle(getattr(runtime, "method_bundle", "audited"))
+    method_bundle = srv._normalize_method_bundle(getattr(runtime, "method_bundle", "v2"))
     return {
         "api_key": api_key,
         "api_base": api_base,
@@ -231,7 +231,7 @@ def validate_prompt_lab_request(
     body: Any,
     session_id: str = "default",
     *,
-    method_bundle: str = "audited",
+    method_bundle: str = "v2",
 ):
     srv = _server()
     cfg = srv._load_config()
@@ -781,7 +781,7 @@ def build_prompt_lab_run_summary(run: dict) -> dict:
     status = str(run.get("status", ""))
     runtime_raw = run.get("runtime", {})
     runtime = runtime_raw if isinstance(runtime_raw, dict) else {}
-    method_bundle = srv._normalize_method_bundle(runtime.get("method_bundle", "audited"))
+    method_bundle = srv._normalize_historical_method_bundle(runtime.get("method_bundle", "v2"))
     for cell in cells:
         completed += int(cell.get("completed_docs", 0)) + int(cell.get("failed_docs", 0))
         failed += int(cell.get("failed_docs", 0))
@@ -826,7 +826,7 @@ def build_prompt_lab_run_detail(run: dict) -> dict:
             "fallback_reference_source": runtime.get("fallback_reference_source", "pre"),
             "label_profile": runtime.get("label_profile", "simple"),
             "label_projection": runtime.get("label_projection", "native"),
-            "method_bundle": runtime.get("method_bundle", "audited"),
+            "method_bundle": runtime.get("method_bundle", "v2"),
             "api_base": runtime.get("api_base", ""),
             "chunk_mode": runtime.get("chunk_mode", "off"),
             "chunk_size_chars": runtime.get("chunk_size_chars", srv.DEFAULT_CHUNK_SIZE_CHARS),
@@ -890,7 +890,7 @@ def run_prompt_lab_job(
     run_id: str,
     session_id: str,
     runtime: dict[str, object],
-    method_bundle: str = "audited",
+    method_bundle: str = "v2",
 ):
     srv = _server()
     cancel_event = srv._get_prompt_lab_cancel_event(run_id, session_id)
@@ -902,7 +902,7 @@ def run_prompt_lab_job(
     fallback_reference_source = str(runtime["fallback_reference_source"])
     label_profile = str(runtime["label_profile"])
     label_projection = srv._normalize_label_projection(runtime.get("label_projection", "native"))
-    method_bundle = srv._normalize_method_bundle(runtime.get("method_bundle", "audited"))
+    method_bundle = srv._normalize_historical_method_bundle(runtime.get("method_bundle", "v2"))
     chunk_mode = str(runtime["chunk_mode"])
     chunk_size_chars = int(runtime["chunk_size_chars"])
     with srv._prompt_lab_lock:
@@ -1233,7 +1233,7 @@ def resolve_methods_lab_runtime(runtime: Any) -> dict[str, object]:
     chunk_size_chars = srv._normalize_chunk_size(runtime.chunk_size_chars)
     label_profile = srv._normalize_label_profile(runtime.label_profile)
     label_projection = srv._normalize_label_projection(runtime.label_projection)
-    method_bundle = srv._normalize_method_bundle(getattr(runtime, "method_bundle", "audited"))
+    method_bundle = srv._normalize_method_bundle(getattr(runtime, "method_bundle", "v2"))
     task_timeout_seconds = srv._safe_float(getattr(runtime, "task_timeout_seconds", None))
     if task_timeout_seconds is not None and task_timeout_seconds <= 0:
         raise HTTPException(status_code=400, detail="task_timeout_seconds must be greater than 0")
@@ -1257,7 +1257,7 @@ def validate_methods_lab_request(
     body: Any,
     session_id: str = "default",
     *,
-    method_bundle: str = "audited",
+    method_bundle: str = "v2",
 ):
     srv = _server()
     cfg = srv._load_config()
@@ -1612,7 +1612,7 @@ def build_methods_lab_run_summary(run: dict) -> dict:
     status = str(run.get("status", ""))
     runtime_raw = run.get("runtime", {})
     runtime = runtime_raw if isinstance(runtime_raw, dict) else {}
-    method_bundle = srv._normalize_method_bundle(runtime.get("method_bundle", "audited"))
+    method_bundle = srv._normalize_historical_method_bundle(runtime.get("method_bundle", "v2"))
     for cell in cells:
         completed += int(cell.get("completed_docs", 0)) + int(cell.get("failed_docs", 0))
         failed += int(cell.get("failed_docs", 0))
@@ -1657,7 +1657,7 @@ def build_methods_lab_run_detail(run: dict) -> dict:
             "fallback_reference_source": runtime.get("fallback_reference_source", "pre"),
             "label_profile": runtime.get("label_profile", "simple"),
             "label_projection": runtime.get("label_projection", "native"),
-            "method_bundle": runtime.get("method_bundle", "audited"),
+            "method_bundle": runtime.get("method_bundle", "v2"),
             "api_base": runtime.get("api_base", ""),
             "chunk_mode": runtime.get("chunk_mode", "off"),
             "chunk_size_chars": runtime.get("chunk_size_chars", srv.DEFAULT_CHUNK_SIZE_CHARS),
@@ -1736,7 +1736,7 @@ def run_methods_lab_job(
     run_id: str,
     session_id: str,
     runtime: dict[str, object],
-    method_bundle: str = "audited",
+    method_bundle: str = "v2",
 ):
     srv = _server()
     cancel_event = srv._get_methods_lab_cancel_event(run_id, session_id)

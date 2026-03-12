@@ -99,7 +99,7 @@ describe("MethodsLabRunForm", () => {
     expect((screen.getByLabelText("Match") as HTMLSelectElement).value).toBe("overlap");
   });
 
-  it("defaults the methods lab method bundle to audited", async () => {
+  it("defaults the methods lab method bundle to v2", async () => {
     render(
       <MethodsLabRunForm
         documents={documents}
@@ -116,7 +116,7 @@ describe("MethodsLabRunForm", () => {
       expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
     });
 
-    expect((screen.getByLabelText("Method Bundle") as HTMLSelectElement).value).toBe("audited");
+    expect((screen.getByLabelText("Method Bundle") as HTMLSelectElement).value).toBe("v2");
   });
 
   it("submits selected folder ids separately from explicit doc ids", async () => {
@@ -220,7 +220,7 @@ describe("MethodsLabRunForm", () => {
     });
   });
 
-  it("submits the selected methods lab method bundle", async () => {
+  it("submits the v2 method bundle", async () => {
     const onRun = vi.fn().mockResolvedValue(undefined);
 
     render(
@@ -239,32 +239,27 @@ describe("MethodsLabRunForm", () => {
       expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
     });
 
-    fireEvent.change(screen.getByLabelText("Method Bundle"), {
-      target: { value: "legacy" },
-    });
     fireEvent.click(screen.getByRole("button", { name: "Run Methods Lab" }));
 
     await waitFor(() => {
       expect(onRun).toHaveBeenCalledWith(
         expect.objectContaining({
           runtime: expect.objectContaining({
-            method_bundle: "legacy",
+            method_bundle: "v2",
           }),
         }),
       );
     });
   });
 
-  it("submits the test methods lab method bundle", async () => {
-    const onRun = vi.fn().mockResolvedValue(undefined);
-
+  it("exposes only the v2 method bundle", async () => {
     render(
       <MethodsLabRunForm
         documents={documents}
         folders={[]}
         selectedDocumentId="doc-1"
         methods={[]}
-        onRun={onRun}
+        onRun={vi.fn()}
         running={false}
         concurrencyMax={12}
       />,
@@ -274,19 +269,7 @@ describe("MethodsLabRunForm", () => {
       expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
     });
 
-    fireEvent.change(screen.getByLabelText("Method Bundle"), {
-      target: { value: "test" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Run Methods Lab" }));
-
-    await waitFor(() => {
-      expect(onRun).toHaveBeenCalledWith(
-        expect.objectContaining({
-          runtime: expect.objectContaining({
-            method_bundle: "test",
-          }),
-        }),
-      );
-    });
+    const select = screen.getByLabelText("Method Bundle") as HTMLSelectElement;
+    expect(Array.from(select.options).map((option) => option.value)).toEqual(["v2"]);
   });
 });

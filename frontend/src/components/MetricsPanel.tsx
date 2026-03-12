@@ -20,14 +20,6 @@ type SourceOption = Props["sourceOptions"][number];
 type PrimaryMetrics = ReturnType<typeof getPrimaryMetrics>["primary"];
 type ExactMetrics = ReturnType<typeof getPrimaryMetrics>["exact"];
 
-const REFRESH_BUTTON_STYLE = {
-  fontSize: 11,
-  padding: "2px 8px",
-  border: "1px solid #ccc",
-  borderRadius: 3,
-  background: "#fff",
-  cursor: "pointer",
-} as const;
 
 const SECTION_ROW_STYLE = { display: "flex", gap: 24 } as const;
 const LABEL_SWATCH_STYLE = {
@@ -85,7 +77,7 @@ function MetricsHeader({
             e.stopPropagation();
             onRefresh();
           }}
-          style={REFRESH_BUTTON_STYLE}
+          className="panel-refresh-btn"
         >
           Refresh
         </button>
@@ -207,6 +199,12 @@ function ExactDiagnostic({
   );
 }
 
+function scoreClass(value: number): string {
+  if (value >= 0.8) return "score-good";
+  if (value >= 0.5) return "score-fair";
+  return "score-poor";
+}
+
 function MetricCards({
   primary,
   usingOverlap,
@@ -214,25 +212,50 @@ function MetricCards({
   primary: PrimaryMetrics;
   usingOverlap: boolean;
 }) {
-  const cardLabels = [
-    { key: "micro.precision", label: "Micro P", value: primary?.micro.precision ?? 0 },
-    { key: "micro.recall", label: "Micro R", value: primary?.micro.recall ?? 0 },
-    { key: "micro.f1", label: "Micro F1", value: primary?.micro.f1 ?? 0 },
-    { key: "macro.precision", label: "Macro P", value: primary?.macro.precision ?? 0 },
-    { key: "macro.recall", label: "Macro R", value: primary?.macro.recall ?? 0 },
-    { key: "macro.f1", label: "Macro F1", value: primary?.macro.f1 ?? 0 },
-  ];
+  const microF1 = primary?.micro.f1 ?? 0;
+  const macroF1 = primary?.macro.f1 ?? 0;
 
   return (
     <div className="metric-cards">
-      {cardLabels.map((card) => (
-        <div key={card.key} className="metric-card">
-          <div className="card-label">
-            {getPrimaryMetricLabel(card.label, usingOverlap)}
-          </div>
-          <div className="card-value">{formatPercent(card.value)}</div>
+      <div className={`metric-card metric-card-hero ${scoreClass(microF1)}`}>
+        <div className="card-label">
+          {getPrimaryMetricLabel("Micro F1", usingOverlap)}
         </div>
-      ))}
+        <div className="card-value">{formatPercent(microF1)}</div>
+        <div className="card-sub">
+          TP {primary?.micro.tp ?? 0} / FP {primary?.micro.fp ?? 0} / FN {primary?.micro.fn ?? 0}
+        </div>
+      </div>
+      <div className="metric-card">
+        <div className="card-label">
+          {getPrimaryMetricLabel("Micro P", usingOverlap)}
+        </div>
+        <div className="card-value">{formatPercent(primary?.micro.precision ?? 0)}</div>
+      </div>
+      <div className="metric-card">
+        <div className="card-label">
+          {getPrimaryMetricLabel("Micro R", usingOverlap)}
+        </div>
+        <div className="card-value">{formatPercent(primary?.micro.recall ?? 0)}</div>
+      </div>
+      <div className={`metric-card metric-card-hero ${scoreClass(macroF1)}`}>
+        <div className="card-label">
+          {getPrimaryMetricLabel("Macro F1", usingOverlap)}
+        </div>
+        <div className="card-value">{formatPercent(macroF1)}</div>
+      </div>
+      <div className="metric-card metric-card-secondary">
+        <div className="card-label">
+          {getPrimaryMetricLabel("Macro P", usingOverlap)}
+        </div>
+        <div className="card-value">{formatPercent(primary?.macro.precision ?? 0)}</div>
+      </div>
+      <div className="metric-card metric-card-secondary">
+        <div className="card-label">
+          {getPrimaryMetricLabel("Macro R", usingOverlap)}
+        </div>
+        <div className="card-value">{formatPercent(primary?.macro.recall ?? 0)}</div>
+      </div>
     </div>
   );
 }
@@ -308,8 +331,8 @@ function ConfusionMatrix({
                   key={`${rowIndex}-${columnIndex}`}
                   className="confusion-cell"
                   style={{
-                    background: `rgba(74, 108, 247, ${intensity * 0.8})`,
-                    color: intensity > 0.5 ? "#fff" : "#333",
+                    background: `color-mix(in srgb, var(--app-primary-light) ${Math.round(intensity * 80)}%, transparent)`,
+                    color: intensity > 0.5 ? "#fff" : "var(--app-text)",
                   }}
                 >
                   {value}
@@ -443,8 +466,9 @@ export default function MetricsPanel({
         <div className="metrics-body">
           {loading && <div className="loading">Computing metrics...</div>}
           {!loading && !metrics && (
-            <div className="dashboard-subtitle">
-              No per-document metrics yet. Click <strong>Refresh</strong>.
+            <div className="pane-empty">
+              <div className="pane-empty-title">No per-document metrics yet</div>
+              <div className="pane-empty-hint">Select a document and click Refresh to compute metrics.</div>
             </div>
           )}
           {metrics && (

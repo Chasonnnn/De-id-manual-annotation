@@ -1,5 +1,5 @@
 import type { ComponentProps } from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import Sidebar from "./Sidebar";
@@ -156,21 +156,26 @@ describe("Sidebar", () => {
 
   it("creates top-level folders and nested subfolders from prompt actions", () => {
     const onCreateFolder = vi.fn();
-    const promptSpy = vi
-      .spyOn(window, "prompt")
-      .mockReturnValueOnce("Research Batch")
-      .mockReturnValueOnce("Reviewed");
 
     renderSidebar({ onCreateFolder });
 
     fireEvent.click(screen.getByRole("button", { name: "New Folder" }));
+    let dialog = screen.getByRole("dialog");
+    fireEvent.change(within(dialog).getByRole("textbox"), {
+      target: { value: "Research Batch" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+
     const subfolderButtons = screen.getAllByRole("button", { name: "New" });
     fireEvent.click(subfolderButtons[0]!);
+    dialog = screen.getByRole("dialog");
+    fireEvent.change(within(dialog).getByRole("textbox"), {
+      target: { value: "Reviewed" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create" }));
 
     expect(onCreateFolder).toHaveBeenNthCalledWith(1, "Research Batch", null);
     expect(onCreateFolder).toHaveBeenNthCalledWith(2, "Reviewed", "folder-import");
-
-    promptSpy.mockRestore();
   });
 
   it("triggers the folder prune action", () => {

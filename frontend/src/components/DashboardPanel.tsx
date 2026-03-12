@@ -6,6 +6,12 @@ import {
   getPrimaryMetricLabel,
 } from "../metricPresentation";
 
+function scoreClass(value: number): string {
+  if (value >= 0.8) return "score-good";
+  if (value >= 0.5) return "score-fair";
+  return "score-poor";
+}
+
 interface Props {
   dashboard: DashboardMetricsResult | null;
   loading: boolean;
@@ -39,17 +45,10 @@ export default function DashboardPanel({
         <span>Dashboard {collapsed ? "(click to expand)" : ""}</span>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <button
+            className="panel-refresh-btn"
             onClick={(e) => {
               e.stopPropagation();
               onRefresh();
-            }}
-            style={{
-              fontSize: 11,
-              padding: "2px 8px",
-              border: "1px solid #ccc",
-              borderRadius: 3,
-              background: "#fff",
-              cursor: "pointer",
             }}
           >
             Refresh
@@ -75,13 +74,21 @@ export default function DashboardPanel({
               )}
 
               <div className="metric-cards">
-                <div className="metric-card">
-                  <div className="card-label">Documents</div>
-                  <div className="card-value">{dashboard.documents_compared}</div>
-                  <div className="card-sub">
-                    of {dashboard.total_documents} uploaded
-                  </div>
-                </div>
+                {(() => {
+                  const f1 = primaryMicro?.f1 ?? dashboard.micro.f1;
+                  return (
+                    <div className={`metric-card metric-card-hero ${scoreClass(f1)}`}>
+                      <div className="card-label">
+                        {getPrimaryMetricLabel("Global F1", usingOverlap)}
+                      </div>
+                      <div className="card-value">{fmtPct(f1)}</div>
+                      <div className="card-sub">
+                        TP {primaryMicro?.tp ?? dashboard.micro.tp} / FP {primaryMicro?.fp ?? dashboard.micro.fp} / FN{" "}
+                        {primaryMicro?.fn ?? dashboard.micro.fn}
+                      </div>
+                    </div>
+                  );
+                })()}
                 <div className="metric-card">
                   <div className="card-label">
                     {getPrimaryMetricLabel("Global Precision", usingOverlap)}
@@ -94,17 +101,14 @@ export default function DashboardPanel({
                   </div>
                   <div className="card-value">{fmtPct(primaryMicro?.recall ?? dashboard.micro.recall)}</div>
                 </div>
-                <div className="metric-card">
-                  <div className="card-label">
-                    {getPrimaryMetricLabel("Global F1", usingOverlap)}
-                  </div>
-                  <div className="card-value">{fmtPct(primaryMicro?.f1 ?? dashboard.micro.f1)}</div>
+                <div className="metric-card metric-card-secondary">
+                  <div className="card-label">Documents</div>
+                  <div className="card-value">{dashboard.documents_compared}</div>
                   <div className="card-sub">
-                    TP {primaryMicro?.tp ?? dashboard.micro.tp} / FP {primaryMicro?.fp ?? dashboard.micro.fp} / FN{" "}
-                    {primaryMicro?.fn ?? dashboard.micro.fn}
+                    of {dashboard.total_documents} uploaded
                   </div>
                 </div>
-                <div className="metric-card">
+                <div className="metric-card metric-card-secondary">
                   <div className="card-label">LLM Mean Confidence</div>
                   <div className="card-value">
                     {fmtConfidence(dashboard.llm_confidence_summary.mean_confidence)}
@@ -113,7 +117,7 @@ export default function DashboardPanel({
                     docs with score: {dashboard.llm_confidence_summary.documents_with_confidence}
                   </div>
                 </div>
-                <div className="metric-card">
+                <div className="metric-card metric-card-secondary">
                   <div className="card-label">Confidence Bands</div>
                   <div className="card-sub">
                     H {dashboard.llm_confidence_summary.band_counts.high} / M{" "}

@@ -229,6 +229,10 @@ def _spans_payload(items: list[dict[str, object]]) -> str:
     return json.dumps({"spans": items})
 
 
+def _matches_payload(items: list[dict[str, object]]) -> str:
+    return json.dumps({"matches": items})
+
+
 class TestRunLLM:
     @patch("agent.completion")
     def test_parses_valid_json(self, mock_completion):
@@ -581,7 +585,7 @@ class TestRunLLM:
 
         call_kwargs = mock_completion.call_args
         assert call_kwargs.kwargs["timeout"] == pytest.approx(60.0)
-        assert call_kwargs.kwargs["max_tokens"] == 4096
+        assert call_kwargs.kwargs["max_tokens"] == 2048
 
     @patch("agent.completion")
     def test_extraction_clamps_timeout_to_explicit_budget(self, mock_completion):
@@ -596,7 +600,7 @@ class TestRunLLM:
 
         call_kwargs = mock_completion.call_args
         assert call_kwargs.kwargs["timeout"] == pytest.approx(15.0)
-        assert call_kwargs.kwargs["max_tokens"] == 4096
+        assert call_kwargs.kwargs["max_tokens"] == 2048
 
     @patch("agent.completion")
     def test_default_model_uses_litellm_prefix(self, mock_completion):
@@ -619,7 +623,7 @@ class TestRunLLM:
         assert call_kwargs.kwargs["model"] == "anthropic/claude-sonnet-4-20250514"
 
     @patch("agent.completion")
-    def test_openai_reasoning_effort_is_passed(self, mock_completion):
+    def test_v2_ignores_requested_reasoning_effort(self, mock_completion):
         mock_completion.return_value = _mock_completion_response('{"spans":[]}')
         run_llm_with_metadata(
             text="text",
@@ -628,7 +632,8 @@ class TestRunLLM:
             reasoning_effort="xhigh",
         )
         call_kwargs = mock_completion.call_args
-        assert call_kwargs.kwargs["reasoning_effort"] == "xhigh"
+        assert "reasoning_effort" not in call_kwargs.kwargs
+        assert "extra_body" not in call_kwargs.kwargs
 
     @patch("agent.completion")
     def test_drops_implausible_name_spans_even_with_valid_offsets(self, mock_completion):
@@ -682,7 +687,7 @@ class TestRunLLM:
         assert any("implausible NAME span" in warning for warning in result.warnings)
 
     @patch("agent.completion")
-    def test_anthropic_thinking_is_passed(self, mock_completion):
+    def test_v2_ignores_requested_anthropic_thinking(self, mock_completion):
         mock_completion.return_value = _mock_completion_response('{"spans":[]}')
         run_llm_with_metadata(
             text="text",
@@ -693,9 +698,9 @@ class TestRunLLM:
             temperature=1.0,
         )
         call_kwargs = mock_completion.call_args
-        assert call_kwargs.kwargs["thinking"]["type"] == "enabled"
-        assert call_kwargs.kwargs["thinking"]["budget_tokens"] == 2048
-        assert call_kwargs.kwargs["max_tokens"] > call_kwargs.kwargs["thinking"]["budget_tokens"]
+        assert "thinking" not in call_kwargs.kwargs
+        assert "extra_body" not in call_kwargs.kwargs
+        assert call_kwargs.kwargs["max_tokens"] == 2048
 
     @patch("agent.completion")
     def test_unsupported_advanced_params_raise_error(self, mock_completion):
@@ -770,7 +775,7 @@ class TestRunLLM:
         assert call_kwargs.kwargs["model"] == "openai/google.gemini-3.1-pro-preview"
 
     @patch("agent.completion")
-    def test_gateway_reasoning_passed_via_extra_body(self, mock_completion):
+    def test_v2_gateway_ignores_requested_reasoning_effort(self, mock_completion):
         mock_completion.return_value = _mock_completion_response('{"spans":[]}')
         run_llm_with_metadata(
             text="text",
@@ -781,10 +786,10 @@ class TestRunLLM:
         )
         call_kwargs = mock_completion.call_args
         assert "reasoning_effort" not in call_kwargs.kwargs
-        assert call_kwargs.kwargs["extra_body"]["reasoning_effort"] == "xhigh"
+        assert "extra_body" not in call_kwargs.kwargs
 
     @patch("agent.completion")
-    def test_gateway_thinking_passed_via_extra_body(self, mock_completion):
+    def test_v2_gateway_ignores_requested_thinking(self, mock_completion):
         mock_completion.return_value = _mock_completion_response('{"spans":[]}')
         result = run_llm_with_metadata(
             text="text",
@@ -798,15 +803,11 @@ class TestRunLLM:
         call_kwargs = mock_completion.call_args
         assert "thinking" not in call_kwargs.kwargs
         assert call_kwargs.kwargs["temperature"] == 1.0
-        assert call_kwargs.kwargs["extra_body"]["thinking"]["type"] == "enabled"
-        assert (
-            call_kwargs.kwargs["extra_body"]["max_tokens"]
-            > call_kwargs.kwargs["extra_body"]["thinking"]["budget_tokens"]
-        )
+        assert "extra_body" not in call_kwargs.kwargs
         assert result.spans == []
 
     @patch("agent.completion")
-    def test_gateway_thinking_forces_temperature_one(self, mock_completion):
+    def test_v2_gateway_does_not_force_temperature_for_ignored_thinking(self, mock_completion):
         mock_completion.return_value = _mock_completion_response('{"spans":[]}')
         result = run_llm_with_metadata(
             text="text",
@@ -819,8 +820,8 @@ class TestRunLLM:
         )
 
         call_kwargs = mock_completion.call_args
-        assert call_kwargs.kwargs["temperature"] == 1.0
-        assert any(
+        assert call_kwargs.kwargs["temperature"] == 0.0
+        assert not any(
             "overriding requested temperature to 1.0" in warning
             for warning in result.warnings
         )
@@ -840,10 +841,12 @@ class TestRunLLM:
             )
 
         call_kwargs = mock_completion.call_args
-        assert call_kwargs.kwargs["thinking"]["type"] == "enabled"
+        assert "thinking" not in call_kwargs.kwargs
 
     @patch("agent.completion")
-    def test_openai_model_enables_logprobs_and_computes_confidence(self, mock_completion):
+    def test_v2_skips_logprobs_probe_but_still_computes_confidence_when_present(
+        self, mock_completion
+    ):
         mock_completion.return_value = _mock_completion_response(
             '{"spans":[]}', token_logprobs=[-0.1, -0.2, -0.3]
         )
@@ -853,7 +856,7 @@ class TestRunLLM:
             model="openai/gpt-4o",
         )
         call_kwargs = mock_completion.call_args
-        assert call_kwargs.kwargs["logprobs"] is True
+        assert "logprobs" not in call_kwargs.kwargs
         assert result.llm_confidence.available is True
         assert result.llm_confidence.reason == "ok"
         assert result.llm_confidence.token_count == 3
@@ -886,7 +889,7 @@ class TestRunLLM:
         assert result.llm_confidence.available is False
         assert result.llm_confidence.reason == "missing_logprobs"
         assert result.llm_confidence.band == "na"
-        assert any("did not include token logprobs" in warning for warning in result.warnings)
+        assert not any("did not include token logprobs" in warning for warning in result.warnings)
 
     @patch("agent.completion")
     def test_openai_missing_logprobs_uses_usage_completion_tokens(self, mock_completion):
@@ -903,25 +906,20 @@ class TestRunLLM:
         assert result.llm_confidence.token_count == 42
 
     @patch("agent.completion")
-    def test_openai_logprobs_fallback_retries_without_param(self, mock_completion):
-        mock_completion.side_effect = [
-            Exception("UnsupportedParamsError: openai does not support parameters: ['logprobs']"),
-            _mock_completion_response('{"spans":[]}'),
-        ]
+    def test_v2_never_probes_logprobs(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
         result = run_llm_with_metadata(
             text="text",
             api_key="k",
             model="openai/gpt-4o",
         )
         assert result.spans == []
-        first_call = mock_completion.call_args_list[0].kwargs
-        second_call = mock_completion.call_args_list[1].kwargs
-        assert first_call["logprobs"] is True
-        assert "logprobs" not in second_call
-        assert any("rejected logprobs" in warning for warning in result.warnings)
+        assert len(mock_completion.call_args_list) == 1
+        assert "logprobs" not in mock_completion.call_args.kwargs
+        assert not any("rejected logprobs" in warning for warning in result.warnings)
 
     @patch("agent.completion")
-    def test_openai_gpt5_family_attempts_logprobs(self, mock_completion):
+    def test_v2_gpt5_family_skips_logprobs_probe(self, mock_completion):
         mock_completion.return_value = _mock_completion_response(
             '{"spans":[]}', token_logprobs=[-0.2, -0.1]
         )
@@ -931,12 +929,12 @@ class TestRunLLM:
             model="openai.gpt-5.3-codex",
         )
         call_kwargs = mock_completion.call_args
-        assert call_kwargs.kwargs["logprobs"] is True
+        assert "logprobs" not in call_kwargs.kwargs
         assert result.llm_confidence.available is True
         assert result.llm_confidence.reason == "ok"
 
     @patch("agent.completion")
-    def test_openai_gpt5_chat_skips_logprobs_probe(self, mock_completion):
+    def test_v2_gpt5_chat_skips_logprobs_probe_without_warning(self, mock_completion):
         mock_completion.return_value = _mock_completion_response('{"spans":[]}')
         result = run_llm_with_metadata(
             text="text",
@@ -946,10 +944,15 @@ class TestRunLLM:
         )
         call_kwargs = mock_completion.call_args
         assert "logprobs" not in call_kwargs.kwargs
-        assert any("currently unavailable for model 'openai.gpt-5.2-chat'" in warning for warning in result.warnings)
+        assert not any(
+            "currently unavailable for model 'openai.gpt-5.2-chat'" in warning
+            for warning in result.warnings
+        )
 
     @patch("agent.completion")
-    def test_openai_gpt5_chat_with_none_still_skips_logprobs_probe(self, mock_completion):
+    def test_v2_gpt5_chat_with_none_still_skips_logprobs_probe_without_warning(
+        self, mock_completion
+    ):
         mock_completion.return_value = _mock_completion_response('{"spans":[]}')
         result = run_llm_with_metadata(
             text="text",
@@ -961,7 +964,10 @@ class TestRunLLM:
         assert "logprobs" not in call_kwargs.kwargs
         assert result.llm_confidence.available is False
         assert result.llm_confidence.reason == "missing_logprobs"
-        assert any("currently unavailable for model 'openai.gpt-5.2-chat'" in warning for warning in result.warnings)
+        assert not any(
+            "currently unavailable for model 'openai.gpt-5.2-chat'" in warning
+            for warning in result.warnings
+        )
 
     @patch("agent.completion")
     def test_response_format_fallback_retries_without_schema(self, mock_completion):
@@ -1094,9 +1100,9 @@ class TestRunLLM:
         )
 
         assert calls[0]["timeout"] == pytest.approx(60.0)
-        assert calls[0]["max_tokens"] == 4096
+        assert calls[0]["max_tokens"] == 2048
         assert calls[1]["timeout"] == pytest.approx(30.0)
-        assert calls[1]["max_tokens"] == 1024
+        assert calls[1]["max_tokens"] == 768
 
     @patch("agent.completion")
     def test_parse_failure_repair_retry_scales_budget_for_large_truncated_output(
@@ -1128,9 +1134,9 @@ class TestRunLLM:
             model="openai/gpt-4o",
         )
 
-        assert calls[0]["max_tokens"] == 4096
+        assert calls[0]["max_tokens"] == 2048
         assert calls[1]["timeout"] == pytest.approx(30.0)
-        assert calls[1]["max_tokens"] > 1024
+        assert calls[1]["max_tokens"] > 768
         repair_messages = calls[1]["messages"]
         assert "INVALID_OUTPUT:" in repair_messages[1]["content"]
         assert "TRANSCRIPT:" not in repair_messages[1]["content"]
@@ -1177,6 +1183,125 @@ class TestRunLLM:
                 api_key="k",
                 model="openai/gpt-4o",
             )
+
+    @patch("agent.completion")
+    def test_parse_failure_uses_one_repair_retry_for_matches_contract(self, mock_completion):
+        mock_completion.side_effect = [
+            _mock_completion_response("not valid json"),
+            _mock_completion_response(
+                _matches_payload([{"entity_type": "NAME", "text": "John"}])
+            ),
+        ]
+
+        result = run_llm_with_metadata(
+            text="Hi John!",
+            api_key="k",
+            model="openai/gpt-4o",
+            method_bundle="v2",
+            requested_labels=["NAME"],
+            response_contract="matches",
+            match_resolution_policy="unique_or_warn",
+        )
+
+        assert len(result.spans) == 1
+        assert result.spans[0].text == "John"
+        assert mock_completion.call_count == 2
+        assert any("repair retry" in warning for warning in result.warnings)
+
+    @patch("agent.completion")
+    def test_matches_contract_unique_resolution_returns_single_span(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response(
+            _matches_payload([{"entity_type": "NAME", "text": "Anna"}])
+        )
+
+        result = run_llm_with_metadata(
+            text="Hello Anna.",
+            api_key="k",
+            model="openai/gpt-4o",
+            method_bundle="v2",
+            requested_labels=["NAME"],
+            response_contract="matches",
+            match_resolution_policy="unique_or_warn",
+        )
+
+        assert [(span.start, span.end, span.label, span.text) for span in result.spans] == [
+            (6, 10, "NAME", "Anna")
+        ]
+
+    @patch("agent.completion")
+    def test_matches_contract_ambiguous_text_drops_with_warning(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response(
+            _matches_payload([{"entity_type": "NAME", "text": "Anna"}])
+        )
+
+        result = run_llm_with_metadata(
+            text="Anna met Anna.",
+            api_key="k",
+            model="openai/gpt-4o",
+            method_bundle="v2",
+            requested_labels=["NAME"],
+            response_contract="matches",
+            match_resolution_policy="unique_or_warn",
+        )
+
+        assert result.spans == []
+        assert any("Ambiguous match" in warning for warning in result.warnings)
+
+    @patch("agent.completion")
+    def test_v2_bundle_forces_non_reasoning_request_profile_and_lower_token_budget(
+        self, mock_completion
+    ):
+        mock_completion.return_value = _mock_completion_response(_matches_payload([]))
+
+        result = run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            model="openai.gpt-5.3-codex",
+            method_bundle="v2",
+            requested_labels=["NAME"],
+            response_contract="matches",
+            reasoning_effort="xhigh",
+            anthropic_thinking=True,
+            anthropic_thinking_budget_tokens=2048,
+        )
+
+        assert result.spans == []
+        call_kwargs = mock_completion.call_args
+        assert call_kwargs.kwargs["max_tokens"] == 2048
+        assert "reasoning_effort" not in call_kwargs.kwargs
+        assert "thinking" not in call_kwargs.kwargs
+        assert "logprobs" not in call_kwargs.kwargs
+
+    @patch("agent.completion")
+    def test_v2_matches_contract_response_format_fallback_retries_without_schema(
+        self, mock_completion
+    ):
+        calls: list[dict[str, object]] = []
+
+        def _side_effect(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise Exception(
+                    "UnsupportedParamsError: openai does not support parameters: ['response_format']"
+                )
+            return _mock_completion_response(_matches_payload([]))
+
+        mock_completion.side_effect = _side_effect
+
+        result = run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            model="openai/gpt-4o",
+            method_bundle="v2",
+            requested_labels=["NAME"],
+            response_contract="matches",
+            match_resolution_policy="unique_or_warn",
+        )
+
+        assert result.spans == []
+        assert "response_format" in calls[0]
+        assert "response_format" not in calls[1]
+        assert any("rejected response_format" in warning for warning in result.warnings)
 
     @patch("agent.completion")
     def test_advanced_profile_filters_course_and_non_specific_date(self, mock_completion):
@@ -1233,22 +1358,11 @@ class TestRunLLM:
 
 def test_run_method_with_metadata_emits_dual_pass_progress(monkeypatch):
     progress_events: list[tuple[int, str]] = []
-
-    def fake_run_llm_with_metadata(**kwargs):
-        return types.SimpleNamespace(
-            spans=[CanonicalSpan(start=0, end=4, label="NAME", text="Anna")],
-            warnings=[],
-            llm_confidence=LLMConfidenceMetric(
-                available=False,
-                provider="gemini",
-                model="google.gemini-3.1-pro-preview",
-                reason="unsupported_provider",
-                token_count=0,
-                band="na",
-            ),
-        )
-
-    monkeypatch.setattr("agent.run_llm_with_metadata", fake_run_llm_with_metadata)
+    responses = [
+        _mock_completion_response(_matches_payload([{"entity_type": "NAME", "text": "Anna"}])),
+        _mock_completion_response(_matches_payload([])),
+    ]
+    monkeypatch.setattr("agent.completion", lambda **kwargs: responses.pop(0))
 
     result = run_method_with_metadata(
         text="Anna emailed anna@example.com",
@@ -1262,6 +1376,7 @@ def test_run_method_with_metadata_emits_dual_pass_progress(monkeypatch):
         anthropic_thinking=False,
         anthropic_thinking_budget_tokens=None,
         method_verify=False,
+        method_bundle="v2",
         progress_callback=lambda pass_index, pass_label: progress_events.append(
             (pass_index, pass_label)
         ),
@@ -1287,7 +1402,7 @@ def test_run_llm_verifier_defaults_timeout_and_max_tokens(mock_completion):
     assert warnings == []
     call_kwargs = mock_completion.call_args
     assert call_kwargs.kwargs["timeout"] == pytest.approx(30.0)
-    assert call_kwargs.kwargs["max_tokens"] == 1024
+    assert call_kwargs.kwargs["max_tokens"] == 768
 
 
 def test_model_presets_include_requested_options():
@@ -1313,112 +1428,55 @@ def test_method_prompts_are_migrated_from_experiment_presets():
     assert "reasonably identify an individual" in split_prompt
 
 
-def test_audited_method_contracts_validate_cleanly():
-    assert agent.validate_method_contracts(method_bundle="audited") == []
+def test_v2_method_contracts_validate_cleanly():
+    assert agent.validate_method_contracts(method_bundle="v2") == []
 
 
-def test_test_method_contracts_validate_cleanly():
-    assert agent.validate_method_contracts(method_bundle="test") == []
+def test_v2_methods_use_colleague_repo_prompts():
+    extended = agent.get_method_definition_by_id("extended", method_bundle="v2")
+    assert extended is not None
+    assert extended["passes"][0]["prompt"] == agent.METHOD_EXTENDED_PROMPT
+
+    dual = agent.get_method_definition_by_id("dual", method_bundle="v2")
+    assert dual is not None
+    assert dual["passes"][0]["prompt"] == agent.METHOD_DUAL_NAMES_PROMPT
+    assert dual["passes"][1]["prompt"] == agent.METHOD_DUAL_IDENTIFIERS_PROMPT
+
+    split = agent.get_method_definition_by_id("presidio+llm-split", method_bundle="v2")
+    assert split is not None
+    assert split["passes"][1]["prompt"] == agent.METHOD_SPLIT_LLM_PROMPT
 
 
-def test_test_bundle_prompt_wrapper_includes_examples_and_label_catalog():
-    prompt = build_extraction_system_prompt(
-        "Base prompt",
-        label_profile="simple",
-        method_bundle="test",
-    )
-
-    assert "Use only these exact label strings" in prompt
-    assert '{"spans":[]}' in prompt
-    assert '"label":"NAME"' in prompt
-    assert "ages over 89" in prompt
-    assert "geographic locations smaller than a state" in prompt
+def test_old_method_bundles_are_rejected():
+    for bundle in ("legacy", "audited", "stable", "test"):
+        with pytest.raises(ValueError, match="v2"):
+            agent.validate_method_contracts(method_bundle=bundle)
 
 
-def test_list_agent_methods_reports_profile_metadata_for_audited_bundle():
-    methods = agent.list_agent_methods(method_bundle="audited")
+def test_build_extraction_prompt_rejects_old_method_bundle():
+    with pytest.raises(ValueError, match="v2"):
+        build_extraction_system_prompt(
+            "Base prompt",
+            label_profile="simple",
+            method_bundle="stable",
+        )
+
+
+def test_list_agent_methods_reports_profile_metadata_for_v2_bundle():
+    methods = agent.list_agent_methods(method_bundle="v2")
     dual_split = next(item for item in methods if item["id"] == "dual-split")
 
     assert dual_split["supported_label_profiles"] == ["advanced", "simple"]
-    assert "SCHOOL" in dual_split["output_labels_by_profile"]["simple"]
-    assert "SCHOOL" in dual_split["output_labels_by_profile"]["advanced"]
+    assert "LOCATION" in dual_split["output_labels_by_profile"]["simple"]
+    assert "LOCATION" in dual_split["output_labels_by_profile"]["advanced"]
     assert isinstance(dual_split["known_limitations"], list)
 
-
-def test_audited_presidio_default_uses_residual_llm_scope():
-    definition = agent.get_method_definition_by_id(
-        "presidio+default",
-        method_bundle="audited",
-    )
-    assert definition is not None
-
-    llm_pass = definition["passes"][1]
-    assert llm_pass["entity_types_by_profile"]["simple"] == [
-        "NAME",
-        "LOCATION",
-        "SCHOOL",
-        "DATE",
-        "AGE",
-        "MISC_ID",
+@patch("agent.completion")
+def test_run_method_with_metadata_v2_dual_split_keeps_school_output(mock_completion):
+    mock_completion.side_effect = [
+        _mock_completion_response(_matches_payload([{"entity_type": "ADDRESS", "text": "Yale"}])),
+        _mock_completion_response(_matches_payload([])),
     ]
-    assert set(llm_pass["entity_types_by_profile"]["advanced"]) == {
-        "AGE",
-        "COURSE",
-        "DATE",
-        "GRADE_LEVEL",
-        "LOCATION",
-        "NRP",
-        "PERSON",
-        "SCHOOL",
-        "SOCIAL_HANDLE",
-        "US_DRIVER_LICENSE",
-        "US_PASSPORT",
-    }
-
-
-def test_audited_presidio_llm_split_advanced_labels_stay_within_schema():
-    definition = agent.get_method_definition_by_id(
-        "presidio+llm-split",
-        method_bundle="audited",
-    )
-    assert definition is not None
-
-    llm_pass = definition["passes"][1]
-    advanced_labels = set(llm_pass["entity_types_by_profile"]["advanced"])
-    assert "DEVICE_IDENTIFIER" not in advanced_labels
-    assert "BIOMETRIC_IDENTIFIER" not in advanced_labels
-    assert "IMAGE" not in advanced_labels
-    assert "IDENTIFYING_NUMBER" not in advanced_labels
-    assert advanced_labels <= set(agent.ADVANCED_LABELS)
-
-
-def test_run_method_with_metadata_audited_dual_split_keeps_school_output(monkeypatch):
-    llm_calls: list[dict[str, object]] = []
-
-    def fake_run_llm_with_metadata(**kwargs):
-        llm_calls.append(kwargs)
-        if len(llm_calls) == 1:
-            spans = [CanonicalSpan(start=0, end=4, label="SCHOOL", text="Yale")]
-        else:
-            spans = []
-        return types.SimpleNamespace(
-            spans=spans,
-            raw_spans=spans,
-            warnings=[],
-            llm_confidence=LLMConfidenceMetric(
-                available=False,
-                provider="gemini",
-                model="google.gemini-3.1-pro-preview",
-                reason="unsupported_provider",
-                token_count=0,
-                band="na",
-            ),
-            response_debug=[],
-            resolution_events=[],
-            resolution_policy_version=None,
-        )
-
-    monkeypatch.setattr("agent.run_llm_with_metadata", fake_run_llm_with_metadata)
 
     result = run_method_with_metadata(
         text="Yale",
@@ -1433,10 +1491,123 @@ def test_run_method_with_metadata_audited_dual_split_keeps_school_output(monkeyp
         anthropic_thinking_budget_tokens=None,
         method_verify=False,
         label_profile="simple",
-        method_bundle="audited",
+        method_bundle="v2",
     )
 
-    assert [(span.label, span.text) for span in result.spans] == [("SCHOOL", "Yale")]
+    assert [(span.label, span.text) for span in result.spans] == [("LOCATION", "Yale")]
+
+
+@patch("agent.completion")
+def test_run_method_with_metadata_v2_dual_keeps_repeated_name_mentions(mock_completion):
+    mock_completion.side_effect = [
+        _mock_completion_response(_matches_payload([{"entity_type": "NAME", "text": "Anna"}])),
+        _mock_completion_response(_matches_payload([])),
+    ]
+
+    result = run_method_with_metadata(
+        text="Anna met Anna",
+        method_id="dual",
+        api_key="k",
+        api_base="https://proxy.example.com/v1",
+        model="google.gemini-3.1-pro-preview",
+        system_prompt="",
+        temperature=0.0,
+        reasoning_effort="xhigh",
+        anthropic_thinking=True,
+        anthropic_thinking_budget_tokens=2048,
+        method_verify=False,
+        label_profile="simple",
+        method_bundle="v2",
+    )
+
+    assert [(span.label, span.text) for span in result.spans] == [
+        ("NAME", "Anna"),
+        ("NAME", "Anna"),
+    ]
+    assert len(mock_completion.call_args_list) == 2
+    assert all("reasoning_effort" not in call.kwargs for call in mock_completion.call_args_list)
+    assert all("thinking" not in call.kwargs for call in mock_completion.call_args_list)
+
+
+@patch("agent.completion")
+def test_run_method_with_metadata_v2_default_expands_repeated_text_matches(mock_completion):
+    mock_completion.return_value = _mock_completion_response(
+        _matches_payload([{"entity_type": "NAME", "text": "Anna"}])
+    )
+
+    result = run_method_with_metadata(
+        text="Anna met Anna",
+        method_id="default",
+        api_key="k",
+        api_base="https://proxy.example.com/v1",
+        model="google.gemini-3.1-pro-preview",
+        system_prompt="",
+        temperature=0.0,
+        reasoning_effort="none",
+        anthropic_thinking=False,
+        anthropic_thinking_budget_tokens=None,
+        method_verify=False,
+        label_profile="simple",
+        method_bundle="v2",
+    )
+
+    assert [(span.label, span.text, span.start, span.end) for span in result.spans] == [
+        ("NAME", "Anna", 0, 4),
+        ("NAME", "Anna", 9, 13),
+    ]
+    schema = mock_completion.call_args.kwargs["response_format"]
+    enum = schema["json_schema"]["schema"]["properties"]["matches"]["items"]["properties"][
+        "entity_type"
+    ]["enum"]
+    assert enum == [
+        "NAME",
+        "ADDRESS",
+        "DATE",
+        "PHONE_NUMBER",
+        "FAX_NUMBER",
+        "EMAIL",
+        "SSN",
+        "ACCOUNT_NUMBER",
+        "DEVICE_IDENTIFIER",
+        "URL",
+        "IP_ADDRESS",
+        "BIOMETRIC_IDENTIFIER",
+        "IMAGE",
+        "IDENTIFYING_NUMBER",
+    ]
+
+
+@patch("agent.completion")
+def test_run_method_with_metadata_v2_skips_resolution_pipeline(mock_completion, monkeypatch):
+    mock_completion.return_value = _mock_completion_response(
+        _matches_payload([{"entity_type": "NAME", "text": "Anna"}])
+    )
+
+    def fail(*args, **kwargs):
+        raise AssertionError("v2 path should not invoke audited span resolution")
+
+    monkeypatch.setattr(agent, "resolve_spans", fail)
+    monkeypatch.setattr(agent, "_drop_implausible_name_spans", fail)
+
+    result = run_method_with_metadata(
+        text="Anna",
+        method_id="default",
+        api_key="k",
+        api_base="https://proxy.example.com/v1",
+        model="google.gemini-3.1-pro-preview",
+        system_prompt="",
+        temperature=0.0,
+        reasoning_effort="none",
+        anthropic_thinking=False,
+        anthropic_thinking_budget_tokens=None,
+        method_verify=False,
+        label_profile="simple",
+        method_bundle="v2",
+    )
+
+    assert [(span.label, span.text, span.start, span.end) for span in result.spans] == [
+        ("NAME", "Anna", 0, 4)
+    ]
 
 
 def test_presidio_runtime_error_caches_success(monkeypatch):

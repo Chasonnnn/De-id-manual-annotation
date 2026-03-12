@@ -24,6 +24,10 @@ from server import (
     _prompt_lab_cancel_events,
     _prompt_lab_run_path,
     _run_llm_for_document,
+    _save_methods_lab_index,
+    _save_methods_lab_run,
+    _save_prompt_lab_index,
+    _save_prompt_lab_run,
     _session_dir,
     _session_docs,
     _methods_lab_run_path,
@@ -3192,7 +3196,7 @@ def test_prompt_lab_preset_variant_executes_method_pipeline(client, monkeypatch)
     assert final["prompts"][0]["preset_method_id"] == "verified"
 
 
-def test_prompt_lab_preset_variant_accepts_legacy_method_bundle(client, monkeypatch):
+def test_prompt_lab_preset_variant_accepts_v2_method_bundle(client, monkeypatch):
     monkeypatch.setattr(
         "server._fetch_gateway_model_ids",
         lambda api_base, api_key: ["openai.gpt-5.3-codex"],
@@ -3220,7 +3224,7 @@ def test_prompt_lab_preset_variant_accepts_legacy_method_bundle(client, monkeypa
     create_resp = client.post(
         "/api/prompt-lab/runs",
         json={
-            "name": "preset-method-legacy-run",
+            "name": "preset-method-v2-run",
             "doc_ids": [doc_id],
             "prompts": [
                 {
@@ -3248,26 +3252,118 @@ def test_prompt_lab_preset_variant_accepts_legacy_method_bundle(client, monkeypa
                 "match_mode": "exact",
                 "reference_source": "manual",
                 "fallback_reference_source": "pre",
-                "method_bundle": "legacy",
+                "method_bundle": "v2",
             },
             "concurrency": 1,
         },
     )
     assert create_resp.status_code == 200
     run_id = create_resp.json()["id"]
-    assert create_resp.json()["method_bundle"] == "legacy"
+    assert create_resp.json()["method_bundle"] == "v2"
 
     final = _wait_for_prompt_lab_terminal(client, run_id)
     assert final["status"] == "completed"
-    assert final["method_bundle"] == "legacy"
-    assert final["runtime"]["method_bundle"] == "legacy"
+    assert final["method_bundle"] == "v2"
+    assert final["runtime"]["method_bundle"] == "v2"
     runs_resp = client.get("/api/prompt-lab/runs")
     assert runs_resp.status_code == 200
     runs = runs_resp.json()["runs"]
     listed = next((row for row in runs if row["id"] == run_id), None)
     assert listed is not None
+    assert listed["method_bundle"] == "v2"
+    assert seen_method_bundles == ["v2"]
+
+
+@pytest.mark.parametrize("bundle", ["legacy", "audited", "stable", "test"])
+def test_prompt_lab_rejects_old_method_bundles(client, bundle):
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    create_resp = client.post(
+        "/api/prompt-lab/runs",
+        json={
+            "name": f"prompt-{bundle}-bundle",
+            "doc_ids": [doc_id],
+            "prompts": [
+                {
+                    "id": "prompt_1",
+                    "label": "Baseline",
+                    "system_prompt": "Detect pii spans as strict JSON",
+                    "variant_type": "prompt",
+                }
+            ],
+            "models": [
+                {
+                    "id": "model_1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "none",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "reference_source": "pre",
+                "fallback_reference_source": "pre",
+                "method_bundle": bundle,
+            },
+            "concurrency": 1,
+        },
+    )
+
+    assert create_resp.status_code == 422
+    detail = json.dumps(create_resp.json()["detail"])
+    assert "v2" in detail
+
+
+def test_prompt_lab_history_keeps_old_method_bundle_labels(client):
+    run_id = "prompt-legacy-history"
+    run = {
+        "id": run_id,
+        "name": "legacy prompt history",
+        "status": "completed",
+        "created_at": "2026-03-12T00:00:00+00:00",
+        "started_at": "2026-03-12T00:00:01+00:00",
+        "finished_at": "2026-03-12T00:00:02+00:00",
+        "doc_ids": ["doc-1"],
+        "folder_ids": [],
+        "prompts": [{"id": "prompt_1", "label": "Preset", "variant_type": "preset"}],
+        "models": [{"id": "model_1", "label": "Codex", "model": "openai.gpt-5.3-codex"}],
+        "runtime": {"method_bundle": "legacy"},
+        "concurrency": 1,
+        "warnings": [],
+        "errors": [],
+        "cells": {
+            "model_1__prompt_1": {
+                "id": "model_1__prompt_1",
+                "model_id": "model_1",
+                "model_label": "Codex",
+                "prompt_id": "prompt_1",
+                "prompt_label": "Preset",
+                "documents": {"doc-1": {"status": "completed", "updated_at": "2026-03-12T00:00:02+00:00"}},
+            }
+        },
+        "session_id": "default",
+    }
+    _prompt_lab_runs["default"] = [run_id]
+    _save_prompt_lab_run(run)
+    _save_prompt_lab_index()
+
+    runs_resp = client.get("/api/prompt-lab/runs")
+    assert runs_resp.status_code == 200
+    listed = next(row for row in runs_resp.json()["runs"] if row["id"] == run_id)
     assert listed["method_bundle"] == "legacy"
-    assert seen_method_bundles == ["legacy"]
+
+    detail_resp = client.get(f"/api/prompt-lab/runs/{run_id}")
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert detail["method_bundle"] == "legacy"
+    assert detail["runtime"]["method_bundle"] == "legacy"
 
 
 def test_prompt_lab_matrix_includes_per_label_and_available_labels(client, monkeypatch):
@@ -6356,7 +6452,7 @@ def test_prompt_lab_detail_includes_raw_metrics_and_resolution_metadata(client, 
     assert detail["metrics"]["micro"]["f1"] == pytest.approx(1.0)
 
 
-def test_methods_lab_accepts_legacy_method_bundle(client, monkeypatch):
+def test_methods_lab_accepts_v2_method_bundle(client, monkeypatch):
     monkeypatch.setattr(
         "server._fetch_gateway_model_ids",
         lambda api_base, api_key: ["openai.gpt-5.3-codex"],
@@ -6384,7 +6480,7 @@ def test_methods_lab_accepts_legacy_method_bundle(client, monkeypatch):
     create_resp = client.post(
         "/api/methods-lab/runs",
         json={
-            "name": "methods-legacy-run",
+            "name": "methods-v2-run",
             "doc_ids": [doc_id],
             "methods": [{"id": "method_1", "label": "Default", "method_id": "default"}],
             "models": [
@@ -6404,49 +6500,30 @@ def test_methods_lab_accepts_legacy_method_bundle(client, monkeypatch):
                 "match_mode": "exact",
                 "reference_source": "pre",
                 "fallback_reference_source": "pre",
-                "method_bundle": "legacy",
+                "method_bundle": "v2",
             },
             "concurrency": 1,
         },
     )
     assert create_resp.status_code == 200
     run_id = create_resp.json()["id"]
-    assert create_resp.json()["method_bundle"] == "legacy"
+    assert create_resp.json()["method_bundle"] == "v2"
 
     final = _wait_for_methods_lab_terminal(client, run_id)
     assert final["status"] == "completed"
-    assert final["method_bundle"] == "legacy"
-    assert final["runtime"]["method_bundle"] == "legacy"
+    assert final["method_bundle"] == "v2"
+    assert final["runtime"]["method_bundle"] == "v2"
     runs_resp = client.get("/api/methods-lab/runs")
     assert runs_resp.status_code == 200
     runs = runs_resp.json()["runs"]
     listed = next((row for row in runs if row["id"] == run_id), None)
     assert listed is not None
-    assert listed["method_bundle"] == "legacy"
-    assert seen_method_bundles == ["legacy"]
+    assert listed["method_bundle"] == "v2"
+    assert seen_method_bundles == ["v2"]
 
 
-def test_methods_lab_accepts_test_method_bundle(client, monkeypatch):
-    monkeypatch.setattr(
-        "server._fetch_gateway_model_ids",
-        lambda api_base, api_key: ["google.gemini-3.1-pro-preview"],
-    )
-    seen_method_bundles: list[str] = []
-
-    def fake_run_method_with_metadata(**kwargs):
-        seen_method_bundles.append(str(kwargs.get("method_bundle")))
-        return SimpleNamespace(
-            spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
-            raw_spans=[CanonicalSpan(start=6, end=10, label="NAME", text="Anna")],
-            warnings=[],
-            llm_confidence=None,
-            response_debug=[],
-            resolution_events=[],
-            resolution_policy_version=None,
-        )
-
-    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
-
+@pytest.mark.parametrize("bundle", ["legacy", "audited", "stable", "test"])
+def test_methods_lab_rejects_old_method_bundles(client, monkeypatch, bundle):
     upload_resp = _upload(client)
     assert upload_resp.status_code == 200
     doc_id = upload_resp.json()["id"]
@@ -6454,7 +6531,7 @@ def test_methods_lab_accepts_test_method_bundle(client, monkeypatch):
     create_resp = client.post(
         "/api/methods-lab/runs",
         json={
-            "name": "methods-test-run",
+            "name": f"methods-{bundle}-run",
             "doc_ids": [doc_id],
             "methods": [{"id": "method_1", "label": "Default", "method_id": "default"}],
             "models": [
@@ -6474,26 +6551,59 @@ def test_methods_lab_accepts_test_method_bundle(client, monkeypatch):
                 "match_mode": "exact",
                 "reference_source": "pre",
                 "fallback_reference_source": "pre",
-                "method_bundle": "test",
+                "method_bundle": bundle,
             },
             "concurrency": 1,
         },
     )
-    assert create_resp.status_code == 200
-    run_id = create_resp.json()["id"]
-    assert create_resp.json()["method_bundle"] == "test"
+    assert create_resp.status_code == 422
+    detail = json.dumps(create_resp.json()["detail"])
+    assert "v2" in detail
 
-    final = _wait_for_methods_lab_terminal(client, run_id)
-    assert final["status"] == "completed"
-    assert final["method_bundle"] == "test"
-    assert final["runtime"]["method_bundle"] == "test"
+
+def test_methods_lab_history_keeps_old_method_bundle_labels(client):
+    run_id = "methods-stable-history"
+    run = {
+        "id": run_id,
+        "name": "stable methods history",
+        "status": "completed",
+        "created_at": "2026-03-12T00:00:00+00:00",
+        "started_at": "2026-03-12T00:00:01+00:00",
+        "finished_at": "2026-03-12T00:00:02+00:00",
+        "doc_ids": ["doc-1"],
+        "folder_ids": [],
+        "methods": [{"id": "method_1", "label": "Default", "method_id": "default"}],
+        "models": [{"id": "model_1", "label": "Codex", "model": "openai.gpt-5.3-codex"}],
+        "runtime": {"method_bundle": "stable"},
+        "concurrency": 1,
+        "warnings": [],
+        "errors": [],
+        "cells": {
+            "model_1__method_1": {
+                "id": "model_1__method_1",
+                "model_id": "model_1",
+                "model_label": "Codex",
+                "method_id": "method_1",
+                "method_label": "Default",
+                "documents": {"doc-1": {"status": "completed", "updated_at": "2026-03-12T00:00:02+00:00"}},
+            }
+        },
+        "session_id": "default",
+    }
+    _methods_lab_runs["default"] = [run_id]
+    _save_methods_lab_run(run)
+    _save_methods_lab_index()
+
     runs_resp = client.get("/api/methods-lab/runs")
     assert runs_resp.status_code == 200
-    runs = runs_resp.json()["runs"]
-    listed = next((row for row in runs if row["id"] == run_id), None)
-    assert listed is not None
-    assert listed["method_bundle"] == "test"
-    assert seen_method_bundles == ["test"]
+    listed = next(row for row in runs_resp.json()["runs"] if row["id"] == run_id)
+    assert listed["method_bundle"] == "stable"
+
+    detail_resp = client.get(f"/api/methods-lab/runs/{run_id}")
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert detail["method_bundle"] == "stable"
+    assert detail["runtime"]["method_bundle"] == "stable"
 
 
 def test_methods_lab_detail_includes_raw_metrics_and_resolution_metadata(client, monkeypatch):
