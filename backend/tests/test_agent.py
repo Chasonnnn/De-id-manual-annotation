@@ -189,6 +189,21 @@ class TestInferProvider:
         assert _infer_provider("opaque-model-id") == "unknown"
 
 
+class TestConfigureLiteLLMRuntime:
+    def test_suppresses_litellm_debug_noise(self):
+        fake_litellm = types.SimpleNamespace(
+            set_verbose=True,
+            suppress_debug_info=False,
+            log_level="DEBUG",
+        )
+
+        agent._configure_litellm_runtime(fake_litellm)
+
+        assert fake_litellm.set_verbose is False
+        assert fake_litellm.suppress_debug_info is True
+        assert fake_litellm.log_level == "ERROR"
+
+
 # ---------------------------------------------------------------------------
 # LLM agent tests (mocked via litellm.completion)
 # ---------------------------------------------------------------------------

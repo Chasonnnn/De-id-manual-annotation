@@ -6376,6 +6376,38 @@ def test_session_ingest_routes_raw_upload_payloads_to_document_upload(client):
     assert doc_resp.json()["raw_text"] == "Hello Anna, call Sue please."
 
 
+def test_session_ingest_routes_timss_txt_payloads_to_document_upload(client):
+    timss_raw = (
+        "Top of Form\r"
+        "00:00:04\tSN\tPlease teach us well.\r"
+        "00:00:06\tT\tOkay.\r"
+        "00:00:08\tSN\tJos\xe9 is ready.\r"
+        "\xca\r"
+        "Bottom of Form\r"
+    ).encode("latin-1")
+
+    ingest_resp = client.post(
+        "/api/session/ingest",
+        files={"file": ("Science JP1 transcript.txt", timss_raw, "text/plain")},
+    )
+
+    assert ingest_resp.status_code == 200
+    payload = ingest_resp.json()
+    assert payload["mode"] == "upload"
+    assert payload["uploaded_count"] == 1
+    assert payload["imported_count"] == 0
+    assert payload["created_count"] == 1
+    assert len(payload["created_ids"]) == 1
+
+    created_id = payload["created_ids"][0]
+    doc_resp = client.get(f"/api/documents/{created_id}")
+    assert doc_resp.status_code == 200
+    doc = doc_resp.json()
+    assert doc["filename"] == "Science JP1 transcript.txt"
+    assert doc["raw_text"] == "SN: Please teach us well.\nT: Okay.\nSN: José is ready."
+    assert doc["pre_annotations"] == []
+
+
 def test_session_ingest_routes_ground_truth_zip_to_import_processing(client):
     upload_resp = _upload(client)
     assert upload_resp.status_code == 200

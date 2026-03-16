@@ -3,6 +3,7 @@
 backend/.benchmark_artifacts/
 .env.local
 output/
+TIMSS/
 
 # Python
 __pycache__/

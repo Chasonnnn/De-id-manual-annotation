@@ -5999,9 +5999,10 @@ def _resolve_ingest_mode(
     raw: bytes,
     filename: str,
 ) -> tuple[Literal["upload", "import"], dict[str, object] | None]:
+    lower_filename = filename.lower()
     if zipfile.is_zipfile(io.BytesIO(raw)):
         return "import", None
-    if filename.endswith(".jsonl"):
+    if lower_filename.endswith(".jsonl") or lower_filename.endswith(".txt"):
         return "upload", None
 
     payload = _decode_json_object_payload(

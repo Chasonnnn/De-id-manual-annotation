@@ -559,7 +559,7 @@ function SidebarActionsPanel({
         inputRef={ingestRef}
         inputId="sidebar-ingest-file"
         inputName="ingest_file"
-        accept=".json,.jsonl,.zip"
+        accept=".json,.jsonl,.txt,.zip"
         multiple
         onOpenPicker={onIngestOpenPicker}
         onDragOver={onIngestDragOver}

@@ -11,10 +11,23 @@ import threading
 import time
 from typing import Any, Callable, Literal
 
+import litellm
 from litellm import completion
 
 from models import CanonicalSpan, LLMConfidenceMetric, ResolutionEvent
 from span_resolution import RESOLUTION_POLICY_VERSION, resolve_spans
+
+
+def _configure_litellm_runtime(module: Any = litellm) -> None:
+    if hasattr(module, "set_verbose"):
+        module.set_verbose = False
+    if hasattr(module, "suppress_debug_info"):
+        module.suppress_debug_info = True
+    if hasattr(module, "log_level"):
+        module.log_level = "ERROR"
+
+
+_configure_litellm_runtime()
 
 # Regex patterns for rule-based detection
 DOMAIN_LABEL_PATTERN = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"

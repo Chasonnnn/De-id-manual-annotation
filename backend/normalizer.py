@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,8 @@ from models import CanonicalDocument, CanonicalSpan, UtteranceRow
 PII_TYPE_MAP = {
     "PERSON": "NAME",
 }
+TIMSS_LINE_RE = re.compile(r"^(?P<timestamp>\d{2}:\d{2}:\d{2})\t(?P<speaker>[^\t]+)\t(?P<content>.*)$")
+TEXT_ENCODINGS = ("utf-8-sig", "utf-8", "latin-1")
 
 
 def _map_label(raw: str) -> str:
@@ -49,6 +52,79 @@ def _build_utterances(full_text: str) -> list[UtteranceRow]:
         )
         offset += len(line) + 1  # +1 for newline
     return rows
+
+
+def _decode_text_bytes(raw_bytes: bytes) -> str:
+    errors: list[str] = []
+    for encoding in TEXT_ENCODINGS:
+        try:
+            return raw_bytes.decode(encoding)
+        except UnicodeDecodeError as exc:
+            errors.append(f"{encoding}: {exc}")
+    joined = "; ".join(errors)
+    raise ValueError(f"Could not decode text payload with supported encodings ({joined})")
+
+
+def _normalize_text_lines(text: str) -> list[str]:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return [line.strip("\ufeff") for line in normalized.split("\n")]
+
+
+def _is_ignorable_text_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return True
+    if stripped in {"Top of Form", "Bottom of Form"}:
+        return True
+    if len(stripped) <= 2 and "\t" not in stripped and not any(
+        char.isascii() and char.isalnum() for char in stripped
+    ):
+        return True
+    return all(char in {"\ufffd"} for char in stripped)
+
+
+def _build_dialogue_document(
+    *,
+    filename: str,
+    doc_id: str,
+    format_name: str,
+    utterance_items: list[tuple[str, str]],
+) -> CanonicalDocument:
+    parts: list[str] = []
+    utterances: list[UtteranceRow] = []
+    offset = 0
+
+    for speaker, content in utterance_items:
+        line_prefix = f"{speaker}: "
+        line_text = f"{line_prefix}{content}"
+
+        if parts:
+            offset += 1  # for \n separator
+        line_start = offset
+        content_start = line_start + len(line_prefix)
+        content_end = content_start + len(content)
+
+        parts.append(line_text)
+        utterances.append(
+            UtteranceRow(
+                speaker=speaker,
+                text=content,
+                global_start=content_start,
+                global_end=content_end,
+            )
+        )
+        offset = line_start + len(line_text)
+
+    full_text = "\n".join(parts)
+    return CanonicalDocument(
+        id=doc_id,
+        filename=filename,
+        format=format_name,
+        raw_text=full_text,
+        utterances=utterances,
+        pre_annotations=[],
+        label_set=[],
+    )
 
 
 def _detect_format(data: dict) -> str:
@@ -297,12 +373,65 @@ def parse_jsonl_file(
     return merged, record_docs, record_display_names
 
 
+def parse_timss_txt(text: str, filename: str, doc_id: str) -> CanonicalDocument:
+    utterance_items: list[tuple[str, str]] = []
+
+    for raw_line in _normalize_text_lines(text):
+        if _is_ignorable_text_line(raw_line):
+            continue
+        match = TIMSS_LINE_RE.match(raw_line)
+        if match is None:
+            raise ValueError(f"Unsupported TIMSS transcript line: {raw_line}")
+        speaker = match.group("speaker").strip() or "unknown"
+        content = match.group("content").strip()
+        utterance_items.append((speaker, content))
+
+    if not utterance_items:
+        raise ValueError("No TIMSS transcript rows found in text file")
+
+    return _build_dialogue_document(
+        filename=filename,
+        doc_id=doc_id,
+        format_name="timss_txt",
+        utterance_items=utterance_items,
+    )
+
+
+def parse_plain_text(text: str, filename: str, doc_id: str) -> CanonicalDocument:
+    normalized_lines = [line for line in _normalize_text_lines(text) if not _is_ignorable_text_line(line)]
+    full_text = "\n".join(normalized_lines).strip()
+    if not full_text:
+        raise ValueError("Text file is empty after removing blank lines")
+    return CanonicalDocument(
+        id=doc_id,
+        filename=filename,
+        format="plain_text",
+        raw_text=full_text,
+        utterances=_build_utterances(full_text),
+        pre_annotations=[],
+        label_set=[],
+    )
+
+
+def parse_text_file(raw_bytes: bytes, filename: str, doc_id: str) -> CanonicalDocument:
+    text = _decode_text_bytes(raw_bytes)
+    normalized_lines = _normalize_text_lines(text)
+    content_lines = [line for line in normalized_lines if not _is_ignorable_text_line(line)]
+    looks_like_timss = bool(content_lines) and all(TIMSS_LINE_RE.match(line) for line in content_lines)
+    if looks_like_timss:
+        return parse_timss_txt(text, filename, doc_id)
+    return parse_plain_text(text, filename, doc_id)
+
+
 def parse_file(raw_bytes: bytes, filename: str, doc_id: str) -> list[CanonicalDocument]:
     docs: list[CanonicalDocument] = []
+    lower_filename = filename.lower()
 
-    if filename.endswith(".jsonl"):
+    if lower_filename.endswith(".jsonl"):
         merged, _, _ = parse_jsonl_file(raw_bytes, filename, doc_id)
         docs.append(merged)
+    elif lower_filename.endswith(".txt"):
+        docs.append(parse_text_file(raw_bytes, filename, doc_id))
     else:
         text = raw_bytes.decode("utf-8")
         data = json.loads(text)

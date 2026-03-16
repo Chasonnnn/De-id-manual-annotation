@@ -268,3 +268,31 @@ def test_hips_v1_with_text_key_supported():
     assert len(docs) == 1
     assert docs[0].raw_text == "Hi Anna."
     assert docs[0].pre_annotations[0].text == "Anna"
+
+
+def test_parse_timss_txt_strips_form_markers_and_builds_utterances():
+    raw = (
+        "Top of Form\r"
+        "00:00:04\tSN\tPlease teach us well.\r"
+        "00:00:06\tT\tOkay.\r"
+        "00:00:08\tSN\tJos\xe9 is ready.\r"
+        "\xca\r"
+        "Bottom of Form\r"
+    ).encode("latin-1")
+
+    docs = parse_file(raw, "Science JP1 transcript.txt", "timss1")
+
+    assert len(docs) == 1
+    doc = docs[0]
+    assert doc.format == "timss_txt"
+    assert doc.raw_text == "SN: Please teach us well.\nT: Okay.\nSN: José is ready."
+    assert doc.pre_annotations == []
+    assert doc.label_set == []
+    assert [row.speaker for row in doc.utterances] == ["SN", "T", "SN"]
+    assert doc.utterances[0].text == "Please teach us well."
+    assert doc.raw_text[doc.utterances[0].global_start : doc.utterances[0].global_end] == (
+        "Please teach us well."
+    )
+    assert doc.raw_text[doc.utterances[2].global_start : doc.utterances[2].global_end] == (
+        "José is ready."
+    )

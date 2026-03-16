@@ -200,6 +200,13 @@ describe("Sidebar", () => {
     expect(onIngestFiles).toHaveBeenCalledWith([file], "keep_current");
   });
 
+  it("accepts txt transcripts in the ingest picker", () => {
+    const view = renderSidebar();
+    const input = view.container.querySelector("#sidebar-ingest-file");
+
+    expect(input?.getAttribute("accept")).toBe(".json,.jsonl,.txt,.zip");
+  });
+
   it("creates a sample using the prompt dialog", () => {
     const onCreateFolderSample = vi.fn();
     renderSidebar({ onCreateFolderSample });

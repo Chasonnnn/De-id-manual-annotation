@@ -540,7 +540,8 @@ function normalizePromptLabRunSummary(raw: Record<string, unknown>): PromptLabRu
     raw.method_bundle === "test" ||
     raw.method_bundle === "stable" ||
     raw.method_bundle === "v2" ||
-    raw.method_bundle === "v2+post-process"
+    raw.method_bundle === "v2+post-process" ||
+    raw.method_bundle === "deidentify-v2"
       ? raw.method_bundle
       : runtimeRaw.method_bundle;
   return {
@@ -569,7 +570,8 @@ function normalizeMethodsLabRunSummary(raw: Record<string, unknown>): MethodsLab
     raw.method_bundle === "test" ||
     raw.method_bundle === "stable" ||
     raw.method_bundle === "v2" ||
-    raw.method_bundle === "v2+post-process"
+    raw.method_bundle === "v2+post-process" ||
+    raw.method_bundle === "deidentify-v2"
       ? raw.method_bundle
       : runtimeRaw.method_bundle;
   return {
