@@ -300,6 +300,50 @@ def _folder_to_detail(folder: FolderRecord, session_id: str = "default") -> dict
     }
 
 
+def _resolve_ground_truth_export_doc_ids(
+    scope: Literal["top_level", "folder"],
+    folder_id: str | None,
+    session_id: str = "default",
+) -> list[str]:
+    if scope == "top_level":
+        return _load_session_index(session_id)
+
+    normalized_folder_id = folder_id.strip() if folder_id else ""
+    if not normalized_folder_id:
+        raise HTTPException(status_code=400, detail="folder_id is required when scope=folder")
+
+    root_folder = _load_folder(normalized_folder_id, session_id)
+    if root_folder is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    doc_ids: list[str] = []
+    seen_doc_ids: set[str] = set()
+    visited_folder_ids: set[str] = set()
+
+    def append_doc_id(doc_id: str | None) -> None:
+        if not doc_id:
+            return
+        normalized = str(doc_id).strip()
+        if not normalized or normalized in seen_doc_ids:
+            return
+        seen_doc_ids.add(normalized)
+        doc_ids.append(normalized)
+
+    def visit_folder(folder: FolderRecord) -> None:
+        if folder.id in visited_folder_ids:
+            return
+        visited_folder_ids.add(folder.id)
+        for doc_id in folder.doc_ids:
+            append_doc_id(doc_id)
+        for child_folder_id in folder.child_folder_ids:
+            child_folder = _load_folder(child_folder_id, session_id)
+            if child_folder is not None:
+                visit_folder(child_folder)
+
+    visit_folder(root_folder)
+    return doc_ids
+
+
 def _find_folders_for_doc(doc_id: str, session_id: str = "default") -> list[FolderRecord]:
     return [folder for folder in _load_all_folders(session_id) if doc_id in folder.doc_ids]
 
@@ -459,7 +503,14 @@ def _save_json_sidecar(
 ):
     d = _session_dir(session_id)
     d.mkdir(parents=True, exist_ok=True)
-    (d / f"{doc_id}.{kind}.json").write_text(json.dumps(payload, indent=2))
+    target = d / f"{doc_id}.{kind}.json"
+    temp = d / f".{doc_id}.{kind}.{uuid.uuid4().hex}.tmp"
+    try:
+        temp.write_text(json.dumps(payload, indent=2))
+        temp.replace(target)
+    finally:
+        if temp.exists():
+            temp.unlink()
 
 
 def _load_json_sidecar(
@@ -5934,10 +5985,12 @@ async def export_session_bundle():
 
 @app.get("/api/session/export-ground-truth")
 async def export_ground_truth_only(
-    source: str = Query("manual"),
+    source: Annotated[str, Query()] = "manual",
+    scope: Annotated[Literal["top_level", "folder"], Query()] = "top_level",
+    folder_id: Annotated[str | None, Query()] = None,
 ):
     session_id = "default"
-    ids = _load_session_index(session_id)
+    ids = _resolve_ground_truth_export_doc_ids(scope, folder_id, session_id)
     buffer = io.BytesIO()
     source_value = source.strip()
     if not source_value:

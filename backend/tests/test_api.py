@@ -31,7 +31,14 @@ from server import (
     _methods_lab_run_path,
     ROOT_ENV_PATH,
 )
-from models import CanonicalDocument, CanonicalSpan, LLMConfidenceMetric, ResolutionEvent, UtteranceRow
+from models import (
+    CanonicalDocument,
+    CanonicalSpan,
+    FolderRecord,
+    LLMConfidenceMetric,
+    ResolutionEvent,
+    UtteranceRow,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -244,6 +251,36 @@ def _make_multi_record_jsonl() -> bytes:
                     "annotations": [
                         {"start": 5, "end": 8, "pii_type": "NAME", "text": "Ava"}
                     ],
+                }
+            ]
+        },
+    ]
+    return "\n".join(json.dumps(record) for record in records).encode()
+
+
+def _make_mixed_pre_multi_record_jsonl() -> bytes:
+    records = [
+        {
+            "transcript": [
+                {
+                    "role": "volunteer",
+                    "content": "Hello Liam",
+                    "sequence_id": 0,
+                    "session_id": "session-001",
+                    "annotations": [
+                        {"start": 6, "end": 10, "pii_type": "NAME", "text": "Liam"}
+                    ],
+                }
+            ]
+        },
+        {
+            "transcript": [
+                {
+                    "role": "student",
+                    "content": "Hello Nora",
+                    "sequence_id": 0,
+                    "session_id": "session-002",
+                    "annotations": [],
                 }
             ]
         },
@@ -5115,6 +5152,228 @@ def test_methods_lab_marks_docs_without_selected_reference_annotations_unavailab
     assert "reference annotations" in missing_detail["error"].lower()
 
 
+def test_methods_lab_allows_empty_pre_reference_docs_and_syncs_workspace_runs(
+    client, monkeypatch
+):
+    model_id = "anthropic.claude-4.6-sonnet"
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: [model_id],
+    )
+
+    def fake_run_method_with_metadata(**kwargs):
+        text = str(kwargs["text"])
+        target = "Liam" if "Liam" in text else "Nora"
+        start = text.index(target)
+        return SimpleNamespace(
+            spans=[
+                CanonicalSpan(
+                    start=start,
+                    end=start + len(target),
+                    label="NAME",
+                    text=target,
+                )
+            ],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(provider="anthropic", model=model_id),
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    upload_resp = _upload(
+        client,
+        data=_make_mixed_pre_multi_record_jsonl(),
+        filename="mixed-pre.jsonl",
+    )
+    assert upload_resp.status_code == 200
+    folder_id = client.get("/api/folders").json()[0]["id"]
+    folder_detail = client.get(f"/api/folders/{folder_id}").json()
+    child_doc_ids = [item["id"] for item in folder_detail["documents"]]
+
+    docs_by_pre_count: dict[int, list[str]] = {0: [], 1: []}
+    for doc_id in child_doc_ids:
+        doc_resp = client.get(f"/api/documents/{doc_id}")
+        assert doc_resp.status_code == 200
+        docs_by_pre_count[len(doc_resp.json()["pre_annotations"])].append(doc_id)
+
+    assert len(docs_by_pre_count[1]) == 1
+    assert len(docs_by_pre_count[0]) == 1
+    annotated_doc_id = docs_by_pre_count[1][0]
+    empty_pre_doc_id = docs_by_pre_count[0][0]
+
+    create_resp = client.post(
+        "/api/methods-lab/runs",
+        json={
+            "name": "mixed-pre-folder-run",
+            "folder_ids": [folder_id],
+            "methods": [
+                {
+                    "id": "method_1",
+                    "label": "Regex + LLM Extended v2",
+                    "method_id": "presidio-lite+extended-v2",
+                }
+            ],
+            "models": [
+                {
+                    "id": "model_1",
+                    "label": "Claude Sonnet 4.6",
+                    "model": model_id,
+                    "reasoning_effort": "none",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "overlap",
+                "reference_source": "pre",
+                "fallback_reference_source": "pre",
+                "label_profile": "advanced",
+                "label_projection": "native",
+                "chunk_mode": "off",
+                "chunk_size_chars": 10000,
+                "method_bundle": "deidentify-v2",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+
+    final = _wait_for_methods_lab_terminal(client, run_id, attempts=200)
+    assert final["status"] == "completed"
+    assert final["doc_ids"] == child_doc_ids
+    cell = final["matrix"]["cells"][0]
+    assert cell["completed_docs"] == 2
+    assert cell["failed_docs"] == 0
+
+    empty_detail_resp = client.get(
+        f"/api/methods-lab/runs/{run_id}/cells/{cell['id']}/documents/{empty_pre_doc_id}"
+    )
+    assert empty_detail_resp.status_code == 200
+    empty_detail = empty_detail_resp.json()
+    assert empty_detail["status"] == "completed"
+    assert empty_detail["reference_source_used"] == "pre"
+    assert empty_detail["reference_spans"] == []
+    assert empty_detail["metrics"]["micro"]["tp"] == 0
+    assert empty_detail["metrics"]["micro"]["fp"] == 1
+    assert empty_detail["metrics"]["micro"]["fn"] == 0
+
+    annotated_detail_resp = client.get(
+        f"/api/methods-lab/runs/{run_id}/cells/{cell['id']}/documents/{annotated_doc_id}"
+    )
+    assert annotated_detail_resp.status_code == 200
+    annotated_detail = annotated_detail_resp.json()
+    assert annotated_detail["status"] == "completed"
+    assert annotated_detail["metrics"]["micro"]["f1"] == pytest.approx(1.0)
+
+    run_key = f"presidio-lite+extended-v2::{model_id}::{run_id}"
+    empty_doc_resp = client.get(f"/api/documents/{empty_pre_doc_id}")
+    assert empty_doc_resp.status_code == 200
+    empty_doc_payload = empty_doc_resp.json()
+    assert "presidio-lite+extended-v2" not in empty_doc_payload["agent_outputs"]["methods"]
+    assert empty_doc_payload["agent_outputs"]["methods"][run_key][0]["text"] == "Nora"
+    run_meta = empty_doc_payload["agent_outputs"]["method_run_metadata"][run_key]
+    assert run_meta["mode"] == "method"
+    assert run_meta["method_id"] == "presidio-lite+extended-v2"
+    assert run_meta["model"] == model_id
+    assert run_meta["label_profile"] == "advanced"
+
+    runs_sidecar = (
+        _session_dir("default") / f"{empty_pre_doc_id}.agent.method.runs.json"
+    )
+    runs_meta_sidecar = (
+        _session_dir("default") / f"{empty_pre_doc_id}.agent.method.runs.meta.json"
+    )
+    assert run_key in json.loads(runs_sidecar.read_text())
+    assert run_key in json.loads(runs_meta_sidecar.read_text())
+
+
+def test_methods_lab_workspace_sync_uses_distinct_run_keys_for_reruns(client, monkeypatch):
+    model_id = "google.gemini-3.1-pro-preview"
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: [model_id],
+    )
+
+    def fake_run_method_with_metadata(**kwargs):
+        text = str(kwargs["text"])
+        start = text.index("Anna")
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=start, end=start + 4, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(provider="gemini", model=model_id),
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    run_ids: list[str] = []
+    for attempt in range(2):
+        create_resp = client.post(
+            "/api/methods-lab/runs",
+            json={
+                "name": f"rerun-{attempt}",
+                "doc_ids": [doc_id],
+                "methods": [
+                    {
+                        "id": "method_1",
+                        "label": "Regex + LLM Extended v2",
+                        "method_id": "presidio-lite+extended-v2",
+                    }
+                ],
+                "models": [
+                    {
+                        "id": "model_1",
+                        "label": "Gemini 3.1 Pro Preview",
+                        "model": model_id,
+                        "reasoning_effort": "none",
+                        "anthropic_thinking": False,
+                        "anthropic_thinking_budget_tokens": None,
+                    }
+                ],
+                "runtime": {
+                    "api_key": "request-key",
+                    "api_base": "https://proxy.example.com/v1",
+                    "temperature": 0.0,
+                    "match_mode": "overlap",
+                    "reference_source": "pre",
+                    "fallback_reference_source": "pre",
+                    "label_profile": "advanced",
+                    "label_projection": "native",
+                    "chunk_mode": "off",
+                    "chunk_size_chars": 10000,
+                    "method_bundle": "deidentify-v2",
+                },
+                "concurrency": 1,
+            },
+        )
+        assert create_resp.status_code == 200
+        run_id = create_resp.json()["id"]
+        run_ids.append(run_id)
+        final = _wait_for_methods_lab_terminal(client, run_id, attempts=200)
+        assert final["status"] == "completed"
+
+    doc_resp = client.get(f"/api/documents/{doc_id}")
+    assert doc_resp.status_code == 200
+    payload = doc_resp.json()
+    run_keys = sorted(
+        key
+        for key in payload["agent_outputs"]["methods"]
+        if key.startswith(f"presidio-lite+extended-v2::{model_id}::")
+    )
+    assert run_keys == sorted(
+        [
+            f"presidio-lite+extended-v2::{model_id}::{run_ids[0]}",
+            f"presidio-lite+extended-v2::{model_id}::{run_ids[1]}",
+        ]
+    )
+
 def test_methods_lab_presidio_style_methods_execute_once_per_doc_and_reuse_across_models(
     client, monkeypatch
 ):
@@ -6077,6 +6336,95 @@ def test_export_ground_truth_zip_for_selected_source(client):
         assert payload["ground_truth_source"] == "manual"
         assert payload["spans"][0]["text"] == "Anna"
         assert payload["pii_occurrences"][0]["pii_type"] == "NAME"
+
+
+def test_export_ground_truth_zip_can_scope_to_recursive_folder_docs(client):
+    top_level_resp = _upload(client, _make_hips_v1_custom("Top level Anna"), filename="top.json")
+    assert top_level_resp.status_code == 200
+    top_level_id = top_level_resp.json()["id"]
+
+    parent_resp = _upload(client, _make_hips_v1_custom("Parent Liam"), filename="parent.json")
+    assert parent_resp.status_code == 200
+    parent_doc_id = parent_resp.json()["id"]
+
+    child_resp = _upload(client, _make_hips_v1_custom("Child Ava"), filename="child.json")
+    assert child_resp.status_code == 200
+    child_doc_id = child_resp.json()["id"]
+
+    for doc_id, text in (
+        (top_level_id, "Anna"),
+        (parent_doc_id, "Liam"),
+        (child_doc_id, "Ava"),
+    ):
+        manual_resp = client.put(
+            f"/api/documents/{doc_id}/manual-annotations",
+            json=[{"start": 0, "end": len(text), "label": "NAME", "text": text}],
+        )
+        assert manual_resp.status_code == 200
+
+    folder_dir = _session_dir() / "folders"
+    folder_dir.mkdir(parents=True, exist_ok=True)
+    parent_folder = FolderRecord(
+        id="folder-parent",
+        name="TIMSS",
+        kind="manual",
+        parent_folder_id=None,
+        doc_ids=[parent_doc_id],
+        child_folder_ids=["folder-child"],
+        created_at="2026-03-17T00:00:00Z",
+        doc_display_names={parent_doc_id: "Parent transcript"},
+    )
+    child_folder = FolderRecord(
+        id="folder-child",
+        name="AU",
+        kind="manual",
+        parent_folder_id="folder-parent",
+        doc_ids=[child_doc_id],
+        child_folder_ids=[],
+        created_at="2026-03-17T00:00:01Z",
+        doc_display_names={child_doc_id: "Child transcript"},
+    )
+    (folder_dir / "_index.json").write_text(json.dumps([parent_folder.id, child_folder.id]))
+    (folder_dir / f"{parent_folder.id}.json").write_text(parent_folder.model_dump_json(indent=2))
+    (folder_dir / f"{child_folder.id}.json").write_text(child_folder.model_dump_json(indent=2))
+
+    export_resp = client.get(
+        "/api/session/export-ground-truth",
+        params={"source": "manual", "scope": "folder", "folder_id": parent_folder.id},
+    )
+    assert export_resp.status_code == 200
+
+    with zipfile.ZipFile(BytesIO(export_resp.content), mode="r") as archive:
+        names = sorted(archive.namelist())
+        assert len(names) == 2
+        payloads = [
+            json.loads(archive.read(name).decode("utf-8"))
+            for name in names
+        ]
+        assert {payload["id"] for payload in payloads} == {parent_doc_id, child_doc_id}
+        assert {payload["transcript"] for payload in payloads} == {"Parent Liam", "Child Ava"}
+        assert all(payload["ground_truth_source"] == "manual" for payload in payloads)
+        assert top_level_id not in {payload["id"] for payload in payloads}
+
+
+def test_export_ground_truth_zip_requires_folder_id_for_folder_scope(client):
+    export_resp = client.get(
+        "/api/session/export-ground-truth",
+        params={"source": "manual", "scope": "folder"},
+    )
+
+    assert export_resp.status_code == 400
+    assert export_resp.json() == {"detail": "folder_id is required when scope=folder"}
+
+
+def test_export_ground_truth_zip_returns_404_for_unknown_folder_scope(client):
+    export_resp = client.get(
+        "/api/session/export-ground-truth",
+        params={"source": "manual", "scope": "folder", "folder_id": "missing-folder"},
+    )
+
+    assert export_resp.status_code == 404
+    assert export_resp.json() == {"detail": "Folder not found"}
 
 
 def test_session_import_accepts_ground_truth_zip_without_existing_source(client):

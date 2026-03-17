@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
+from models import CanonicalSpan, LLMConfidenceMetric, ResolutionEvent, SavedRunMetadata
 
 
 def _server():
@@ -1811,6 +1812,109 @@ def _persist_methods_lab_document_runtime(
         srv._save_methods_lab_run(latest, session_id)
 
 
+def _build_methods_lab_workspace_run_key(
+    *,
+    method_id: str,
+    model: str,
+    run_id: str,
+) -> str:
+    return f"{method_id}::{model}::{run_id}"
+
+
+def _sync_methods_lab_result_to_workspace(
+    *,
+    run_id: str,
+    session_id: str,
+    doc_id: str,
+    method_id: str,
+    method_verify_override: bool | None,
+    target_model_ids: list[str],
+    model_by_id: dict[str, dict[str, Any]],
+    label_profile: str,
+    method_bundle: str,
+    result: dict[str, Any],
+) -> None:
+    srv = _server()
+    if str(result.get("status", "")) != "completed":
+        return
+
+    hypothesis_spans_raw = result.get("hypothesis_spans", [])
+    if not isinstance(hypothesis_spans_raw, list):
+        hypothesis_spans_raw = []
+    hypothesis_spans = [
+        CanonicalSpan.model_validate(item)
+        for item in hypothesis_spans_raw
+    ]
+
+    raw_hypothesis_spans_raw = result.get("raw_hypothesis_spans", [])
+    if not isinstance(raw_hypothesis_spans_raw, list):
+        raw_hypothesis_spans_raw = []
+    raw_hypothesis_spans = [
+        CanonicalSpan.model_validate(item)
+        for item in raw_hypothesis_spans_raw
+    ]
+
+    resolution_events_raw = result.get("resolution_events", [])
+    if not isinstance(resolution_events_raw, list):
+        resolution_events_raw = []
+    resolution_events = [
+        ResolutionEvent.model_validate(item)
+        for item in resolution_events_raw
+    ]
+
+    llm_confidence = None
+    llm_confidence_raw = result.get("llm_confidence")
+    if isinstance(llm_confidence_raw, dict):
+        llm_confidence = LLMConfidenceMetric.model_validate(llm_confidence_raw)
+
+    updated_at = str(result.get("updated_at") or srv._now_iso())
+    for target_model_id in target_model_ids:
+        model_item = model_by_id.get(target_model_id, {})
+        workspace_model = (
+            str(model_item.get("model") or target_model_id or "rule").strip() or "rule"
+        )
+        run_key = _build_methods_lab_workspace_run_key(
+            method_id=method_id,
+            model=workspace_model,
+            run_id=run_id,
+        )
+        srv._upsert_span_map_entry(
+            doc_id,
+            srv.METHOD_RUNS_SIDECAR_KIND,
+            run_key,
+            hypothesis_spans,
+            session_id,
+        )
+        srv._upsert_run_metadata(
+            doc_id,
+            srv.METHOD_RUNS_METADATA_SIDECAR_KIND,
+            run_key,
+            SavedRunMetadata(
+                mode="method",
+                updated_at=updated_at,
+                method_id=method_id,
+                model=workspace_model,
+                label_profile=label_profile,  # type: ignore[arg-type]
+                prompt_snapshot=srv._build_method_prompt_snapshot(
+                    method_id=method_id,
+                    additional_constraints="",
+                    method_verify=method_verify_override,
+                    label_profile=label_profile,  # type: ignore[arg-type]
+                    method_bundle=method_bundle,
+                ),
+                llm_confidence=llm_confidence,
+                raw_hypothesis_spans=raw_hypothesis_spans,
+                resolution_events=resolution_events,
+                resolution_policy_version=(
+                    str(result.get("resolution_policy_version"))
+                    if result.get("resolution_policy_version") is not None
+                    else None
+                ),
+            ),
+            session_id,
+        )
+
+
 def run_methods_lab_job(
     run_id: str,
     session_id: str,
@@ -1941,7 +2045,7 @@ def run_methods_lab_job(
             reference_source,
             fallback_reference_source,
         )
-        if not reference_spans:
+        if not reference_spans and resolved_reference_source != "pre":
             return (
                 method_variant_id,
                 doc_id,
@@ -2224,10 +2328,24 @@ def run_methods_lab_job(
                     cells = latest.get("cells", {})
                     if not isinstance(cells, dict):
                         continue
+                    method_variant = method_by_variant_id.get(method_variant_id)
                     for target_model_id in target_model_ids:
                         cell_id = f"{target_model_id}__{method_variant_id}"
                         if isinstance(cells.get(cell_id), dict):
                             cells[cell_id]["documents"][doc_id] = copy.deepcopy(result)
+                    if isinstance(method_variant, dict):
+                        _sync_methods_lab_result_to_workspace(
+                            run_id=run_id,
+                            session_id=session_id,
+                            doc_id=doc_id,
+                            method_id=str(method_variant.get("method_id", "")),
+                            method_verify_override=method_variant.get("method_verify_override"),
+                            target_model_ids=target_model_ids,
+                            model_by_id=model_by_id,
+                            label_profile=label_profile,
+                            method_bundle=method_bundle,
+                            result=result,
+                        )
                     srv._save_methods_lab_run(latest, session_id)
     except Exception as exc:
         with srv._methods_lab_lock:
