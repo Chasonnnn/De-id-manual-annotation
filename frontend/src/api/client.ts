@@ -19,8 +19,10 @@ import type {
   ExperimentDiagnostics,
   ExperimentLimits,
   FolderDetail,
+  MirrorPreToManualResult,
   FolderPruneResult,
   FolderSummary,
+  GroundTruthExportScope,
   MetricsResult,
   MethodsLabDocResult,
   MethodsLabRunCreateRequest,
@@ -110,6 +112,16 @@ export async function pruneEmptyFolderDocs(folderId: string): Promise<FolderPrun
   return request(`/folders/${folderId}/prune-empty-docs`, { method: "POST" });
 }
 
+export async function mirrorPreToManual(
+  exportScope: GroundTruthExportScope,
+): Promise<MirrorPreToManualResult> {
+  const params = new URLSearchParams({ scope: exportScope.kind });
+  if (exportScope.kind === "folder") {
+    params.set("folder_id", exportScope.folderId);
+  }
+  return request(`/session/mirror-pre-to-manual?${params.toString()}`, { method: "POST" });
+}
+
 export async function getDocument(id: string): Promise<CanonicalDocument> {
   return request(`/documents/${id}`);
 }
@@ -128,8 +140,14 @@ export async function exportSession(): Promise<SessionExportBundle> {
   return request("/session/export");
 }
 
-export async function exportGroundTruth(source: AnnotationSource): Promise<Blob> {
-  const params = new URLSearchParams({ source });
+export async function exportGroundTruth(
+  source: AnnotationSource,
+  exportScope: GroundTruthExportScope,
+): Promise<Blob> {
+  const params = new URLSearchParams({ source, scope: exportScope.kind });
+  if (exportScope.kind === "folder") {
+    params.set("folder_id", exportScope.folderId);
+  }
   const res = await fetch(`${BASE}/session/export-ground-truth?${params.toString()}`);
   if (!res.ok) {
     const body = await res.text();

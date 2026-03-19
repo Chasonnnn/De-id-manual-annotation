@@ -50,18 +50,23 @@ vi.mock("./MethodsLabCellDetail", () => ({
   default: ({
     cell,
     detail,
+    run,
     loading,
     onRerunErrorDocs,
     rerunningErrorDocs,
   }: {
     cell: { error_count: number } | null;
     detail: MethodsLabDocResult | null;
+    run?: { doc_ids?: string[] };
     loading: boolean;
     onRerunErrorDocs?: () => void | Promise<void>;
     rerunningErrorDocs?: boolean;
   }) => (
     <div data-testid="methods-lab-cell-detail">
       {loading ? "loading" : detail ? `${detail.run_id}:${detail.cell_id}:${detail.doc_id}` : "no-detail"}
+      <div data-testid="methods-lab-doc-options">
+        {(run?.doc_ids ?? []).map((docId) => `${docId}:${docId}`).join("|")}
+      </div>
       {cell ? (
         <button
           type="button"
@@ -729,5 +734,47 @@ describe("MethodsLabTab", () => {
       );
     });
     await screen.findByText("rerun-ml:model_1__method_1:doc-2");
+  });
+
+  it("passes internal document ids to the Methods Lab detail selector", async () => {
+    const jsonlDocuments: DocumentSummary[] = [
+      {
+        id: "476838c9_line0",
+        filename: "DeID_GT_UPchieve_math_1000transcripts (2).record-0001.json",
+        display_name: "Session 16592",
+        status: "reviewed",
+      },
+    ];
+    const jsonlSummary = makeRunSummary("run-jsonl", "methods_lab__jsonl");
+    const jsonlDetail = makeRunDetail(jsonlSummary, {
+      docId: "476838c9_line0",
+      cellId: "model_1__method_1",
+      modelId: "model_1",
+      modelLabel: "Claude Sonnet 4.6",
+      methodId: "method_1",
+      methodLabel: "Regex + LLM Extended v2",
+    });
+    clientMocks.listMethodsLabRuns.mockResolvedValue([jsonlSummary]);
+    clientMocks.getMethodsLabRun.mockResolvedValue(jsonlDetail);
+    clientMocks.getMethodsLabDocResult.mockResolvedValue(
+      makeDocResult(jsonlDetail, {
+        cellId: jsonlDetail.matrix.cells[0]!.id,
+        docId: "476838c9_line0",
+      }),
+    );
+
+    render(
+      <MethodsLabTab
+        documents={jsonlDocuments}
+        folders={[]}
+        selectedDocumentId={null}
+        onSelectDocument={vi.fn()}
+      />,
+    );
+
+    await screen.findByText("run-jsonl:model_1__method_1:476838c9_line0");
+    expect(screen.getByTestId("methods-lab-doc-options").textContent).toContain(
+      "476838c9_line0:476838c9_line0",
+    );
   });
 });

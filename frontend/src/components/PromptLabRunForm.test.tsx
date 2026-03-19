@@ -45,7 +45,7 @@ describe("PromptLabRunForm", () => {
     );
 
     await waitFor(() => {
-      expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
+      expect((screen.getAllByLabelText("doc-1")[0] as HTMLInputElement).checked).toBe(true);
     });
 
     const concurrencyInput = screen.getByLabelText("Concurrency") as HTMLInputElement;
@@ -73,7 +73,7 @@ describe("PromptLabRunForm", () => {
     );
 
     await waitFor(() => {
-      expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
+      expect((screen.getAllByLabelText("doc-1")[0] as HTMLInputElement).checked).toBe(true);
     });
 
     expect((screen.getByLabelText("Chunk Mode") as HTMLSelectElement).value).toBe("off");
@@ -93,7 +93,7 @@ describe("PromptLabRunForm", () => {
     );
 
     await waitFor(() => {
-      expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
+      expect((screen.getAllByLabelText("doc-1")[0] as HTMLInputElement).checked).toBe(true);
     });
 
     expect((screen.getByLabelText("Match") as HTMLSelectElement).value).toBe("overlap");
@@ -113,7 +113,7 @@ describe("PromptLabRunForm", () => {
     );
 
     await waitFor(() => {
-      expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
+      expect((screen.getAllByLabelText("doc-1")[0] as HTMLInputElement).checked).toBe(true);
     });
 
     expect((screen.getByLabelText("Preset Bundle") as HTMLSelectElement).value).toBe("audited");
@@ -165,7 +165,7 @@ describe("PromptLabRunForm", () => {
     );
 
     await waitFor(() => {
-      expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
+      expect((screen.getAllByLabelText("doc-1")[0] as HTMLInputElement).checked).toBe(true);
     });
 
     fireEvent.change(screen.getByLabelText("Preset Bundle"), {
@@ -200,7 +200,7 @@ describe("PromptLabRunForm", () => {
     );
 
     await waitFor(() => {
-      expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
+      expect((screen.getAllByLabelText("doc-1")[0] as HTMLInputElement).checked).toBe(true);
     });
 
     fireEvent.change(screen.getByLabelText("Preset Bundle"), {
@@ -235,7 +235,7 @@ describe("PromptLabRunForm", () => {
     );
 
     await waitFor(() => {
-      expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
+      expect((screen.getAllByLabelText("doc-1")[0] as HTMLInputElement).checked).toBe(true);
     });
 
     fireEvent.change(screen.getByLabelText("Preset Bundle"), {
@@ -270,7 +270,7 @@ describe("PromptLabRunForm", () => {
     );
 
     await waitFor(() => {
-      expect((screen.getAllByLabelText("doc-1.txt")[0] as HTMLInputElement).checked).toBe(true);
+      expect((screen.getAllByLabelText("doc-1")[0] as HTMLInputElement).checked).toBe(true);
     });
 
     fireEvent.change(screen.getByLabelText("Preset Bundle"), {
@@ -287,5 +287,35 @@ describe("PromptLabRunForm", () => {
         }),
       );
     });
+  });
+
+  it("shows internal document ids in the prompt lab document picker", async () => {
+    const jsonlDocuments: DocumentSummary[] = [
+      {
+        id: "476838c9_line0",
+        filename: "DeID_GT_UPchieve_math_1000transcripts (2).record-0001.json",
+        display_name: "Session 16592",
+        status: "reviewed",
+      },
+    ];
+
+    render(
+      <PromptLabRunForm
+        documents={jsonlDocuments}
+        folders={[]}
+        selectedDocumentId="476838c9_line0"
+        methods={[]}
+        onRun={vi.fn()}
+        running={false}
+        concurrencyMax={12}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        (screen.getAllByLabelText("476838c9_line0")[0] as HTMLInputElement).checked,
+      ).toBe(true);
+    });
+    expect(screen.queryByText("Session 16592")).toBeNull();
   });
 });

@@ -4,6 +4,7 @@ import type {
   DocumentSummary,
   FolderDetail,
   FolderSummary,
+  GroundTruthExportScope,
   ImportConflictPolicy,
 } from "../types";
 import PromptDialog from "./PromptDialog";
@@ -20,12 +21,18 @@ interface Props {
   onCreateFolderSample: (folderId: string, count: number) => void;
   onDeleteFolder: (folderId: string) => void;
   onPruneFolder: (folderId: string) => void;
-  onExportSession: (mode: "full" | "ground_truth", source: AnnotationSource) => void;
+  onMirrorPreToManual: (exportScope: GroundTruthExportScope) => void;
+  onExportSession: (
+    mode: "full" | "ground_truth",
+    source: AnnotationSource,
+    exportScope: GroundTruthExportScope,
+  ) => void;
   exportSourceOptions: Array<{ value: AnnotationSource; label: string }>;
   ingesting?: boolean;
   deletingId?: string | null;
   folderBusyId?: string | null;
   exporting?: boolean;
+  mirroringPreToManual?: boolean;
 }
 
 type ExportMode = "full" | "ground_truth";
@@ -36,6 +43,7 @@ interface SidebarState {
   expandedFolders: Record<string, boolean>;
   exportMode: ExportMode;
   exportSource: AnnotationSource;
+  exportScope: GroundTruthExportScope;
   importConflictPolicy: ImportConflictPolicy;
 }
 
@@ -46,6 +54,7 @@ type SidebarAction =
   | { type: "sync_folders"; folders: FolderSummary[] }
   | { type: "set_export_mode"; value: ExportMode }
   | { type: "set_export_source"; value: AnnotationSource }
+  | { type: "set_export_scope"; value: GroundTruthExportScope }
   | { type: "set_import_conflict_policy"; value: ImportConflictPolicy };
 
 function createInitialSidebarState(
@@ -57,6 +66,7 @@ function createInitialSidebarState(
     expandedFolders: {},
     exportMode: "full",
     exportSource: exportSourceOptions[0]?.value ?? "manual",
+    exportScope: { kind: "top_level" },
     importConflictPolicy: "replace",
   };
 }
@@ -101,6 +111,10 @@ function sidebarReducer(state: SidebarState, action: SidebarAction): SidebarStat
       return state.exportSource === action.value
         ? state
         : { ...state, exportSource: action.value };
+    case "set_export_scope":
+      return JSON.stringify(state.exportScope) === JSON.stringify(action.value)
+        ? state
+        : { ...state, exportScope: action.value };
     case "set_import_conflict_policy":
       return state.importConflictPolicy === action.value
         ? state
@@ -129,6 +143,7 @@ function folderMatchesSearch(
   if (
     detail.documents.some(
       (doc) =>
+        doc.id.toLowerCase().includes(term) ||
         doc.display_name.toLowerCase().includes(term) ||
         doc.filename.toLowerCase().includes(term),
     )
@@ -150,6 +165,41 @@ function folderDepth(folder: FolderSummary, folderById: Map<string, FolderSummar
     current = parent;
   }
   return depth;
+}
+
+function flattenFolders(
+  folders: FolderSummary[],
+): Array<{ folder: FolderSummary; depth: number }> {
+  const byParent = new Map<string | null, FolderSummary[]>();
+  for (const folder of folders) {
+    const bucket = byParent.get(folder.parent_folder_id) ?? [];
+    bucket.push(folder);
+    byParent.set(folder.parent_folder_id, bucket);
+  }
+  const ordered: Array<{ folder: FolderSummary; depth: number }> = [];
+  const visit = (parentId: string | null, depth: number) => {
+    const children = byParent.get(parentId) ?? [];
+    for (const folder of children) {
+      ordered.push({ folder, depth });
+      visit(folder.id, depth + 1);
+    }
+  };
+  visit(null, 0);
+  return ordered;
+}
+
+function serializeExportScope(scope: GroundTruthExportScope): string {
+  return scope.kind === "top_level" ? "top_level" : `folder:${scope.folderId}`;
+}
+
+function parseExportScope(value: string): GroundTruthExportScope {
+  if (value.startsWith("folder:")) {
+    const folderId = value.slice("folder:".length).trim();
+    if (folderId) {
+      return { kind: "folder", folderId };
+    }
+  }
+  return { kind: "top_level" };
 }
 
 function handleDropZoneKeyDown(
@@ -192,8 +242,8 @@ function SidebarDocumentRow({
     >
       <span className="doc-row-main">
         <span className={`status-badge ${document.status}`} />
-        <span className="doc-filename" title={document.display_name}>
-          {document.display_name}
+        <span className="doc-filename" title={document.filename || document.display_name || document.id}>
+          {document.id}
         </span>
       </span>
       <button
@@ -327,8 +377,8 @@ function SidebarFolderBranch({
           >
             <span className="doc-row-main">
               <span className={`status-badge ${document.status}`} />
-              <span className="doc-filename" title={document.display_name}>
-                {document.display_name}
+              <span className="doc-filename" title={document.filename || document.display_name || document.id}>
+                {document.id}
               </span>
             </span>
           </li>
@@ -509,13 +559,18 @@ function SidebarDropZone({
 function SidebarActionsPanel({
   ingesting,
   exporting,
+  mirroringPreToManual,
   exportMode,
   exportSource,
+  exportScope,
   exportSourceOptions,
+  exportScopeOptions,
   importConflictPolicy,
   onImportConflictPolicyChange,
   onExportModeChange,
   onExportSourceChange,
+  onExportScopeChange,
+  onMirrorPreToManual,
   onExportSession,
   onRequestNewFolder,
   ingestDragOver,
@@ -528,14 +583,23 @@ function SidebarActionsPanel({
 }: {
   ingesting: boolean;
   exporting: boolean;
+  mirroringPreToManual: boolean;
   exportMode: ExportMode;
   exportSource: AnnotationSource;
+  exportScope: GroundTruthExportScope;
   exportSourceOptions: Props["exportSourceOptions"];
+  exportScopeOptions: Array<{ value: string; label: string }>;
   importConflictPolicy: ImportConflictPolicy;
   onImportConflictPolicyChange: (value: ImportConflictPolicy) => void;
   onExportModeChange: (value: ExportMode) => void;
   onExportSourceChange: (value: AnnotationSource) => void;
-  onExportSession: (mode: ExportMode, source: AnnotationSource) => void;
+  onExportScopeChange: (value: GroundTruthExportScope) => void;
+  onMirrorPreToManual: (exportScope: GroundTruthExportScope) => void;
+  onExportSession: (
+    mode: ExportMode,
+    source: AnnotationSource,
+    exportScope: GroundTruthExportScope,
+  ) => void;
   onRequestNewFolder: () => void;
   ingestDragOver: boolean;
   ingestRef: React.RefObject<HTMLInputElement | null>;
@@ -595,7 +659,16 @@ function SidebarActionsPanel({
         <button
           type="button"
           className="sidebar-action-btn"
-          onClick={() => onExportSession(exportMode, exportSource)}
+          onClick={() => onMirrorPreToManual(exportScope)}
+          disabled={Boolean(exporting || ingesting || mirroringPreToManual)}
+        >
+          {mirroringPreToManual ? "Mirroring..." : "Mirror Pre to Manual"}
+        </button>
+
+        <button
+          type="button"
+          className="sidebar-action-btn"
+          onClick={() => onExportSession(exportMode, exportSource, exportScope)}
           disabled={exporting || ingesting}
         >
           {exporting
@@ -614,7 +687,21 @@ function SidebarActionsPanel({
             disabled={exporting || ingesting}
           >
             <option value="full">Full Session Bundle</option>
-            <option value="ground_truth">Ground Truth JSONs (ZIP)</option>
+              <option value="ground_truth">Ground Truth JSONs (ZIP)</option>
+            </select>
+
+          <label htmlFor="bundle-export-scope">Export Scope</label>
+          <select
+            id="bundle-export-scope"
+            value={serializeExportScope(exportScope)}
+            onChange={(e) => onExportScopeChange(parseExportScope(e.target.value))}
+            disabled={exporting || ingesting || mirroringPreToManual}
+          >
+            {exportScopeOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
           </select>
 
           {exportMode === "ground_truth" && (
@@ -628,10 +715,10 @@ function SidebarActionsPanel({
               >
                 {exportSourceOptions.map((option) => (
                   <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+                  {option.label}
+                </option>
+              ))}
+            </select>
             </>
           )}
         </div>
@@ -652,12 +739,14 @@ export default function Sidebar({
   onCreateFolderSample,
   onDeleteFolder,
   onPruneFolder,
+  onMirrorPreToManual,
   onExportSession,
   exportSourceOptions,
   ingesting = false,
   deletingId = null,
   folderBusyId = null,
   exporting = false,
+  mirroringPreToManual = false,
 }: Props) {
   type DialogState =
     | { kind: "none" }
@@ -676,6 +765,16 @@ export default function Sidebar({
     () => new Map(folders.map((folder) => [folder.id, folder])),
     [folders],
   );
+  const exportScopeOptions = useMemo(
+    () => [
+      { value: "top_level", label: "Top-Level Documents" },
+      ...flattenFolders(folders).map(({ folder, depth }) => ({
+        value: `folder:${folder.id}`,
+        label: `${depth > 0 ? `${"  ".repeat(depth)}> ` : ""}Folder: ${folder.name}`,
+      })),
+    ],
+    [folders],
+  );
 
   useEffect(() => {
     dispatch({ type: "sync_folders", folders });
@@ -692,12 +791,22 @@ export default function Sidebar({
     }
   }, [exportSourceOptions, state.exportSource]);
 
+  useEffect(() => {
+    if (state.exportScope.kind !== "folder") return;
+    const { folderId } = state.exportScope;
+    const folderStillExists = folders.some((folder) => folder.id === folderId);
+    if (!folderStillExists) {
+      dispatch({ type: "set_export_scope", value: { kind: "top_level" } });
+    }
+  }, [folders, state.exportScope]);
+
   const filteredDocuments = useMemo(
     () =>
       documents.filter((doc) => {
         const term = state.search.toLowerCase();
         return (
           term.length === 0 ||
+          doc.id.toLowerCase().includes(term) ||
           doc.display_name.toLowerCase().includes(term) ||
           doc.filename.toLowerCase().includes(term)
         );
@@ -791,21 +900,26 @@ export default function Sidebar({
         onPruneFolder={onPruneFolder}
       />
 
-      <SidebarActionsPanel
-        ingesting={ingesting}
-        exporting={exporting}
-        exportMode={state.exportMode}
-        exportSource={state.exportSource}
-        exportSourceOptions={exportSourceOptions}
+        <SidebarActionsPanel
+          ingesting={ingesting}
+          exporting={exporting}
+          mirroringPreToManual={mirroringPreToManual}
+          exportMode={state.exportMode}
+          exportSource={state.exportSource}
+          exportScope={state.exportScope}
+          exportSourceOptions={exportSourceOptions}
+          exportScopeOptions={exportScopeOptions}
         importConflictPolicy={state.importConflictPolicy}
         onImportConflictPolicyChange={(value) =>
           dispatch({ type: "set_import_conflict_policy", value })
         }
-        onExportModeChange={(value) => dispatch({ type: "set_export_mode", value })}
-        onExportSourceChange={(value) => dispatch({ type: "set_export_source", value })}
-        onExportSession={onExportSession}
-        onRequestNewFolder={handleRequestNewFolder}
-        ingestDragOver={state.ingestDragOver}
+          onExportModeChange={(value) => dispatch({ type: "set_export_mode", value })}
+          onExportSourceChange={(value) => dispatch({ type: "set_export_source", value })}
+          onExportScopeChange={(value) => dispatch({ type: "set_export_scope", value })}
+          onMirrorPreToManual={onMirrorPreToManual}
+          onExportSession={onExportSession}
+          onRequestNewFolder={handleRequestNewFolder}
+          ingestDragOver={state.ingestDragOver}
         ingestRef={ingestRef}
         onIngestOpenPicker={openIngestPicker}
         onIngestDragOver={(e) => {

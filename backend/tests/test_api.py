@@ -6427,6 +6427,116 @@ def test_export_ground_truth_zip_returns_404_for_unknown_folder_scope(client):
     assert export_resp.json() == {"detail": "Folder not found"}
 
 
+def test_mirror_pre_to_manual_can_scope_to_recursive_folder_docs_and_overwrite_manual(client):
+    top_level_resp = _upload(
+        client,
+        _make_hips_v1_custom(
+            "Top level Anna",
+            pii_occurrences=[{"start": 10, "end": 14, "text": "Anna", "pii_type": "NAME"}],
+        ),
+        filename="top.json",
+    )
+    assert top_level_resp.status_code == 200
+    top_level_id = top_level_resp.json()["id"]
+
+    parent_resp = _upload(
+        client,
+        _make_hips_v1_custom(
+            "Parent Liam",
+            pii_occurrences=[{"start": 7, "end": 11, "text": "Liam", "pii_type": "NAME"}],
+        ),
+        filename="parent.json",
+    )
+    assert parent_resp.status_code == 200
+    parent_doc_id = parent_resp.json()["id"]
+
+    child_resp = _upload(
+        client,
+        _make_hips_v1_custom("Child clean", pii_occurrences=[]),
+        filename="child.json",
+    )
+    assert child_resp.status_code == 200
+    child_doc_id = child_resp.json()["id"]
+
+    parent_manual_resp = client.put(
+        f"/api/documents/{parent_doc_id}/manual-annotations",
+        json=[{"start": 0, "end": 6, "label": "NAME", "text": "Parent"}],
+    )
+    assert parent_manual_resp.status_code == 200
+    child_manual_resp = client.put(
+        f"/api/documents/{child_doc_id}/manual-annotations",
+        json=[{"start": 0, "end": 5, "label": "NAME", "text": "Child"}],
+    )
+    assert child_manual_resp.status_code == 200
+
+    folder_dir = _session_dir() / "folders"
+    folder_dir.mkdir(parents=True, exist_ok=True)
+    parent_folder = FolderRecord(
+        id="folder-parent",
+        name="UPchieve",
+        kind="manual",
+        parent_folder_id=None,
+        doc_ids=[parent_doc_id],
+        child_folder_ids=["folder-child"],
+        created_at="2026-03-17T00:00:00Z",
+        doc_display_names={parent_doc_id: "Parent transcript"},
+    )
+    child_folder = FolderRecord(
+        id="folder-child",
+        name="Math",
+        kind="manual",
+        parent_folder_id="folder-parent",
+        doc_ids=[child_doc_id],
+        child_folder_ids=[],
+        created_at="2026-03-17T00:00:01Z",
+        doc_display_names={child_doc_id: "Child transcript"},
+    )
+    (folder_dir / "_index.json").write_text(json.dumps([parent_folder.id, child_folder.id]))
+    (folder_dir / f"{parent_folder.id}.json").write_text(parent_folder.model_dump_json(indent=2))
+    (folder_dir / f"{child_folder.id}.json").write_text(child_folder.model_dump_json(indent=2))
+
+    mirror_resp = client.post(
+        "/api/session/mirror-pre-to-manual",
+        params={"scope": "folder", "folder_id": parent_folder.id},
+    )
+
+    assert mirror_resp.status_code == 200
+    assert mirror_resp.json() == {
+        "scope": "folder",
+        "folder_id": parent_folder.id,
+        "processed_count": 2,
+        "copied_count": 1,
+        "cleared_count": 1,
+        "doc_ids": [parent_doc_id, child_doc_id],
+    }
+
+    parent_doc = client.get(f"/api/documents/{parent_doc_id}").json()
+    assert parent_doc["pre_annotations"] == [
+        {"start": 7, "end": 11, "label": "NAME", "text": "Liam"}
+    ]
+    assert parent_doc["manual_annotations"] == parent_doc["pre_annotations"]
+
+    child_doc = client.get(f"/api/documents/{child_doc_id}").json()
+    assert child_doc["pre_annotations"] == []
+    assert child_doc["manual_annotations"] == []
+
+    top_level_doc = client.get(f"/api/documents/{top_level_id}").json()
+    assert top_level_doc["pre_annotations"] == [
+        {"start": 10, "end": 14, "label": "NAME", "text": "Anna"}
+    ]
+    assert top_level_doc["manual_annotations"] == []
+
+
+def test_mirror_pre_to_manual_requires_folder_id_for_folder_scope(client):
+    mirror_resp = client.post(
+        "/api/session/mirror-pre-to-manual",
+        params={"scope": "folder"},
+    )
+
+    assert mirror_resp.status_code == 400
+    assert mirror_resp.json() == {"detail": "folder_id is required when scope=folder"}
+
+
 def test_session_import_accepts_ground_truth_zip_without_existing_source(client):
     transcript = "Hello Anna, call Sue please."
     upload_resp = _upload(client, _make_hips_v1_custom(transcript))

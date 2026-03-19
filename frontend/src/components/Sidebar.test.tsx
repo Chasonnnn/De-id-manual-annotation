@@ -3,7 +3,13 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import Sidebar from "./Sidebar";
-import type { DocumentSummary, FolderDetail, FolderSummary } from "../types";
+import type {
+  AnnotationSource,
+  DocumentSummary,
+  FolderDetail,
+  FolderSummary,
+  GroundTruthExportScope,
+} from "../types";
 
 describe("Sidebar", () => {
   afterEach(() => {
@@ -120,6 +126,7 @@ describe("Sidebar", () => {
         onCreateFolderSample={vi.fn()}
         onDeleteFolder={vi.fn()}
         onPruneFolder={vi.fn()}
+        onMirrorPreToManual={vi.fn()}
         onExportSession={vi.fn()}
         exportSourceOptions={[{ value: "manual", label: "Manual annotations" }]}
         {...overrides}
@@ -134,22 +141,22 @@ describe("Sidebar", () => {
     expect(
       screen.getByText("Drop transcript/session bundle/ground truth here or click to add"),
     ).toBeTruthy();
-    expect(screen.getByText("Top-Level Documents")).toBeTruthy();
-    expect(screen.getByText("batch.jsonl")).toBeTruthy();
+    expect(screen.getAllByText("Top-Level Documents").length).toBeGreaterThan(0);
+    expect(screen.getByText("doc-merged")).toBeTruthy();
     expect(screen.getByText("Folders")).toBeTruthy();
     expect(screen.getByText("batch")).toBeTruthy();
     expect(screen.getByText("Manual Set")).toBeTruthy();
     expect(screen.getByText("Sample 1")).toBeTruthy();
-    expect(screen.queryByText("Session alpha")).toBeNull();
-    expect(screen.queryByText("Session beta")).toBeNull();
+    expect(screen.queryByText("doc-child-1")).toBeNull();
+    expect(screen.queryByText("doc-child-2")).toBeNull();
 
     const expandButtons = screen.getAllByRole("button", { name: "Expand folder" });
     fireEvent.click(expandButtons[0]!);
 
-    expect(await screen.findByText("Session alpha")).toBeTruthy();
-    expect(screen.getByText("Session beta")).toBeTruthy();
+    expect(await screen.findByText("doc-child-1")).toBeTruthy();
+    expect(screen.getByText("doc-child-2")).toBeTruthy();
 
-    fireEvent.click(screen.getByText("Session alpha"));
+    fireEvent.click(screen.getByText("doc-child-1"));
 
     expect(onSelect).toHaveBeenCalledWith("doc-child-1");
   });
@@ -218,5 +225,73 @@ describe("Sidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create Sample" }));
 
     expect(onCreateFolderSample).toHaveBeenCalledWith("folder-import", 3);
+  });
+
+  it("offers top-level and folder ground-truth export scopes", () => {
+    renderSidebar();
+
+    fireEvent.change(screen.getByLabelText("Export Type"), {
+      target: { value: "ground_truth" },
+    });
+
+    const scopeSelect = screen.getByLabelText("Export Scope") as HTMLSelectElement;
+    const options = Array.from(scopeSelect.options).map((option) => option.textContent);
+
+    expect(options).toEqual([
+      "Top-Level Documents",
+      "Folder: batch",
+      "Folder: Sample 1",
+      "Folder: Manual Set",
+    ]);
+  });
+
+  it("passes the selected folder export scope when exporting ground truth", () => {
+    const onExportSession = vi.fn<
+      (
+        mode: "full" | "ground_truth",
+        source: AnnotationSource,
+        scope: GroundTruthExportScope,
+      ) => void
+    >();
+    renderSidebar({ onExportSession });
+
+    fireEvent.change(screen.getByLabelText("Export Type"), {
+      target: { value: "ground_truth" },
+    });
+    fireEvent.change(screen.getByLabelText("Export Scope"), {
+      target: { value: "folder:folder-import" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Export Ground Truth JSONs" }));
+
+    expect(onExportSession).toHaveBeenCalledWith("ground_truth", "manual", {
+      kind: "folder",
+      folderId: "folder-import",
+    });
+  });
+
+  it("passes the selected scope when mirroring pre-annotations into manual", () => {
+    const onMirrorPreToManual = vi.fn<(scope: GroundTruthExportScope) => void>();
+    renderSidebar({ onMirrorPreToManual });
+
+    fireEvent.change(screen.getByLabelText("Export Scope"), {
+      target: { value: "folder:folder-import" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Mirror Pre to Manual" }));
+
+    expect(onMirrorPreToManual).toHaveBeenCalledWith({
+      kind: "folder",
+      folderId: "folder-import",
+    });
+  });
+
+  it("shows internal document ids in the workspace tree even when display names differ", async () => {
+    renderSidebar();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Expand folder" })[0]!);
+
+    expect(await screen.findByText("doc-child-1")).toBeTruthy();
+    expect(screen.getByText("doc-child-2")).toBeTruthy();
+    expect(screen.queryByText("Session alpha")).toBeNull();
+    expect(screen.queryByText("Session beta")).toBeNull();
   });
 });

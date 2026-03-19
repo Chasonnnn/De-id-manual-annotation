@@ -165,11 +165,24 @@ export interface FolderDetail extends FolderSummary {
   child_folders: FolderSummary[];
 }
 
+export type GroundTruthExportScope =
+  | { kind: "top_level" }
+  | { kind: "folder"; folderId: string };
+
 export interface FolderPruneResult {
   folder_id: string;
   removed_count: number;
   removed_doc_ids: string[];
   updated_folder_ids: string[];
+}
+
+export interface MirrorPreToManualResult {
+  scope: "top_level" | "folder";
+  folder_id: string | null;
+  processed_count: number;
+  copied_count: number;
+  cleared_count: number;
+  doc_ids: string[];
 }
 
 export interface MetricsResult {

@@ -13,6 +13,7 @@ import type {
   DocumentSummary,
   FolderDetail,
   FolderSummary,
+  GroundTruthExportScope,
   ImportConflictPolicy,
   LabelProjection,
   MatchMode,
@@ -36,6 +37,7 @@ import {
   ingestSessionFile,
   listFolders,
   listDocuments,
+  mirrorPreToManual,
   pruneEmptyFolderDocs,
   runAgent,
   updateManualAnnotations,
@@ -266,6 +268,7 @@ function useAppContentController() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [folderBusyId, setFolderBusyId] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [mirroringPreToManual, setMirroringPreToManual] = useState(false);
 
   const [visiblePanes, setVisiblePanes] = useState<PaneType[]>(() =>
     normalizePaneOrder(["raw", "pre"]),
@@ -630,9 +633,53 @@ function useAppContentController() {
     [doPruneFolder],
   );
 
+  const doMirrorPreToManual = useCallback(
+    async (scope: GroundTruthExportScope) => {
+      setMirroringPreToManual(true);
+      try {
+        const result = await mirrorPreToManual(scope);
+        const refreshed = await refreshDocuments();
+        if (selectedId && refreshed.allDocIds.has(selectedId)) {
+          await loadSelectedDocument(selectedId);
+        }
+        setWarning(
+          `Mirrored pre-annotations into manual for ${result.processed_count} document(s): ${result.copied_count} copied, ${result.cleared_count} empty.`,
+        );
+      } catch (e: unknown) {
+        setError(String(e));
+      } finally {
+        setMirroringPreToManual(false);
+      }
+    },
+    [loadSelectedDocument, refreshDocuments, selectedId],
+  );
+
+  const handleMirrorPreToManual = useCallback(
+    (scope: GroundTruthExportScope) => {
+      const scopeLabel =
+        scope.kind === "folder"
+          ? `the folder "${folders.find((folder) => folder.id === scope.folderId)?.name ?? scope.folderId}"`
+          : "all documents in the current session";
+      setPendingConfirm({
+        title: "Mirror Pre to Manual",
+        message:
+          `Copy pre-annotations into manual annotations for ${scopeLabel}? ` +
+          "Existing manual annotations in that scope will be replaced.",
+        confirmLabel: "Mirror",
+        destructive: false,
+        onConfirm: () => {
+          setPendingConfirm(null);
+          void doMirrorPreToManual(scope);
+        },
+      });
+    },
+    [doMirrorPreToManual, folders],
+  );
+
   const handleExportSession = useCallback(async (
     mode: "full" | "ground_truth",
     source: AnnotationSource,
+    exportScope: GroundTruthExportScope,
   ) => {
     setExporting(true);
     try {
@@ -643,7 +690,7 @@ function useAppContentController() {
           ? new Blob([JSON.stringify(fullBundle, null, 2)], {
               type: "application/json",
             })
-          : await exportGroundTruth(source);
+          : await exportGroundTruth(source, exportScope);
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -1152,6 +1199,7 @@ function useAppContentController() {
     deletingId,
     folderBusyId,
     exporting,
+    mirroringPreToManual,
     orderedVisiblePanes,
     diffMode,
     setDiffMode,
@@ -1191,6 +1239,7 @@ function useAppContentController() {
     handleCreateFolderSample,
     handleDeleteFolder,
     handlePruneFolder,
+    handleMirrorPreToManual,
     handleExportSession,
     handleDashboardRefresh,
     handleTogglePane,
@@ -1230,6 +1279,7 @@ function renderAppContent(controller: AppContentController) {
     deletingId,
     folderBusyId,
     exporting,
+    mirroringPreToManual,
     orderedVisiblePanes,
     diffMode,
     setDiffMode,
@@ -1269,6 +1319,7 @@ function renderAppContent(controller: AppContentController) {
     handleCreateFolderSample,
     handleDeleteFolder,
     handlePruneFolder,
+    handleMirrorPreToManual,
     handleExportSession,
     handleDashboardRefresh,
     handleTogglePane,
@@ -1298,12 +1349,14 @@ function renderAppContent(controller: AppContentController) {
         onCreateFolderSample={handleCreateFolderSample}
         onDeleteFolder={handleDeleteFolder}
         onPruneFolder={handlePruneFolder}
+        onMirrorPreToManual={handleMirrorPreToManual}
         onExportSession={handleExportSession}
         exportSourceOptions={sourceOptions}
         ingesting={ingesting}
         deletingId={deletingId}
         folderBusyId={folderBusyId}
         exporting={exporting}
+        mirroringPreToManual={mirroringPreToManual}
       />
       <div className="main-area">
         <div className="main-tabbar">

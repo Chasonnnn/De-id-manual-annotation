@@ -471,6 +471,33 @@ def _delete_sidecar(doc_id: str, kind: str, session_id: str = "default") -> bool
     return True
 
 
+def _persist_manual_annotations(
+    doc_id: str,
+    spans: list[CanonicalSpan],
+    session_id: str = "default",
+    *,
+    updated_at: str | None = None,
+) -> None:
+    _save_sidecar(doc_id, "manual", spans, session_id)
+    _upsert_span_map_entry(
+        doc_id,
+        MANUAL_RUNS_SIDECAR_KIND,
+        "manual",
+        spans,
+        session_id,
+    )
+    _upsert_run_metadata(
+        doc_id,
+        MANUAL_RUNS_METADATA_SIDECAR_KIND,
+        "manual",
+        SavedRunMetadata(
+            mode="manual",
+            updated_at=updated_at or _now_iso(),
+        ),
+        session_id,
+    )
+
+
 def _load_method_sidecars(
     doc_id: str,
     session_id: str = "default",
@@ -4171,25 +4198,47 @@ async def save_manual_annotations(doc_id: str, spans: list[CanonicalSpan]):
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     normalized = _normalize_and_validate_spans(spans, doc.raw_text)
-    _save_sidecar(doc_id, "manual", normalized, session_id)
-    _upsert_span_map_entry(
-        doc_id,
-        MANUAL_RUNS_SIDECAR_KIND,
-        "manual",
-        normalized,
-        session_id,
-    )
-    _upsert_run_metadata(
-        doc_id,
-        MANUAL_RUNS_METADATA_SIDECAR_KIND,
-        "manual",
-        SavedRunMetadata(
-            mode="manual",
-            updated_at=_now_iso(),
-        ),
-        session_id,
-    )
+    _persist_manual_annotations(doc_id, normalized, session_id)
     return _enrich_doc(doc, session_id)
+
+
+@app.post("/api/session/mirror-pre-to-manual")
+async def mirror_pre_to_manual(
+    scope: Annotated[Literal["top_level", "folder"], Query()] = "top_level",
+    folder_id: Annotated[str | None, Query()] = None,
+):
+    session_id = "default"
+    doc_ids = _resolve_ground_truth_export_doc_ids(scope, folder_id, session_id)
+    updated_at = _now_iso()
+    processed_doc_ids: list[str] = []
+    copied_count = 0
+    cleared_count = 0
+
+    for doc_id in doc_ids:
+        doc = _load_doc(doc_id, session_id)
+        if doc is None:
+            continue
+        mirrored = _dedup_spans(list(doc.pre_annotations))
+        _persist_manual_annotations(
+            doc_id,
+            mirrored,
+            session_id,
+            updated_at=updated_at,
+        )
+        processed_doc_ids.append(doc_id)
+        if mirrored:
+            copied_count += 1
+        else:
+            cleared_count += 1
+
+    return {
+        "scope": scope,
+        "folder_id": folder_id if scope == "folder" else None,
+        "processed_count": len(processed_doc_ids),
+        "copied_count": copied_count,
+        "cleared_count": cleared_count,
+        "doc_ids": processed_doc_ids,
+    }
 
 
 class AgentRunBody(BaseModel):

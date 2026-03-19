@@ -376,7 +376,7 @@ function MethodsLabDocumentsSection({
               checked={selectedDocIds.includes(doc.id)}
               onChange={() => onToggleDoc(doc.id)}
             />
-            <span title={doc.display_name}>{doc.display_name}</span>
+            <span title={doc.filename || doc.display_name || doc.id}>{doc.id}</span>
           </label>
         ))}
         {flattenedFolders.map(({ folder, depth }) => (
