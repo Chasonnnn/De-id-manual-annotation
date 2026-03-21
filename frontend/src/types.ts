@@ -1,6 +1,4 @@
 export type PIILabel = string;
-export type LabelProfile = "simple" | "advanced";
-export type LabelProjection = "native" | "coarse_simple";
 export type MethodBundle =
   | "legacy"
   | "audited"
@@ -13,26 +11,42 @@ export type ImportConflictPolicy = "replace" | "add_new" | "keep_current";
 
 export const PII_LABELS: PIILabel[] = [
   "NAME",
-  "LOCATION",
-  "SCHOOL",
+  "ADDRESS",
   "DATE",
-  "AGE",
-  "PHONE",
+  "PHONE_NUMBER",
+  "FAX_NUMBER",
   "EMAIL",
+  "SSN",
+  "ACCOUNT_NUMBER",
+  "DEVICE_IDENTIFIER",
   "URL",
-  "MISC_ID",
+  "IP_ADDRESS",
+  "BIOMETRIC_IDENTIFIER",
+  "IMAGE",
+  "IDENTIFYING_NUMBER",
+  "AGE",
+  "SCHOOL",
+  "TUTOR_PROVIDER",
 ];
 
 export const LABEL_COLORS: Record<string, string> = {
   NAME: "#FFD700",
-  LOCATION: "#87CEEB",
-  SCHOOL: "#90EE90",
+  ADDRESS: "#87CEEB",
   DATE: "#DDA0DD",
-  AGE: "#F0E68C",
-  PHONE: "#FA8072",
+  PHONE_NUMBER: "#FA8072",
+  FAX_NUMBER: "#FF8C69",
   EMAIL: "#4682B4",
+  SSN: "#B0C4DE",
+  ACCOUNT_NUMBER: "#C0C0C0",
+  DEVICE_IDENTIFIER: "#9ACD32",
   URL: "#D2B48C",
-  MISC_ID: "#C0C0C0",
+  IP_ADDRESS: "#6A5ACD",
+  BIOMETRIC_IDENTIFIER: "#CD5C5C",
+  IMAGE: "#778899",
+  IDENTIFYING_NUMBER: "#C0C0C0",
+  AGE: "#F0E68C",
+  SCHOOL: "#90EE90",
+  TUTOR_PROVIDER: "#20B2AA",
 };
 
 export function getLabelColor(label: string): string {
@@ -92,7 +106,6 @@ export interface AgentChunkDiagnostic {
 
 export interface AgentRunMetrics {
   llm_confidence: LLMConfidenceMetric | null;
-  label_profile?: LabelProfile | null;
   chunk_diagnostics?: AgentChunkDiagnostic[];
 }
 
@@ -101,7 +114,6 @@ export interface SavedRunMetadata {
   updated_at: string;
   model?: string | null;
   method_id?: string | null;
-  label_profile?: LabelProfile | null;
   prompt_snapshot?: Record<string, unknown> | null;
   llm_confidence?: LLMConfidenceMetric | null;
   chunk_diagnostics?: AgentChunkDiagnostic[];
@@ -188,7 +200,6 @@ export interface MirrorPreToManualResult {
 export interface MetricsResult {
   micro: { precision: number; recall: number; f1: number };
   macro: { precision: number; recall: number; f1: number };
-  label_projection?: LabelProjection;
   per_label: Record<
     string,
     {
@@ -268,7 +279,6 @@ export interface DashboardMetricsResult {
   reference: AnnotationSource;
   hypothesis: AnnotationSource;
   match_mode: MatchMode;
-  label_projection?: LabelProjection;
   total_documents: number;
   documents_compared: number;
   micro: {
@@ -331,7 +341,6 @@ export interface SessionExportBundle {
     };
     agent_metrics?: {
       llm_confidence?: LLMConfidenceMetric | null;
-      label_profile?: LabelProfile | null;
       chunk_diagnostics?: AgentChunkDiagnostic[];
     };
   }>;
@@ -376,7 +385,6 @@ export interface AgentConfig {
   anthropic_thinking_budget_tokens?: number;
   chunk_mode?: "auto" | "off" | "force";
   chunk_size_chars?: number;
-  label_profile?: LabelProfile;
   method_id?: string;
   method_verify?: boolean;
 }
@@ -441,10 +449,10 @@ export interface ExperimentDiagnostics {
 }
 
 export const DEFAULT_EXPERIMENT_LIMITS: ExperimentLimits = {
-  prompt_lab_default_concurrency: 10,
-  prompt_lab_max_concurrency: 16,
-  methods_lab_default_concurrency: 10,
-  methods_lab_max_concurrency: 16,
+  prompt_lab_default_concurrency: 32,
+  prompt_lab_max_concurrency: 32,
+  methods_lab_default_concurrency: 32,
+  methods_lab_max_concurrency: 32,
 };
 
 export interface AgentRunProgress {
@@ -493,8 +501,6 @@ export interface PromptLabRuntimeInput {
   match_mode: MatchMode;
   reference_source: "manual" | "pre";
   fallback_reference_source: "manual" | "pre";
-  label_profile?: LabelProfile;
-  label_projection?: LabelProjection;
   method_bundle?: MethodBundle;
   chunk_mode?: "auto" | "off" | "force";
   chunk_size_chars?: number;
@@ -524,8 +530,6 @@ export interface MethodsLabRuntimeInput {
   match_mode: MatchMode;
   reference_source?: "manual" | "pre";
   fallback_reference_source?: "manual" | "pre";
-  label_profile?: LabelProfile;
-  label_projection?: LabelProjection;
   method_bundle?: MethodBundle;
   chunk_mode?: "auto" | "off" | "force";
   chunk_size_chars?: number;

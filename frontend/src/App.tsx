@@ -15,7 +15,6 @@ import type {
   FolderSummary,
   GroundTruthExportScope,
   ImportConflictPolicy,
-  LabelProjection,
   MatchMode,
   MethodView,
   MetricsResult,
@@ -277,7 +276,6 @@ function useAppContentController() {
   const [reference, setReference] = useState<AnnotationSource>("pre");
   const [hypothesis, setHypothesis] = useState<AnnotationSource>("manual");
   const [matchMode, setMatchMode] = useState<MatchMode>("overlap");
-  const [labelProjection, setLabelProjection] = useState<LabelProjection>("native");
   const [agentView, setAgentView] = useState<AgentView>("combined");
   const [agentLlmRun, setAgentLlmRun] = useState<string>("__latest__");
   const [agentMethods, setAgentMethods] = useState<AgentMethodOption[]>([]);
@@ -881,7 +879,6 @@ function useAppContentController() {
         reference,
         hypothesis,
         matchMode,
-        labelProjection,
       );
       setDashboard(result);
     } catch (e: unknown) {
@@ -889,7 +886,7 @@ function useAppContentController() {
     } finally {
       setDashboardLoading(false);
     }
-  }, [documents.length, reference, hypothesis, matchMode, labelProjection]);
+  }, [documents.length, reference, hypothesis, matchMode]);
 
   useEffect(() => {
     void handleDashboardRefresh();
@@ -1050,7 +1047,6 @@ function useAppContentController() {
         reference,
         hypothesis,
         matchMode,
-        labelProjection,
       );
       setMetrics(result);
     } catch (e: unknown) {
@@ -1058,7 +1054,7 @@ function useAppContentController() {
     } finally {
       setMetricsLoading(false);
     }
-  }, [doc, reference, hypothesis, matchMode, labelProjection]);
+  }, [doc, reference, hypothesis, matchMode]);
 
   // Compute diffs if diff mode is on
   const getSpansForSource = (source: AnnotationSource): CanonicalSpan[] => {
@@ -1209,8 +1205,6 @@ function useAppContentController() {
     setHypothesis,
     matchMode,
     setMatchMode,
-    labelProjection,
-    setLabelProjection,
     agentView,
     setAgentView,
     agentLlmRun,
@@ -1289,8 +1283,6 @@ function renderAppContent(controller: AppContentController) {
     setHypothesis,
     matchMode,
     setMatchMode,
-    labelProjection,
-    setLabelProjection,
     agentView,
     setAgentView,
     agentLlmRun,
@@ -1444,16 +1436,6 @@ function renderAppContent(controller: AppContentController) {
                     <option value="overlap">Overlap</option>
                   </select>
                 </label>
-                <label>
-                  Label Compare
-                  <select
-                    value={labelProjection}
-                    onChange={(e) => setLabelProjection(e.target.value as LabelProjection)}
-                  >
-                    <option value="native">Native</option>
-                    <option value="coarse_simple">Coarse (advanced→simple)</option>
-                  </select>
-                </label>
               </div>
               <button
                 type="button"
@@ -1499,8 +1481,6 @@ function renderAppContent(controller: AppContentController) {
                   sourceOptions={sourceOptions}
                   matchMode={matchMode}
                   onMatchModeChange={setMatchMode}
-                  labelProjection={labelProjection}
-                  onLabelProjectionChange={setLabelProjection}
                   saveStatus={saveStatus}
                 />
                 <PaneContainer>

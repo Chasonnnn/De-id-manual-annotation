@@ -93,5 +93,6 @@ describe("AgentPane", () => {
     fireEvent.change(screen.getByLabelText("Mode"), { target: { value: "llm" } });
 
     expect((screen.getByLabelText("Chunk Mode") as HTMLSelectElement).value).toBe("off");
+    expect(screen.queryByLabelText("Label Profile")).toBeNull();
   });
 });

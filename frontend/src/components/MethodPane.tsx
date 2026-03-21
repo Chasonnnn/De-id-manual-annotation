@@ -8,7 +8,6 @@ import type {
   AgentMethodOption,
   AgentRunProgress,
   CanonicalSpan,
-  LabelProfile,
   MethodView,
 } from "../types";
 import AnnotatedText from "./AnnotatedText";
@@ -55,7 +54,6 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
     const [model, setModel] = useState("openai.gpt-5.3-codex");
     const [customModel, setCustomModel] = useState("");
     const [temperature, setTemperature] = useState(0);
-    const [labelProfile, setLabelProfile] = useState<LabelProfile>("simple");
     const [chunkMode, setChunkMode] = useState<"auto" | "off" | "force">("off");
     const [chunkSizeChars, setChunkSizeChars] = useState(10000);
     const [reasoningEffort, setReasoningEffort] = useState<
@@ -150,7 +148,6 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
       const payload: AgentConfig = {
         mode: "method",
         method_id: selectedMethod.id,
-        label_profile: labelProfile,
       };
       if (supportsVerifyOverride) {
         payload.method_verify = methodVerify;
@@ -381,20 +378,6 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
                   value={temperature}
                   onChange={(e) => setTemperature(parseFloat(e.target.value))}
                 />
-              </div>
-              <div className="field">
-                <label htmlFor="method-label-profile">Label Profile</label>
-                <select
-                  id="method-label-profile"
-                  name="method_label_profile"
-                  value={labelProfile}
-                  onChange={(e) =>
-                    setLabelProfile(e.target.value as LabelProfile)
-                  }
-                >
-                  <option value="simple">Simple</option>
-                  <option value="advanced">Advanced (UPchieve)</option>
-                </select>
               </div>
               <div className="field">
                 <label htmlFor="method-chunk-mode">Chunk Mode</label>

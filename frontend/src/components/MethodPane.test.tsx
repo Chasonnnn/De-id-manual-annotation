@@ -103,5 +103,6 @@ describe("MethodPane", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show Config" }));
 
     expect((screen.getByLabelText("Chunk Mode") as HTMLSelectElement).value).toBe("off");
+    expect(screen.queryByLabelText("Label Profile")).toBeNull();
   });
 });

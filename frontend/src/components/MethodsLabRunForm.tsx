@@ -36,11 +36,7 @@ type MethodsLabRuntimeState = {
   temperature: number;
   matchMode: MatchMode;
   referenceSource: "manual" | "pre";
-  apiKey: string;
-  apiBase: string;
   concurrency: number;
-  labelProfile: "simple" | "advanced";
-  labelProjection: "native" | "coarse_simple";
   methodBundle: MethodBundle;
   chunkMode: "auto" | "off" | "force";
   chunkSizeChars: number;
@@ -66,14 +62,6 @@ const FALLBACK_METHOD_IDS = [
   "presidio+llm-split",
 ] as const;
 const MAX_METHOD_VARIANTS = 12;
-
-function readSessionValue(key: string): string {
-  try {
-    return sessionStorage.getItem(key) ?? "";
-  } catch {
-    return "";
-  }
-}
 
 function makeMethod(index: number, methodOptions: AgentMethodOption[]): MethodsLabMethodInput {
   const selected = methodOptions[0];
@@ -235,36 +223,6 @@ function MethodsLabConfigGrid({
       </div>
 
       <div className="prompt-lab-field prompt-lab-inline">
-        <label htmlFor="methods-lab-label-profile">Label Profile</label>
-        <select
-          id="methods-lab-label-profile"
-          value={runtime.labelProfile}
-          onChange={(e) =>
-            onRuntimeChange({ labelProfile: e.target.value as "simple" | "advanced" })
-          }
-        >
-          <option value="simple">Simple</option>
-          <option value="advanced">Advanced (UPchieve)</option>
-        </select>
-      </div>
-
-      <div className="prompt-lab-field prompt-lab-inline">
-        <label htmlFor="methods-lab-label-projection">Label Compare</label>
-        <select
-          id="methods-lab-label-projection"
-          value={runtime.labelProjection}
-          onChange={(e) =>
-            onRuntimeChange({
-              labelProjection: e.target.value as "native" | "coarse_simple",
-            })
-          }
-        >
-          <option value="native">Native</option>
-          <option value="coarse_simple">Coarse (advanced→simple)</option>
-        </select>
-      </div>
-
-      <div className="prompt-lab-field prompt-lab-inline">
         <label htmlFor="methods-lab-method-bundle">Method Bundle</label>
         <select
           id="methods-lab-method-bundle"
@@ -316,27 +274,6 @@ function MethodsLabConfigGrid({
         </div>
       )}
 
-      <div className="prompt-lab-field">
-        <label htmlFor="methods-lab-api-key">API Key (optional override)</label>
-        <input
-          id="methods-lab-api-key"
-          type="password"
-          value={runtime.apiKey}
-          onChange={(e) => onRuntimeChange({ apiKey: e.target.value })}
-          placeholder="Uses env key when not set"
-        />
-      </div>
-
-      <div className="prompt-lab-field">
-        <label htmlFor="methods-lab-api-base">LiteLLM Base URL (optional override)</label>
-        <input
-          id="methods-lab-api-base"
-          type="text"
-          value={runtime.apiBase}
-          onChange={(e) => onRuntimeChange({ apiBase: e.target.value })}
-          placeholder="https://your-gateway/v1"
-        />
-      </div>
     </div>
   );
 }
@@ -633,11 +570,7 @@ function useMethodsLabRunFormController({
     temperature: 0,
     matchMode: "overlap",
     referenceSource: "manual",
-    apiKey: readSessionValue("methods_lab_api_key"),
-    apiBase: readSessionValue("methods_lab_api_base"),
-    concurrency: 10,
-    labelProfile: "simple",
-    labelProjection: "native",
+    concurrency: Math.min(32, concurrencyMax),
     methodBundle: "audited",
     chunkMode: "off",
     chunkSizeChars: 10000,
@@ -704,30 +637,6 @@ function useMethodsLabRunFormController({
       concurrency: Math.min(Math.max(prev.concurrency, 1), concurrencyMax),
     }));
   }, [concurrencyMax]);
-
-  useEffect(() => {
-    try {
-      if (runtimeState.apiKey) {
-        sessionStorage.setItem("methods_lab_api_key", runtimeState.apiKey);
-      } else {
-        sessionStorage.removeItem("methods_lab_api_key");
-      }
-    } catch {
-      // sessionStorage unavailable
-    }
-  }, [runtimeState.apiKey]);
-
-  useEffect(() => {
-    try {
-      if (runtimeState.apiBase) {
-        sessionStorage.setItem("methods_lab_api_base", runtimeState.apiBase);
-      } else {
-        sessionStorage.removeItem("methods_lab_api_base");
-      }
-    } catch {
-      // sessionStorage unavailable
-    }
-  }, [runtimeState.apiBase]);
 
   useEffect(() => {
     setFormState((prev) => ({
@@ -958,14 +867,10 @@ function useMethodsLabRunFormController({
           : null,
       })),
       runtime: {
-        api_key: runtimeState.apiKey || undefined,
-        api_base: runtimeState.apiBase || undefined,
         temperature: runtimeState.temperature,
         match_mode: runtimeState.matchMode,
         reference_source: runtimeState.referenceSource,
         fallback_reference_source: runtimeState.referenceSource,
-        label_profile: runtimeState.labelProfile,
-        label_projection: runtimeState.labelProjection,
         method_bundle: runtimeState.methodBundle,
         chunk_mode: runtimeState.chunkMode,
         chunk_size_chars: runtimeState.chunkSizeChars,

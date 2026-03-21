@@ -50,13 +50,34 @@ describe("MethodsLabRunForm", () => {
 
     const concurrencyInput = screen.getByLabelText("Concurrency") as HTMLInputElement;
     expect(concurrencyInput.max).toBe("12");
-    expect(concurrencyInput.value).toBe("10");
+    expect(concurrencyInput.value).toBe("12");
 
     fireEvent.change(concurrencyInput, { target: { value: "13" } });
     fireEvent.click(screen.getByRole("button", { name: "Run Methods Lab" }));
 
     expect(await screen.findByText("Concurrency must be 1 to 12")).toBeTruthy();
     expect(onRun).not.toHaveBeenCalled();
+  });
+
+  it("does not show API key or base URL overrides", async () => {
+    render(
+      <MethodsLabRunForm
+        documents={documents}
+        folders={[]}
+        selectedDocumentId="doc-1"
+        methods={[]}
+        onRun={vi.fn()}
+        running={false}
+        concurrencyMax={16}
+      />,
+    );
+
+    await waitFor(() => {
+      expect((screen.getAllByLabelText("doc-1")[0] as HTMLInputElement).checked).toBe(true);
+    });
+
+    expect(screen.queryByLabelText("API Key (optional override)")).toBeNull();
+    expect(screen.queryByLabelText("LiteLLM Base URL (optional override)")).toBeNull();
   });
 
   it("defaults methods lab chunk mode to off", async () => {

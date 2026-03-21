@@ -51,15 +51,6 @@ function isErrorDocStatus(status: MethodsLabDocResult["status"]): boolean {
   return status === "failed" || status === "unavailable";
 }
 
-function readSessionStorageValue(key: string): string | undefined {
-  try {
-    const value = sessionStorage.getItem(key)?.trim() ?? "";
-    return value || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
   const [setupCollapsed, setSetupCollapsed] = useState(false);
   const [runs, setRuns] = useState<MethodsLabRunSummary[]>([]);
@@ -465,9 +456,7 @@ function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
         models: [selectedModel],
         runtime: {
           ...runDetail.runtime,
-          api_key: readSessionStorageValue("methods_lab_api_key"),
-          api_base:
-            readSessionStorageValue("methods_lab_api_base") ?? runDetail.runtime.api_base,
+          api_base: undefined,
         },
         concurrency: runDetail.concurrency,
       });

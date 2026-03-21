@@ -13,7 +13,6 @@ import type {
   AgentRunProgress,
   AgentView,
   CanonicalSpan,
-  LabelProfile,
 } from "../types";
 import AnnotatedText from "./AnnotatedText";
 import ChunkDiagnosticsPanel from "./ChunkDiagnosticsPanel";
@@ -69,7 +68,6 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
     const [model, setModel] = useState("openai.gpt-5.3-codex");
     const [customModel, setCustomModel] = useState("");
     const [temperature, setTemperature] = useState(0);
-    const [labelProfile, setLabelProfile] = useState<LabelProfile>("simple");
     const [chunkMode, setChunkMode] = useState<"auto" | "off" | "force">("off");
     const [chunkSizeChars, setChunkSizeChars] = useState(10000);
     const [reasoningEffort, setReasoningEffort] = useState<
@@ -156,7 +154,6 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
         anthropic_thinking_budget_tokens: anthropicThinking
           ? anthropicThinkingBudget
           : undefined,
-        label_profile: labelProfile,
         chunk_mode: chunkMode,
         chunk_size_chars: chunkSizeChars,
       });
@@ -367,20 +364,6 @@ const AgentPane = forwardRef<HTMLDivElement, Props>(
                   value={temperature}
                   onChange={(e) => setTemperature(parseFloat(e.target.value))}
                 />
-              </div>
-              <div className="field">
-                <label htmlFor="agent-label-profile">Label Profile</label>
-                <select
-                  id="agent-label-profile"
-                  name="agent_label_profile"
-                  value={labelProfile}
-                  onChange={(e) =>
-                    setLabelProfile(e.target.value as LabelProfile)
-                  }
-                >
-                  <option value="simple">Simple</option>
-                  <option value="advanced">Advanced (UPchieve)</option>
-                </select>
               </div>
               <div className="field">
                 <label htmlFor="agent-chunk-mode">Chunk Mode</label>

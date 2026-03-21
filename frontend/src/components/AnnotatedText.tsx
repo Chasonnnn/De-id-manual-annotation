@@ -130,7 +130,7 @@ function renderSegment(
     new Set(activeSpanIndices.map((index) => sortedSpans[index]!.label)),
   );
   const clickableIndex = pickClickableSpanIndex(activeSpanIndices, sortedSpans);
-  const color = getLabelColor(labels[0] ?? "MISC_ID");
+  const color = getLabelColor(labels[0] ?? "IDENTIFYING_NUMBER");
   const isClickable = clickable && onSpanClick && clickableIndex !== null;
   const handleActivate = (e: React.MouseEvent | React.KeyboardEvent) => {
     if (clickableIndex === null || !onSpanClick) {

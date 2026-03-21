@@ -157,8 +157,6 @@ function makeRunDetail(
       match_mode: "exact",
       reference_source: "manual",
       fallback_reference_source: "pre",
-      label_profile: "simple",
-      label_projection: "native",
       method_bundle: summary.method_bundle,
       chunk_mode: "auto",
       chunk_size_chars: 10000,
@@ -282,9 +280,9 @@ describe("PromptLabTab", () => {
       },
     });
     clientMocks.getExperimentLimits.mockResolvedValue({
-      prompt_lab_default_concurrency: 10,
+      prompt_lab_default_concurrency: 16,
       prompt_lab_max_concurrency: 16,
-      methods_lab_default_concurrency: 10,
+      methods_lab_default_concurrency: 16,
       methods_lab_max_concurrency: 16,
     });
   });
@@ -340,9 +338,9 @@ describe("PromptLabTab", () => {
   it("loads experiment limits and passes the prompt concurrency max to the form", async () => {
     clientMocks.listPromptLabRuns.mockResolvedValue([]);
     clientMocks.getExperimentLimits.mockResolvedValue({
-      prompt_lab_default_concurrency: 10,
+      prompt_lab_default_concurrency: 16,
       prompt_lab_max_concurrency: 12,
-      methods_lab_default_concurrency: 10,
+      methods_lab_default_concurrency: 16,
       methods_lab_max_concurrency: 16,
     });
 

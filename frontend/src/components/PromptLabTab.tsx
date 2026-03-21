@@ -51,15 +51,6 @@ function isErrorDocStatus(status: PromptLabDocResult["status"]): boolean {
   return status === "failed" || status === "unavailable";
 }
 
-function readSessionStorageValue(key: string): string | undefined {
-  try {
-    const value = sessionStorage.getItem(key)?.trim() ?? "";
-    return value || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function usePromptLabTabController(onSelectDocument: (docId: string) => void) {
   const [setupCollapsed, setSetupCollapsed] = useState(false);
   const [runs, setRuns] = useState<PromptLabRunSummary[]>([]);
@@ -474,9 +465,7 @@ function usePromptLabTabController(onSelectDocument: (docId: string) => void) {
         models: [selectedModel],
         runtime: {
           ...runDetail.runtime,
-          api_key: readSessionStorageValue("prompt_lab_api_key"),
-          api_base:
-            readSessionStorageValue("prompt_lab_api_base") ?? runDetail.runtime.api_base,
+          api_base: undefined,
         },
         concurrency: runDetail.concurrency,
       });

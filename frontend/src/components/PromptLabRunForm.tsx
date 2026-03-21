@@ -37,11 +37,7 @@ type PromptLabRuntimeState = {
   matchMode: MatchMode;
   referenceSource: "manual" | "pre";
   fallbackSource: "manual" | "pre";
-  apiKey: string;
-  apiBase: string;
   concurrency: number;
-  labelProfile: "simple" | "advanced";
-  labelProjection: "native" | "coarse_simple";
   methodBundle: MethodBundle;
   chunkMode: "auto" | "off" | "force";
   chunkSizeChars: number;
@@ -69,14 +65,6 @@ const FALLBACK_PRESET_METHOD_IDS = [
 
 const DEFAULT_PROMPT =
   'You are a PII annotation assistant. Return ONLY a JSON array of objects with start (0-based), end (exclusive), label, and text for each PII span.';
-
-function readSessionValue(key: string): string {
-  try {
-    return sessionStorage.getItem(key) ?? "";
-  } catch {
-    return "";
-  }
-}
 
 function makePrompt(index: number): PromptLabPromptInput {
   return {
@@ -250,36 +238,6 @@ function PromptLabConfigGrid({
       </div>
 
       <div className="prompt-lab-field prompt-lab-inline">
-        <label htmlFor="prompt-lab-label-profile">Label Profile</label>
-        <select
-          id="prompt-lab-label-profile"
-          value={runtime.labelProfile}
-          onChange={(e) =>
-            onRuntimeChange({ labelProfile: e.target.value as "simple" | "advanced" })
-          }
-        >
-          <option value="simple">Simple</option>
-          <option value="advanced">Advanced (UPchieve)</option>
-        </select>
-      </div>
-
-      <div className="prompt-lab-field prompt-lab-inline">
-        <label htmlFor="prompt-lab-label-projection">Label Compare</label>
-        <select
-          id="prompt-lab-label-projection"
-          value={runtime.labelProjection}
-          onChange={(e) =>
-            onRuntimeChange({
-              labelProjection: e.target.value as "native" | "coarse_simple",
-            })
-          }
-        >
-          <option value="native">Native</option>
-          <option value="coarse_simple">Coarse (advanced→simple)</option>
-        </select>
-      </div>
-
-      <div className="prompt-lab-field prompt-lab-inline">
         <label htmlFor="prompt-lab-method-bundle">Preset Bundle</label>
         <select
           id="prompt-lab-method-bundle"
@@ -332,27 +290,6 @@ function PromptLabConfigGrid({
         </div>
       )}
 
-      <div className="prompt-lab-field">
-        <label htmlFor="prompt-lab-api-key">API Key (optional override)</label>
-        <input
-          id="prompt-lab-api-key"
-          type="password"
-          value={runtime.apiKey}
-          onChange={(e) => onRuntimeChange({ apiKey: e.target.value })}
-          placeholder="Uses env key when not set"
-        />
-      </div>
-
-      <div className="prompt-lab-field">
-        <label htmlFor="prompt-lab-api-base">LiteLLM Base URL (optional override)</label>
-        <input
-          id="prompt-lab-api-base"
-          type="text"
-          value={runtime.apiBase}
-          onChange={(e) => onRuntimeChange({ apiBase: e.target.value })}
-          placeholder="https://your-gateway/v1"
-        />
-      </div>
     </div>
   );
 }
@@ -668,11 +605,7 @@ function usePromptLabRunFormController({
     matchMode: "overlap",
     referenceSource: "manual",
     fallbackSource: "pre",
-    apiKey: readSessionValue("prompt_lab_api_key"),
-    apiBase: readSessionValue("prompt_lab_api_base"),
-    concurrency: 10,
-    labelProfile: "simple",
-    labelProjection: "native",
+    concurrency: Math.min(32, concurrencyMax),
     methodBundle: "audited",
     chunkMode: "off",
     chunkSizeChars: 10000,
@@ -715,24 +648,6 @@ function usePromptLabRunFormController({
       concurrency: Math.min(Math.max(prev.concurrency, 1), concurrencyMax),
     }));
   }, [concurrencyMax]);
-
-  useEffect(() => {
-    try {
-      if (runtimeState.apiKey) sessionStorage.setItem("prompt_lab_api_key", runtimeState.apiKey);
-      else sessionStorage.removeItem("prompt_lab_api_key");
-    } catch {
-      // sessionStorage unavailable
-    }
-  }, [runtimeState.apiKey]);
-
-  useEffect(() => {
-    try {
-      if (runtimeState.apiBase) sessionStorage.setItem("prompt_lab_api_base", runtimeState.apiBase);
-      else sessionStorage.removeItem("prompt_lab_api_base");
-    } catch {
-      // sessionStorage unavailable
-    }
-  }, [runtimeState.apiBase]);
 
   const presetMethodOptions = useMemo(
     () =>
@@ -973,14 +888,10 @@ function usePromptLabRunFormController({
           : null,
       })),
       runtime: {
-        api_key: runtimeState.apiKey || undefined,
-        api_base: runtimeState.apiBase || undefined,
         temperature: runtimeState.temperature,
         match_mode: runtimeState.matchMode,
         reference_source: runtimeState.referenceSource,
         fallback_reference_source: runtimeState.fallbackSource,
-        label_profile: runtimeState.labelProfile,
-        label_projection: runtimeState.labelProjection,
         method_bundle: runtimeState.methodBundle,
         chunk_mode: runtimeState.chunkMode,
         chunk_size_chars: runtimeState.chunkSizeChars,

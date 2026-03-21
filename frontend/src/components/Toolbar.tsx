@@ -1,6 +1,5 @@
 import type {
   AnnotationSource,
-  LabelProjection,
   MatchMode,
   PaneType,
 } from "../types";
@@ -19,8 +18,6 @@ interface Props {
   sourceOptions: Array<{ value: AnnotationSource; label: string }>;
   matchMode: MatchMode;
   onMatchModeChange: (mode: MatchMode) => void;
-  labelProjection: LabelProjection;
-  onLabelProjectionChange: (projection: LabelProjection) => void;
   saveStatus?: SaveStatus;
 }
 
@@ -36,8 +33,6 @@ export default function Toolbar({
   sourceOptions,
   matchMode,
   onMatchModeChange,
-  labelProjection,
-  onLabelProjectionChange,
   saveStatus = "idle",
 }: Props) {
   const paneButtons: { type: PaneType; label: string }[] = [
@@ -115,20 +110,6 @@ export default function Toolbar({
           <option value="exact">Exact</option>
           <option value="boundary">Trim Space/Punct</option>
           <option value="overlap">Overlap</option>
-        </select>
-      </div>
-      <div className="toolbar-group">
-        <label htmlFor="toolbar-label-projection-select">Labels:</label>
-        <select
-          id="toolbar-label-projection-select"
-          name="label_projection"
-          value={labelProjection}
-          onChange={(e) =>
-            onLabelProjectionChange(e.target.value as LabelProjection)
-          }
-        >
-          <option value="native">Native</option>
-          <option value="coarse_simple">Coarse (advanced→simple)</option>
         </select>
       </div>
       {saveStatus !== "idle" && (

@@ -390,13 +390,11 @@ export async function getMetrics(
   reference: AnnotationSource,
   hypothesis: AnnotationSource,
   matchMode: MatchMode,
-  labelProjection: "native" | "coarse_simple" = "native",
 ): Promise<MetricsResult> {
   const params = new URLSearchParams({
     reference,
     hypothesis,
     match_mode: matchMode,
-    label_projection: labelProjection,
   });
   const raw = await request<Record<string, unknown>>(
     `/documents/${docId}/metrics?${params}`,
@@ -408,22 +406,14 @@ export async function getMetricsDashboard(
   reference: AnnotationSource,
   hypothesis: AnnotationSource,
   matchMode: MatchMode,
-  labelProjection: "native" | "coarse_simple" = "native",
 ): Promise<DashboardMetricsResult> {
   const params = new URLSearchParams({
     reference,
     hypothesis,
     match_mode: matchMode,
-    label_projection: labelProjection,
   });
   const raw = await request<Record<string, unknown>>(`/metrics/dashboard?${params}`);
-  return normalizeDashboardMetrics(
-    raw,
-    reference,
-    hypothesis,
-    matchMode,
-    labelProjection,
-  );
+  return normalizeDashboardMetrics(raw, reference, hypothesis, matchMode);
 }
 
 function normalizeMetrics(raw: Record<string, unknown>): MetricsResult {
@@ -493,8 +483,6 @@ function normalizeMetrics(raw: Record<string, unknown>): MetricsResult {
   return {
     micro: normalized.micro,
     macro: normalized.macro,
-    label_projection:
-      raw.label_projection === "coarse_simple" ? "coarse_simple" : "native",
     per_label: normalized.per_label,
     confusion_matrix: confusionMatrix,
     false_positives: normalized.false_positives,
@@ -670,14 +658,6 @@ function normalizePromptLabRunDetail(raw: Record<string, unknown>): PromptLabRun
         runtimeRaw.fallback_reference_source === "manual"
           ? "manual"
           : "pre",
-      label_profile:
-        runtimeRaw.label_profile === "advanced"
-          ? "advanced"
-          : "simple",
-      label_projection:
-        runtimeRaw.label_projection === "coarse_simple"
-          ? "coarse_simple"
-          : "native",
       method_bundle: normalizeMethodBundle(runtimeRaw.method_bundle),
       chunk_mode:
         runtimeRaw.chunk_mode === "off" || runtimeRaw.chunk_mode === "force"
@@ -791,9 +771,6 @@ function normalizeMethodsLabRunDetail(raw: Record<string, unknown>): MethodsLabR
         runtimeRaw.fallback_reference_source === "manual"
           ? "manual"
           : "pre",
-      label_profile: runtimeRaw.label_profile === "advanced" ? "advanced" : "simple",
-      label_projection:
-        runtimeRaw.label_projection === "coarse_simple" ? "coarse_simple" : "native",
       method_bundle: normalizeMethodBundle(runtimeRaw.method_bundle),
       chunk_mode:
         runtimeRaw.chunk_mode === "off" || runtimeRaw.chunk_mode === "force"
@@ -1108,7 +1085,6 @@ function normalizeDashboardMetrics(
   reference: AnnotationSource,
   hypothesis: AnnotationSource,
   matchMode: MatchMode,
-  labelProjection: "native" | "coarse_simple",
 ): DashboardMetricsResult {
   const defaultBandCounts: Record<LLMConfidenceBand, number> = {
     high: 0,
@@ -1233,10 +1209,6 @@ function normalizeDashboardMetrics(
           : raw.match_mode === "boundary"
             ? "boundary"
             : matchMode,
-    label_projection:
-      raw.label_projection === "coarse_simple"
-        ? "coarse_simple"
-        : labelProjection,
     total_documents: toNumber(raw.total_documents, 0),
     documents_compared: toNumber(raw.documents_compared, documents.length),
     micro: (raw.micro ?? {
