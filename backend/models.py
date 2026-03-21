@@ -55,7 +55,6 @@ class SavedRunMetadata(BaseModel):
     updated_at: str
     model: str | None = None
     method_id: str | None = None
-    label_profile: Literal["simple", "advanced"] | None = None
     prompt_snapshot: dict[str, Any] | None = None
     llm_confidence: "LLMConfidenceMetric | None" = None
     chunk_diagnostics: list[AgentChunkDiagnostic] = Field(default_factory=list)
@@ -82,7 +81,6 @@ class LLMConfidenceMetric(BaseModel):
 
 class AgentRunMetrics(BaseModel):
     llm_confidence: LLMConfidenceMetric | None = None
-    label_profile: Literal["simple", "advanced"] | None = None
     chunk_diagnostics: list[AgentChunkDiagnostic] = Field(default_factory=list)
     raw_hypothesis_spans: list[CanonicalSpan] = Field(default_factory=list)
     resolution_events: list[ResolutionEvent] = Field(default_factory=list)

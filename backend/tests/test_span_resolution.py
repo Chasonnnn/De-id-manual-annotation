@@ -80,7 +80,9 @@ def test_misc_id_augmentation_requires_identifier_context():
         negative, [], label_profile="simple", enable_augmentation=True
     )
 
-    assert [(span.label, span.text) for span in positive_resolved] == [("MISC_ID", "ABC")]
+    assert [(span.label, span.text) for span in positive_resolved] == [
+        ("IDENTIFYING_NUMBER", "ABC")
+    ]
     assert positive_events[0].kind == "augmentation"
     assert positive_events[0].rule == "misc_id_context"
     assert negative_resolved == []
@@ -126,4 +128,4 @@ def test_resolution_event_summary_counts_boundary_and_augmentation_by_label():
     assert summary["boundary_fix_count"] == 1
     assert summary["augmentation_count"] == 1
     assert summary["boundary_fix_count_by_label"] == {"URL": 1}
-    assert summary["augmentation_count_by_label"] == {"MISC_ID": 1}
+    assert summary["augmentation_count_by_label"] == {"IDENTIFYING_NUMBER": 1}

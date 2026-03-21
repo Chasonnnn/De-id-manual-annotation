@@ -29,16 +29,12 @@ DEFAULT_PROMPT_RUNTIME = {
     "match_mode": "exact",
     "reference_source": "manual",
     "fallback_reference_source": "pre",
-    "label_profile": "simple",
-    "label_projection": "native",
     "chunk_mode": "off",
     "chunk_size_chars": 10_000,
 }
 DEFAULT_METHODS_RUNTIME = {
     "temperature": 0.0,
     "match_mode": "exact",
-    "label_profile": "simple",
-    "label_projection": "native",
     "chunk_mode": "off",
     "chunk_size_chars": 10_000,
 }

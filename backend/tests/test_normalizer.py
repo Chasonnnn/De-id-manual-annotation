@@ -209,7 +209,7 @@ def test_hips_v2_full():
     assert doc.pre_annotations[0].text == "Dr. Smith"
     assert doc.pre_annotations[0].start == 5
     assert doc.pre_annotations[0].end == 14
-    assert doc.pre_annotations[1].label == "LOCATION"
+    assert doc.pre_annotations[1].label == "ADDRESS"
     assert doc.pre_annotations[1].text == "123 Main St."
     # Verify utterance building
     assert len(doc.utterances) == 1
@@ -228,6 +228,47 @@ def test_hips_v2_label_mapping():
     raw = json.dumps(data).encode()
     docs = parse_file(raw, "test_v2_mapping.json", "hv2m")
     assert docs[0].pre_annotations[0].label == "NAME"
+
+
+def test_parse_hips_v2_maps_tutoring_provider_to_tutor_provider():
+    data = {
+        "text": "I use UPchieve after school.",
+        "pii": [
+            {"pii": "UPchieve", "type": "SCHOOL", "start": 6, "end": 14},
+        ],
+    }
+
+    docs = parse_file(json.dumps(data).encode(), "provider.json", "provider")
+
+    assert docs[0].pre_annotations[0].label == "TUTOR_PROVIDER"
+
+
+def test_parse_hips_v2_drops_unsupported_legacy_labels():
+    data = {
+        "text": "I am in tenth grade taking Algebra 300.",
+        "pii": [
+            {"pii": "tenth grade", "type": "GRADE_LEVEL", "start": 8, "end": 19},
+            {"pii": "Algebra 300", "type": "COURSE", "start": 27, "end": 38},
+        ],
+    }
+
+    docs = parse_file(json.dumps(data).encode(), "legacy.json", "legacy")
+
+    assert docs[0].pre_annotations == []
+
+
+def test_parse_hips_v2_drops_broad_geography_locations():
+    data = {
+        "text": "I moved from Texas to Georgia.",
+        "pii": [
+            {"pii": "Texas", "type": "LOCATION", "start": 13, "end": 18},
+            {"pii": "Georgia", "type": "LOCATION", "start": 22, "end": 29},
+        ],
+    }
+
+    docs = parse_file(json.dumps(data).encode(), "broad-geo.json", "geo")
+
+    assert docs[0].pre_annotations == []
 
 
 def test_span_dedup():

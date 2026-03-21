@@ -57,6 +57,7 @@ from agent import (
 )
 from metrics import compute_metrics
 from span_resolution import RESOLUTION_POLICY_VERSION, resolve_spans, summarize_resolution_events
+from taxonomy import canonicalize_label, canonicalize_span
 
 app = FastAPI(title="Annotation Tool")
 
@@ -83,11 +84,11 @@ TOOL_VERSION = "2026.03.03"
 PROMPT_LAB_DIR_NAME = "prompt_lab"
 METHODS_LAB_DIR_NAME = "methods_lab"
 PROMPT_LAB_MAX_VARIANTS = 6
-PROMPT_LAB_DEFAULT_CONCURRENCY = 10
-PROMPT_LAB_DEFAULT_MAX_CONCURRENCY = 16
+PROMPT_LAB_DEFAULT_CONCURRENCY = 32
+PROMPT_LAB_DEFAULT_MAX_CONCURRENCY = 32
 METHODS_LAB_MAX_METHOD_VARIANTS = max(12, len(METHOD_DEFINITION_BY_ID))
-METHODS_LAB_DEFAULT_CONCURRENCY = 10
-METHODS_LAB_DEFAULT_MAX_CONCURRENCY = 16
+METHODS_LAB_DEFAULT_CONCURRENCY = 32
+METHODS_LAB_DEFAULT_MAX_CONCURRENCY = 32
 EXPERIMENT_HARD_MAX_CONCURRENCY = 32
 DEFAULT_CHUNK_SIZE_CHARS = 10_000
 MIN_CHUNK_SIZE_CHARS = 2_000
@@ -105,32 +106,6 @@ DEIDENTIFY_V2_LABEL_ALIASES: dict[str, str] = {
     "IP": "IP_ADDRESS",
     "ADDRESS": "LOCATION",
     "SCHOOL": "LOCATION",
-}
-
-COARSE_SIMPLE_LABEL_MAP: dict[str, str] = {
-    # Simple labels remain unchanged.
-    "AGE": "AGE",
-    "DATE": "DATE",
-    "EMAIL": "EMAIL",
-    "LOCATION": "LOCATION",
-    "MISC_ID": "MISC_ID",
-    "NAME": "NAME",
-    "PHONE": "PHONE",
-    "SCHOOL": "SCHOOL",
-    "URL": "URL",
-    # Advanced -> simple projection.
-    "COURSE": "MISC_ID",
-    "EMAIL_ADDRESS": "EMAIL",
-    "GRADE_LEVEL": "MISC_ID",
-    "IP_ADDRESS": "MISC_ID",
-    "NRP": "MISC_ID",
-    "PERSON": "NAME",
-    "PHONE_NUMBER": "PHONE",
-    "SOCIAL_HANDLE": "MISC_ID",
-    "US_BANK_NUMBER": "MISC_ID",
-    "US_DRIVER_LICENSE": "MISC_ID",
-    "US_PASSPORT": "MISC_ID",
-    "US_SSN": "MISC_ID",
 }
 
 DEFAULT_CONFIG = {
@@ -151,11 +126,13 @@ LLM_RUNS_SIDECAR_KIND = "agent.llm.runs"
 METHOD_RUNS_SIDECAR_KIND = "agent.method.runs"
 LLM_RUNS_METADATA_SIDECAR_KIND = "agent.llm.runs.meta"
 METHOD_RUNS_METADATA_SIDECAR_KIND = "agent.method.runs.meta"
+CANONICAL_TAXONOMY_MIGRATION_VERSION = "2026-03-canonical-taxonomy-v1"
 
 
 def _ensure_dirs():
     _migrate_legacy_storage_if_needed()
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    _migrate_storage_to_canonical_taxonomy_if_needed()
 
 
 def _migrate_legacy_storage_if_needed():
@@ -179,6 +156,224 @@ def _migrate_legacy_storage_if_needed():
             shutil.copytree(legacy_child, target)
         else:
             shutil.copy2(legacy_child, target)
+
+
+def _canonical_taxonomy_migration_sentinel_path() -> Path:
+    return BASE_DIR / "canonical_taxonomy_migration_v1.json"
+
+
+def _canonicalize_event_span_payload(
+    raw_span: object,
+    raw_text: str,
+) -> dict[str, object] | None:
+    if not isinstance(raw_span, dict):
+        return None
+    start = raw_span.get("start")
+    end = raw_span.get("end")
+    label = str(raw_span.get("label") or "")
+    text = str(raw_span.get("text") or "")
+    if isinstance(start, int) and isinstance(end, int):
+        try:
+            canonical = canonicalize_span(
+                CanonicalSpan(start=start, end=end, label=label, text=text),
+                raw_text,
+            )
+        except ValueError:
+            canonical = None
+        if canonical is not None:
+            return canonical.model_dump()
+    canonical_label = canonicalize_label(label, text=text)
+    if canonical_label is None:
+        return None
+    return {
+        "start": int(start) if isinstance(start, int) else 0,
+        "end": int(end) if isinstance(end, int) else 0,
+        "label": canonical_label,
+        "text": text,
+    }
+
+
+def _migrate_resolution_events_payload(
+    raw_events: object,
+    raw_text: str,
+) -> list[dict[str, object]]:
+    if not isinstance(raw_events, list):
+        return []
+    migrated: list[dict[str, object]] = []
+    for raw_event in raw_events:
+        if not isinstance(raw_event, dict):
+            continue
+        after_payload = _canonicalize_event_span_payload(raw_event.get("after"), raw_text)
+        if after_payload is None:
+            continue
+        before_payload = _canonicalize_event_span_payload(raw_event.get("before"), raw_text)
+        migrated.append(
+            {
+                "kind": raw_event.get("kind"),
+                "label": after_payload["label"],
+                "rule": raw_event.get("rule"),
+                "before": before_payload,
+                "after": after_payload,
+            }
+        )
+    return migrated
+
+
+def _migrate_run_metadata_payload(
+    raw_metadata: object,
+    raw_text: str,
+) -> SavedRunMetadata:
+    if not isinstance(raw_metadata, dict):
+        raise ValueError("Run metadata payload must be an object")
+    payload = dict(raw_metadata)
+    payload.pop("label_profile", None)
+    payload["raw_hypothesis_spans"] = _normalize_optional_spans(
+        payload.get("raw_hypothesis_spans"),
+        raw_text,
+    )
+    payload["resolution_events"] = _migrate_resolution_events_payload(
+        payload.get("resolution_events"),
+        raw_text,
+    )
+    return SavedRunMetadata.model_validate(payload)
+
+
+def _strip_removed_runtime_keys(value: object) -> object:
+    if isinstance(value, list):
+        return [_strip_removed_runtime_keys(item) for item in value]
+    if isinstance(value, dict):
+        stripped: dict[str, object] = {}
+        for key, item in value.items():
+            if key in {"label_profile", "label_projection"}:
+                continue
+            stripped[str(key)] = _strip_removed_runtime_keys(item)
+        return stripped
+    return value
+
+
+def _migrate_doc_storage_to_canonical_taxonomy(doc_id: str, session_id: str = "default") -> None:
+    doc = _load_doc(doc_id, session_id)
+    if doc is None:
+        return
+
+    pre_annotations = _normalize_and_validate_spans(list(doc.pre_annotations), doc.raw_text)
+    manual_annotations = _normalize_and_validate_spans(list(doc.manual_annotations), doc.raw_text)
+    agent_annotations = _normalize_and_validate_spans(list(doc.agent_annotations), doc.raw_text)
+    existing_label_set = {
+        label
+        for label in (
+            canonicalize_label(str(raw_label or ""))
+            for raw_label in doc.label_set
+        )
+        if label is not None
+    }
+    label_set = sorted(existing_label_set | {span.label for span in pre_annotations})
+
+    _save_doc(
+        doc.model_copy(
+            update={
+                "pre_annotations": pre_annotations,
+                "manual_annotations": manual_annotations,
+                "agent_annotations": agent_annotations,
+                "label_set": label_set,
+            }
+        ),
+        session_id,
+    )
+
+    for kind in ("manual", "agent.rule", "agent.llm"):
+        sidecar = _load_sidecar(doc_id, kind, session_id)
+        if sidecar is not None:
+            _save_sidecar(
+                doc_id,
+                kind,
+                _normalize_and_validate_spans(sidecar, doc.raw_text),
+                session_id,
+            )
+
+    for method_id, spans in _load_method_sidecars(doc_id, session_id).items():
+        _save_sidecar(
+            doc_id,
+            f"agent.method.{method_id}",
+            _normalize_and_validate_spans(spans, doc.raw_text),
+            session_id,
+        )
+
+    for kind in (
+        MANUAL_RUNS_SIDECAR_KIND,
+        LLM_RUNS_SIDECAR_KIND,
+        METHOD_RUNS_SIDECAR_KIND,
+    ):
+        payload = _load_span_map_sidecar(doc_id, kind, session_id)
+        if not payload:
+            continue
+        migrated_payload = {
+            run_key: _normalize_and_validate_spans(spans, doc.raw_text)
+            for run_key, spans in payload.items()
+        }
+        _save_span_map_sidecar(doc_id, kind, migrated_payload, session_id)
+
+    for kind in (
+        MANUAL_RUNS_METADATA_SIDECAR_KIND,
+        LLM_RUNS_METADATA_SIDECAR_KIND,
+        METHOD_RUNS_METADATA_SIDECAR_KIND,
+    ):
+        path = _session_dir(session_id) / f"{doc_id}.{kind}.json"
+        if not path.exists():
+            continue
+        raw_payload = json.loads(path.read_text())
+        if not isinstance(raw_payload, dict):
+            raise ValueError(f"{path.name} must contain an object")
+        migrated_payload = {
+            run_key: _migrate_run_metadata_payload(raw_meta, doc.raw_text).model_dump()
+            for run_key, raw_meta in raw_payload.items()
+            if isinstance(run_key, str) and run_key.strip()
+        }
+        path.write_text(json.dumps(migrated_payload, indent=2))
+
+    last_run_path = _session_dir(session_id) / f"{doc_id}.agent.last_run.json"
+    if last_run_path.exists():
+        raw_last_run = json.loads(last_run_path.read_text())
+        if isinstance(raw_last_run, dict):
+            migrated_last_run = dict(raw_last_run)
+            migrated_last_run.pop("label_profile", None)
+            last_run_path.write_text(json.dumps(migrated_last_run, indent=2))
+
+
+def _migrate_lab_runs_to_canonical_runtime(session_id: str = "default") -> None:
+    for directory_name in (PROMPT_LAB_DIR_NAME, METHODS_LAB_DIR_NAME):
+        run_dir = _session_dir(session_id) / directory_name
+        if not run_dir.exists():
+            continue
+        for path in run_dir.glob("*.json"):
+            if path.name == "_index.json":
+                continue
+            raw_payload = json.loads(path.read_text())
+            migrated = _strip_removed_runtime_keys(raw_payload)
+            path.write_text(json.dumps(migrated, indent=2))
+
+
+def _migrate_storage_to_canonical_taxonomy_if_needed() -> None:
+    sentinel = _canonical_taxonomy_migration_sentinel_path()
+    if sentinel.exists():
+        return
+    for session_path in SESSIONS_DIR.iterdir():
+        if not session_path.is_dir():
+            continue
+        session_id = session_path.name
+        for path in session_path.glob("*.source.json"):
+            doc_id = path.name[: -len(".source.json")]
+            _migrate_doc_storage_to_canonical_taxonomy(doc_id, session_id)
+        _migrate_lab_runs_to_canonical_runtime(session_id)
+    sentinel.write_text(
+        json.dumps(
+            {
+                "version": CANONICAL_TAXONOMY_MIGRATION_VERSION,
+                "updated_at": _now_iso(),
+            },
+            indent=2,
+        )
+    )
 
 
 def _session_dir(session_id: str = "default") -> Path:
@@ -769,17 +964,7 @@ def _persist_imported_document(
             llm_confidence.model_dump(),
             session_id,
         )
-    if imported_label_profile is not None:
-        _save_json_sidecar(
-            doc_id,
-            "agent.last_run",
-            {
-                "mode": "imported",
-                "label_profile": imported_label_profile,
-                "updated_at": _now_iso(),
-            },
-            session_id,
-        )
+    del imported_label_profile
 
 
 def _create_imported_document(
@@ -1077,19 +1262,7 @@ def _merge_imported_sidecars_into_existing(
                 llm_confidence.model_dump(),
                 session_id,
             )
-    if imported_label_profile is not None:
-        existing_last_run = _load_json_sidecar(doc_id, "agent.last_run", session_id)
-        if not existing_last_run:
-            _save_json_sidecar(
-                doc_id,
-                "agent.last_run",
-                {
-                    "mode": "imported",
-                    "label_profile": imported_label_profile,
-                    "updated_at": _now_iso(),
-                },
-                session_id,
-            )
+    del imported_label_profile
 
 
 def _now_iso() -> str:
@@ -1725,13 +1898,9 @@ def _enrich_doc(
             llm_confidence = LLMConfidenceMetric.model_validate(llm_metric_raw)
         except Exception:
             llm_confidence = None
-    label_profile: Literal["simple", "advanced"] | None = None
     latest_run_key: str | None = None
     latest_run_mode: str | None = None
     if isinstance(last_run_raw, dict):
-        raw_label_profile = str(last_run_raw.get("label_profile", "")).strip().lower()
-        if raw_label_profile in {"simple", "advanced"}:
-            label_profile = raw_label_profile  # type: ignore[assignment]
         raw_run_key = str(last_run_raw.get("run_key", "")).strip()
         latest_run_key = raw_run_key or None
         raw_mode = str(last_run_raw.get("mode", "")).strip().lower()
@@ -1781,7 +1950,6 @@ def _enrich_doc(
     doc.agent_run_warnings = []
     doc.agent_run_metrics = AgentRunMetrics(
         llm_confidence=llm_confidence,
-        label_profile=label_profile,
         chunk_diagnostics=chunk_diagnostics,
         raw_hypothesis_spans=raw_hypothesis_spans,
         resolution_events=resolution_events,
@@ -1810,24 +1978,14 @@ def _normalize_and_validate_spans(
     spans: list[CanonicalSpan], raw_text: str
 ) -> list[CanonicalSpan]:
     normalized: list[CanonicalSpan] = []
-    n = len(raw_text)
     for span in spans:
-        if span.start < 0 or span.end > n or span.start >= span.end:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Invalid span offsets [{span.start}:{span.end}] for transcript length {n}."
-                ),
-            )
-        expected = raw_text[span.start : span.end]
-        normalized.append(
-            CanonicalSpan(
-                start=span.start,
-                end=span.end,
-                label=span.label.upper(),
-                text=expected,
-            )
-        )
+        try:
+            candidate = canonicalize_span(span, raw_text)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if candidate is None:
+            continue
+        normalized.append(candidate)
     return _dedup_spans(normalized)
 
 
@@ -2138,23 +2296,13 @@ def _prf_from_counts(tp: int, fp: int, fn: int) -> dict[str, float | int]:
 
 
 def _normalize_label_profile(raw: object) -> Literal["simple", "advanced"]:
-    value = str(raw or "simple").strip().lower()
-    if value not in {"simple", "advanced"}:
-        raise HTTPException(
-            status_code=400,
-            detail="label_profile must be one of: simple, advanced",
-        )
-    return value  # type: ignore[return-value]
+    del raw
+    return "simple"
 
 
 def _normalize_label_projection(raw: object) -> Literal["native", "coarse_simple"]:
-    value = str(raw or "native").strip().lower()
-    if value not in {"native", "coarse_simple"}:
-        raise HTTPException(
-            status_code=400,
-            detail="label_projection must be one of: native, coarse_simple",
-        )
-    return value  # type: ignore[return-value]
+    del raw
+    return "native"
 
 
 def _normalize_match_mode(raw: object) -> Literal["exact", "boundary", "overlap", "substring"]:
@@ -2168,18 +2316,7 @@ def _normalize_match_mode(raw: object) -> Literal["exact", "boundary", "overlap"
 
 
 def _project_spans_to_coarse_simple(spans: list[CanonicalSpan]) -> list[CanonicalSpan]:
-    projected: list[CanonicalSpan] = []
-    for span in spans:
-        mapped = COARSE_SIMPLE_LABEL_MAP.get(span.label.upper(), "MISC_ID")
-        projected.append(
-            CanonicalSpan(
-                start=span.start,
-                end=span.end,
-                label=mapped,
-                text=span.text,
-            )
-        )
-    return projected
+    return spans
 
 
 def _apply_label_projection(
@@ -2188,11 +2325,7 @@ def _apply_label_projection(
     *,
     label_projection: Literal["native", "coarse_simple"],
 ) -> tuple[list[CanonicalSpan], list[CanonicalSpan]]:
-    if label_projection == "coarse_simple":
-        return (
-            _project_spans_to_coarse_simple(reference_spans),
-            _project_spans_to_coarse_simple(hypothesis_spans),
-        )
+    del label_projection
     return reference_spans, hypothesis_spans
 
 
@@ -2237,10 +2370,11 @@ def _prepare_experiment_scoring_spans(
     reference_spans: list[CanonicalSpan],
     hypothesis_spans: list[CanonicalSpan],
     *,
-    label_projection: Literal["native", "coarse_simple"],
+    label_projection: Literal["native", "coarse_simple"] | None = None,
     method_bundle: str,
     reference_label_set: set[str] | None = None,
 ) -> tuple[list[CanonicalSpan], list[CanonicalSpan]]:
+    del label_projection
     scored_hypothesis = hypothesis_spans
     if _normalize_method_bundle(method_bundle) == "deidentify-v2":
         scored_hypothesis = _map_span_labels(
@@ -2252,11 +2386,7 @@ def _prepare_experiment_scoring_spans(
                 else {span.label for span in reference_spans},
             ),
         )
-    return _apply_label_projection(
-        reference_spans,
-        scored_hypothesis,
-        label_projection=label_projection,
-    )
+    return reference_spans, scored_hypothesis
 
 
 def _normalize_metrics_mode_for_method_bundle(
@@ -2666,7 +2796,7 @@ def _get_prompt_lab_max_concurrency(cfg: dict | None = None) -> int:
     return _normalize_experiment_concurrency_cap(
         config.get("prompt_lab_max_concurrency"),
         default=PROMPT_LAB_DEFAULT_MAX_CONCURRENCY,
-        minimum=PROMPT_LAB_DEFAULT_CONCURRENCY,
+        minimum=1,
     )
 
 
@@ -2675,7 +2805,7 @@ def _get_methods_lab_max_concurrency(cfg: dict | None = None) -> int:
     return _normalize_experiment_concurrency_cap(
         config.get("methods_lab_max_concurrency"),
         default=METHODS_LAB_DEFAULT_MAX_CONCURRENCY,
-        minimum=METHODS_LAB_DEFAULT_CONCURRENCY,
+        minimum=1,
     )
 
 
@@ -2961,7 +3091,6 @@ def _resolve_llm_runtime_config(body: "AgentRunBody") -> dict[str, object]:
     )
     chunk_mode = _normalize_chunk_mode(body.chunk_mode or "off")
     chunk_size_chars = _normalize_chunk_size(body.chunk_size_chars)
-    label_profile = _normalize_label_profile(body.label_profile or "simple")
     return {
         "api_key": api_key,
         "api_base": api_base,
@@ -2973,14 +3102,12 @@ def _resolve_llm_runtime_config(body: "AgentRunBody") -> dict[str, object]:
         "anthropic_thinking_budget_tokens": anthropic_thinking_budget_tokens,
         "chunk_mode": chunk_mode,
         "chunk_size_chars": chunk_size_chars,
-        "label_profile": label_profile,
     }
 
 
 def _build_llm_prompt_snapshot(
     requested_system_prompt: str,
     *,
-    label_profile: Literal["simple", "advanced"],
     method_bundle: str = "audited",
 ) -> dict[str, Any]:
     requested = str(requested_system_prompt or "")
@@ -2989,7 +3116,7 @@ def _build_llm_prompt_snapshot(
         "format_guardrail_appended": True,
         "effective_system_prompt": build_extraction_system_prompt(
             requested,
-            label_profile=label_profile,
+            label_profile="simple",
             method_bundle=_normalize_method_bundle(method_bundle),
         ),
     }
@@ -3000,7 +3127,6 @@ def _build_method_prompt_snapshot(
     method_id: str,
     additional_constraints: str,
     method_verify: bool | None,
-    label_profile: Literal["simple", "advanced"],
     method_bundle: str = "audited",
 ) -> dict[str, Any]:
     normalized_method_bundle = _normalize_method_bundle(method_bundle)
@@ -3040,7 +3166,7 @@ def _build_method_prompt_snapshot(
                 "resolved_system_prompt": resolved_prompt,
                 "effective_system_prompt": build_extraction_system_prompt(
                     resolved_prompt,
-                    label_profile=label_profile,
+                    label_profile="simple",
                     method_bundle=normalized_method_bundle,
                 ),
             }
@@ -3568,9 +3694,8 @@ def _run_llm_for_document(
         label_profile=label_profile,
     )
     if dropped_name_spans > 0:
-        target_label = "NAME" if label_profile == "simple" else "PERSON"
         warnings.append(
-            f"Dropped {dropped_name_spans} implausible {target_label} span(s) after shared resolution."
+            f"Dropped {dropped_name_spans} implausible NAME span(s) after shared resolution."
         )
     warnings.insert(
         0,
@@ -3881,9 +4006,8 @@ def _run_method_for_document(
         label_profile=label_profile,
     )
     if dropped_name_spans > 0:
-        target_label = "NAME" if label_profile == "simple" else "PERSON"
         warnings.append(
-            f"Dropped {dropped_name_spans} implausible {target_label} span(s) after shared resolution."
+            f"Dropped {dropped_name_spans} implausible NAME span(s) after shared resolution."
         )
     warnings.insert(
         0,
@@ -4251,7 +4375,6 @@ class AgentRunBody(BaseModel):
     reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"] | None = None
     anthropic_thinking: bool | None = None
     anthropic_thinking_budget_tokens: int | None = None
-    label_profile: Literal["simple", "advanced"] | None = None
     chunk_mode: Literal["auto", "off", "force"] | None = None
     chunk_size_chars: int | None = None
     method_id: str | None = None
@@ -4284,8 +4407,6 @@ class PromptLabRuntimeInput(BaseModel):
     match_mode: Literal["exact", "boundary", "overlap", "substring"] = "overlap"
     reference_source: Literal["manual", "pre"] = "manual"
     fallback_reference_source: Literal["manual", "pre"] = "pre"
-    label_profile: Literal["simple", "advanced"] = "simple"
-    label_projection: Literal["native", "coarse_simple"] = "native"
     method_bundle: Literal[
         "legacy", "audited", "test", "v2", "v2+post-process", "deidentify-v2"
     ] = "audited"
@@ -4317,8 +4438,6 @@ class MethodsLabRuntimeInput(BaseModel):
     match_mode: Literal["exact", "boundary", "overlap", "substring"] = "overlap"
     reference_source: Literal["manual", "pre"] = "manual"
     fallback_reference_source: Literal["manual", "pre"] = "pre"
-    label_profile: Literal["simple", "advanced"] = "simple"
-    label_projection: Literal["native", "coarse_simple"] = "native"
     method_bundle: Literal[
         "legacy", "audited", "test", "v2", "v2+post-process", "deidentify-v2"
     ] = "audited"
@@ -4383,8 +4502,6 @@ def _resolve_prompt_lab_runtime(runtime: PromptLabRuntimeInput) -> dict[str, obj
     match_mode = _normalize_match_mode(runtime.match_mode)
     chunk_mode = _normalize_chunk_mode(runtime.chunk_mode)
     chunk_size_chars = _normalize_chunk_size(runtime.chunk_size_chars)
-    label_profile = _normalize_label_profile(runtime.label_profile)
-    label_projection = _normalize_label_projection(runtime.label_projection)
     method_bundle = _normalize_method_bundle(runtime.method_bundle)
     return {
         "api_key": api_key,
@@ -4395,8 +4512,6 @@ def _resolve_prompt_lab_runtime(runtime: PromptLabRuntimeInput) -> dict[str, obj
         "fallback_reference_source": runtime.fallback_reference_source,
         "chunk_mode": chunk_mode,
         "chunk_size_chars": chunk_size_chars,
-        "label_profile": label_profile,
-        "label_projection": label_projection,
         "method_bundle": method_bundle,
     }
 
@@ -4593,8 +4708,6 @@ def _initialize_prompt_lab_run(
             "match_mode": runtime["match_mode"],
             "reference_source": runtime["reference_source"],
             "fallback_reference_source": runtime["fallback_reference_source"],
-            "label_profile": runtime["label_profile"],
-            "label_projection": runtime["label_projection"],
             "method_bundle": runtime["method_bundle"],
             "api_base": runtime["api_base"],
             "chunk_mode": runtime["chunk_mode"],
@@ -4616,8 +4729,6 @@ def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
     match_mode = str(runtime["match_mode"])
     reference_source = runtime["reference_source"]
     fallback_reference_source = runtime["fallback_reference_source"]
-    label_profile = str(runtime["label_profile"])
-    label_projection = _normalize_label_projection(runtime.get("label_projection", "native"))
     method_bundle = _normalize_method_bundle(runtime.get("method_bundle", "audited"))
     chunk_mode = str(runtime["chunk_mode"])
     chunk_size_chars = int(runtime["chunk_size_chars"])
@@ -4685,7 +4796,7 @@ def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                     anthropic_thinking=bool(model["anthropic_thinking"]),
                     anthropic_thinking_budget_tokens=model["anthropic_thinking_budget_tokens"],
                     method_verify=method_verify_override,
-                    label_profile=label_profile,  # type: ignore[arg-type]
+                    label_profile="simple",
                     chunk_mode=chunk_mode,
                     chunk_size_chars=chunk_size_chars,
                     method_bundle=method_bundle,
@@ -4713,7 +4824,7 @@ def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
                     reasoning_effort=str(model["reasoning_effort"]),
                     anthropic_thinking=bool(model["anthropic_thinking"]),
                     anthropic_thinking_budget_tokens=model["anthropic_thinking_budget_tokens"],
-                    label_profile=label_profile,  # type: ignore[arg-type]
+                    label_profile="simple",
                     chunk_mode=chunk_mode,
                     chunk_size_chars=chunk_size_chars,
                     method_bundle=method_bundle,
@@ -4727,13 +4838,11 @@ def _run_prompt_lab_job(run_id: str, session_id: str, runtime: dict[str, object]
             projected_reference, projected_hypothesis = _prepare_experiment_scoring_spans(
                 reference_spans,
                 hypothesis_spans,
-                label_projection=label_projection,  # type: ignore[arg-type]
                 method_bundle=method_bundle,
             )
             projected_reference_raw, projected_hypothesis_raw = _prepare_experiment_scoring_spans(
                 reference_spans,
                 raw_hypothesis_spans,
-                label_projection=label_projection,  # type: ignore[arg-type]
                 method_bundle=method_bundle,
             )
             scoring_match_mode = _normalize_metrics_mode_for_method_bundle(
@@ -4846,8 +4955,6 @@ def _resolve_methods_lab_runtime(runtime: MethodsLabRuntimeInput) -> dict[str, o
     match_mode = _normalize_match_mode(runtime.match_mode)
     chunk_mode = _normalize_chunk_mode(runtime.chunk_mode)
     chunk_size_chars = _normalize_chunk_size(runtime.chunk_size_chars)
-    label_profile = _normalize_label_profile(runtime.label_profile)
-    label_projection = _normalize_label_projection(runtime.label_projection)
     method_bundle = _normalize_method_bundle(runtime.method_bundle)
     task_timeout_seconds = _safe_float(runtime.task_timeout_seconds)
     if task_timeout_seconds is not None and task_timeout_seconds <= 0:
@@ -4859,8 +4966,6 @@ def _resolve_methods_lab_runtime(runtime: MethodsLabRuntimeInput) -> dict[str, o
         "match_mode": match_mode,
         "chunk_mode": chunk_mode,
         "chunk_size_chars": chunk_size_chars,
-        "label_profile": label_profile,
-        "label_projection": label_projection,
         "method_bundle": method_bundle,
         "task_timeout_seconds": task_timeout_seconds,
     }
@@ -4999,8 +5104,6 @@ def _initialize_methods_lab_run(
             "match_mode": runtime["match_mode"],
             "reference_source": runtime["reference_source"],
             "fallback_reference_source": runtime["fallback_reference_source"],
-            "label_profile": runtime["label_profile"],
-            "label_projection": runtime["label_projection"],
             "method_bundle": runtime["method_bundle"],
             "api_base": runtime["api_base"],
             "chunk_mode": runtime["chunk_mode"],
@@ -5020,8 +5123,6 @@ def _run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object
     api_base = str(runtime["api_base"])
     temperature = float(runtime["temperature"])
     match_mode = str(runtime["match_mode"])
-    label_profile = str(runtime["label_profile"])
-    label_projection = _normalize_label_projection(runtime.get("label_projection", "native"))
     method_bundle = _normalize_method_bundle(runtime.get("method_bundle", "audited"))
     chunk_mode = str(runtime["chunk_mode"])
     chunk_size_chars = int(runtime["chunk_size_chars"])
@@ -5164,7 +5265,7 @@ def _run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object
                 anthropic_thinking=anthropic_thinking,
                 anthropic_thinking_budget_tokens=anthropic_budget,
                 method_verify=method_variant.get("method_verify_override"),
-                label_profile=label_profile,  # type: ignore[arg-type]
+                label_profile="simple",
                 chunk_mode=chunk_mode,
                 chunk_size_chars=chunk_size_chars,
                 method_bundle=method_bundle,
@@ -5172,13 +5273,11 @@ def _run_methods_lab_job(run_id: str, session_id: str, runtime: dict[str, object
             projected_reference, projected_hypothesis = _prepare_experiment_scoring_spans(
                 enriched.manual_annotations,
                 hypothesis_spans,
-                label_projection=label_projection,  # type: ignore[arg-type]
                 method_bundle=method_bundle,
             )
             projected_reference_raw, projected_hypothesis_raw = _prepare_experiment_scoring_spans(
                 enriched.manual_annotations,
                 raw_hypothesis_spans,
-                label_projection=label_projection,  # type: ignore[arg-type]
                 method_bundle=method_bundle,
             )
             scoring_match_mode = _normalize_metrics_mode_for_method_bundle(
@@ -5316,7 +5415,6 @@ def run_agent(doc_id: str, body: AgentRunBody):
             "agent.last_run",
             {
                 "mode": "rule",
-                "label_profile": "simple",
                 "updated_at": _now_iso(),
             },
             session_id,
@@ -5332,7 +5430,6 @@ def run_agent(doc_id: str, body: AgentRunBody):
         enriched.agent_run_warnings = []
         enriched.agent_run_metrics = AgentRunMetrics(
             llm_confidence=enriched.agent_run_metrics.llm_confidence,
-            label_profile="simple",
         )
         return enriched
 
@@ -5346,7 +5443,6 @@ def run_agent(doc_id: str, body: AgentRunBody):
         reasoning_effort = str(llm_runtime["reasoning_effort"])
         anthropic_thinking = bool(llm_runtime["anthropic_thinking"])
         anthropic_thinking_budget_tokens = llm_runtime["anthropic_thinking_budget_tokens"]
-        label_profile = str(llm_runtime["label_profile"])
         chunk_mode = str(llm_runtime["chunk_mode"])
         chunk_size_chars = int(llm_runtime["chunk_size_chars"])
         total_chunks = _estimate_chunk_total(
@@ -5393,7 +5489,7 @@ def run_agent(doc_id: str, body: AgentRunBody):
                 reasoning_effort=reasoning_effort,
                 anthropic_thinking=anthropic_thinking,
                 anthropic_thinking_budget_tokens=anthropic_thinking_budget_tokens,
-                label_profile=label_profile,  # type: ignore[arg-type]
+                label_profile="simple",
                 chunk_mode=chunk_mode,
                 chunk_size_chars=chunk_size_chars,
                 progress_callback=lambda completed, total: _update_agent_progress(
@@ -5446,10 +5542,8 @@ def run_agent(doc_id: str, body: AgentRunBody):
                 mode="llm",
                 updated_at=_now_iso(),
                 model=model,
-                label_profile=label_profile,  # type: ignore[arg-type]
                 prompt_snapshot=_build_llm_prompt_snapshot(
                     requested_system_prompt,
-                    label_profile=label_profile,  # type: ignore[arg-type]
                 ),
                 llm_confidence=llm_confidence,
                 chunk_diagnostics=chunk_diagnostics,
@@ -5472,7 +5566,6 @@ def run_agent(doc_id: str, body: AgentRunBody):
                 "mode": "llm",
                 "run_key": run_key,
                 "model": model,
-                "label_profile": label_profile,
                 "updated_at": _now_iso(),
             },
             session_id,
@@ -5482,7 +5575,6 @@ def run_agent(doc_id: str, body: AgentRunBody):
         enriched.agent_run_warnings = warnings
         enriched.agent_run_metrics = AgentRunMetrics(
             llm_confidence=llm_confidence,
-            label_profile=label_profile,  # type: ignore[arg-type]
             chunk_diagnostics=chunk_diagnostics,
             raw_hypothesis_spans=raw_hypothesis_spans,
             resolution_events=resolution_events,
@@ -5508,7 +5600,6 @@ def run_agent(doc_id: str, body: AgentRunBody):
         reasoning_effort = str(llm_runtime["reasoning_effort"])
         anthropic_thinking = bool(llm_runtime["anthropic_thinking"])
         anthropic_thinking_budget_tokens = llm_runtime["anthropic_thinking_budget_tokens"]
-        label_profile = str(llm_runtime["label_profile"])
         chunk_mode = str(llm_runtime["chunk_mode"])
         chunk_size_chars = int(llm_runtime["chunk_size_chars"])
         total_chunks = _estimate_chunk_total(
@@ -5556,7 +5647,7 @@ def run_agent(doc_id: str, body: AgentRunBody):
                 anthropic_thinking=anthropic_thinking,
                 anthropic_thinking_budget_tokens=anthropic_thinking_budget_tokens,
                 method_verify=body.method_verify,
-                label_profile=label_profile,  # type: ignore[arg-type]
+                label_profile="simple",
                 chunk_mode=chunk_mode,
                 chunk_size_chars=chunk_size_chars,
                 progress_callback=lambda completed, total: _update_agent_progress(
@@ -5599,12 +5690,10 @@ def run_agent(doc_id: str, body: AgentRunBody):
                 updated_at=_now_iso(),
                 method_id=method_id,
                 model=model if method_definition["uses_llm"] else None,
-                label_profile=label_profile,  # type: ignore[arg-type]
                 prompt_snapshot=_build_method_prompt_snapshot(
                     method_id=method_id,
                     additional_constraints=requested_system_prompt,
                     method_verify=body.method_verify,
-                    label_profile=label_profile,  # type: ignore[arg-type]
                 ),
                 llm_confidence=llm_confidence,
                 chunk_diagnostics=chunk_diagnostics,
@@ -5622,7 +5711,6 @@ def run_agent(doc_id: str, body: AgentRunBody):
                 "run_key": method_run_key,
                 "method_id": method_id,
                 "model": model if method_definition["uses_llm"] else None,
-                "label_profile": label_profile,
                 "updated_at": _now_iso(),
             },
             session_id,
@@ -5632,7 +5720,6 @@ def run_agent(doc_id: str, body: AgentRunBody):
         enriched.agent_run_warnings = warnings
         enriched.agent_run_metrics = AgentRunMetrics(
             llm_confidence=llm_confidence,
-            label_profile=label_profile,  # type: ignore[arg-type]
             chunk_diagnostics=chunk_diagnostics,
             raw_hypothesis_spans=raw_hypothesis_spans,
             resolution_events=resolution_events,
@@ -5892,7 +5979,6 @@ async def get_metrics(
     reference: str = Query(...),
     hypothesis: str = Query(...),
     match_mode: str = Query("overlap"),
-    label_projection: str = Query("native"),
 ):
     session_id = "default"
     doc = _load_doc(doc_id, session_id)
@@ -5903,11 +5989,10 @@ async def get_metrics(
     ref_spans = _spans_from_source(enriched, reference)
     hyp_spans = _spans_from_source(enriched, hypothesis)
     normalized_match_mode = _normalize_match_mode(match_mode)
-    normalized_projection = _normalize_label_projection(label_projection)
-    eval_ref_spans, eval_hyp_spans = _apply_label_projection(
+    eval_ref_spans, eval_hyp_spans = _prepare_experiment_scoring_spans(
         ref_spans,
         hyp_spans,
-        label_projection=normalized_projection,
+        method_bundle="audited",
     )
 
     result = _serialize_metrics_payload(
@@ -5920,7 +6005,6 @@ async def get_metrics(
         else None
     )
     result["match_mode"] = normalized_match_mode
-    result["label_projection"] = normalized_projection
     return result
 
 
@@ -5970,12 +6054,6 @@ async def export_session_bundle():
             session_id,
         )
         llm_confidence = _load_json_sidecar(did, "agent.llm.metrics", session_id)
-        last_run = _load_json_sidecar(did, "agent.last_run", session_id)
-        label_profile: str | None = None
-        if isinstance(last_run, dict):
-            candidate = str(last_run.get("label_profile", "")).strip().lower()
-            if candidate in {"simple", "advanced"}:
-                label_profile = candidate
         export_item = {
             "source": doc.model_dump(),
             "manual_annotations": [span.model_dump() for span in manual],
@@ -6007,12 +6085,10 @@ async def export_session_bundle():
                     for run_key, metadata in agent_method_run_meta.items()
                 },
             }
-        if llm_confidence is not None or label_profile is not None:
+        if llm_confidence is not None:
             metrics_payload: dict[str, object] = {}
             if llm_confidence is not None:
                 metrics_payload["llm_confidence"] = llm_confidence
-            if label_profile is not None:
-                metrics_payload["label_profile"] = label_profile
             export_item["agent_metrics"] = metrics_payload
         documents.append(export_item)
 
@@ -6335,14 +6411,6 @@ def _import_session_payload(
             llm_confidence = _normalize_optional_llm_confidence(
                 agent_metrics.get("llm_confidence") if isinstance(agent_metrics, dict) else None
             )
-            label_profile_raw = (
-                str(agent_metrics.get("label_profile", "")).strip().lower()
-                if isinstance(agent_metrics, dict)
-                else ""
-            )
-            imported_label_profile: Literal["simple", "advanced"] | None = None
-            if label_profile_raw in {"simple", "advanced"}:
-                imported_label_profile = label_profile_raw  # type: ignore[assignment]
         except ValueError as exc:
             skipped.append({"index": idx, "reason": str(exc)})
             continue
@@ -6362,7 +6430,6 @@ def _import_session_payload(
             llm_run_metadata=llm_run_metadata,
             method_run_metadata=method_run_metadata,
             llm_confidence=llm_confidence,
-            imported_label_profile=imported_label_profile,
             conflict_policy=conflict_policy,
         )
         imported_ids.append(commit_result.doc_id)
@@ -6585,12 +6652,10 @@ async def get_dashboard_metrics(
     reference: str = Query(...),
     hypothesis: str = Query(...),
     match_mode: str = Query("overlap"),
-    label_projection: str = Query("native"),
 ):
     session_id = "default"
     ids = _load_session_index(session_id)
     normalized_match_mode = _normalize_match_mode(match_mode)
-    normalized_projection = _normalize_label_projection(label_projection)
     documents: list[dict] = []
     total_tp = 0
     total_fp = 0
@@ -6613,10 +6678,10 @@ async def get_dashboard_metrics(
         enriched = _enrich_doc(doc, session_id)
         ref_spans = _spans_from_source(enriched, reference)
         hyp_spans = _spans_from_source(enriched, hypothesis)
-        eval_ref_spans, eval_hyp_spans = _apply_label_projection(
+        eval_ref_spans, eval_hyp_spans = _prepare_experiment_scoring_spans(
             ref_spans,
             hyp_spans,
-            label_projection=normalized_projection,
+            method_bundle="audited",
         )
         result = compute_metrics(eval_ref_spans, eval_hyp_spans, normalized_match_mode)
         micro = result["micro"]
@@ -6759,7 +6824,6 @@ async def get_dashboard_metrics(
         "reference": reference,
         "hypothesis": hypothesis,
         "match_mode": normalized_match_mode,
-        "label_projection": normalized_projection,
         "total_documents": len(ids),
         "documents_compared": compared,
         "micro": _prf_from_counts(total_tp, total_fp, total_fn),

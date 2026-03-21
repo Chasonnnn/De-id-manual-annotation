@@ -216,6 +216,7 @@ def _resolve_boundaries(
     *,
     label_profile: Literal["simple", "advanced"],
 ) -> SpanResolutionResult:
+    del label_profile
     resolved: list[CanonicalSpan] = []
     events: list[ResolutionEvent] = []
     for span in spans:
@@ -277,7 +278,7 @@ def _augment_misc_id_spans(raw_text: str, existing: list[CanonicalSpan]) -> list
             candidate = CanonicalSpan(
                 start=start,
                 end=end,
-                label="MISC_ID",
+                label="IDENTIFYING_NUMBER",
                 text=candidate_text,
             )
             if not _candidate_is_identifier_like(candidate_text):

@@ -16,6 +16,7 @@ from litellm import completion
 
 from models import CanonicalSpan, LLMConfidenceMetric, ResolutionEvent
 from span_resolution import RESOLUTION_POLICY_VERSION, resolve_spans
+from taxonomy import CANONICAL_LABELS, canonicalize_label
 
 
 def _configure_litellm_runtime(module: Any = litellm) -> None:
@@ -361,72 +362,49 @@ TOOL_LABEL_MAP: dict[str, str] = {
     "FULL_NAME": "NAME",
     "GIVEN_NAME": "NAME",
     "SURNAME": "NAME",
-    "ADDRESS": "LOCATION",
-    "LOCATION": "LOCATION",
+    "ADDRESS": "ADDRESS",
+    "LOCATION": "ADDRESS",
     "SCHOOL": "SCHOOL",
     "DATE": "DATE",
     "DATE_TIME": "DATE",
     "TIME": "DATE",
     "TIMESTAMP": "DATE",
     "AGE": "AGE",
-    "PHONE": "PHONE",
-    "PHONE_NUMBER": "PHONE",
-    "FAX_NUMBER": "PHONE",
+    "PHONE": "PHONE_NUMBER",
+    "PHONE_NUMBER": "PHONE_NUMBER",
+    "FAX_NUMBER": "FAX_NUMBER",
     "EMAIL": "EMAIL",
     "EMAIL_ADDRESS": "EMAIL",
     "URL": "URL",
-    "SSN": "MISC_ID",
-    "US_SSN": "MISC_ID",
-    "ACCOUNT_NUMBER": "MISC_ID",
-    "US_BANK_NUMBER": "MISC_ID",
-    "CREDIT_CARD": "MISC_ID",
-    "DEVICE_IDENTIFIER": "MISC_ID",
-    "IP_ADDRESS": "MISC_ID",
-    "BIOMETRIC_IDENTIFIER": "MISC_ID",
-    "IMAGE": "MISC_ID",
-    "IDENTIFYING_NUMBER": "MISC_ID",
-    "MISC_ID": "MISC_ID",
+    "SSN": "SSN",
+    "US_SSN": "SSN",
+    "ACCOUNT_NUMBER": "ACCOUNT_NUMBER",
+    "US_BANK_NUMBER": "ACCOUNT_NUMBER",
+    "CREDIT_CARD": "ACCOUNT_NUMBER",
+    "DEVICE_IDENTIFIER": "DEVICE_IDENTIFIER",
+    "IP_ADDRESS": "IP_ADDRESS",
+    "BIOMETRIC_IDENTIFIER": "BIOMETRIC_IDENTIFIER",
+    "IMAGE": "IMAGE",
+    "IDENTIFYING_NUMBER": "IDENTIFYING_NUMBER",
+    "MISC_ID": "IDENTIFYING_NUMBER",
+    "SOCIAL_HANDLE": "IDENTIFYING_NUMBER",
+    "US_DRIVER_LICENSE": "IDENTIFYING_NUMBER",
+    "US_PASSPORT": "IDENTIFYING_NUMBER",
+    "TUTOR_PROVIDER": "TUTOR_PROVIDER",
 }
 
-SIMPLE_LABELS: list[str] = [
-    "AGE",
-    "DATE",
-    "EMAIL",
-    "LOCATION",
-    "MISC_ID",
-    "NAME",
-    "PHONE",
-    "SCHOOL",
-    "URL",
-]
+SIMPLE_LABELS: list[str] = list(CANONICAL_LABELS)
 SIMPLE_LABEL_SET = set(SIMPLE_LABELS)
 
-ADVANCED_LABELS: list[str] = [
-    "AGE",
-    "COURSE",
-    "DATE",
-    "EMAIL_ADDRESS",
-    "GRADE_LEVEL",
-    "IP_ADDRESS",
-    "LOCATION",
-    "NRP",
-    "PERSON",
-    "PHONE_NUMBER",
-    "SCHOOL",
-    "SOCIAL_HANDLE",
-    "URL",
-    "US_BANK_NUMBER",
-    "US_DRIVER_LICENSE",
-    "US_PASSPORT",
-    "US_SSN",
-]
+ADVANCED_LABELS: list[str] = list(CANONICAL_LABELS)
 ADVANCED_LABEL_SET = set(ADVANCED_LABELS)
 
 
 def _labels_for_profile(
     label_profile: Literal["simple", "advanced"],
 ) -> list[str]:
-    return ADVANCED_LABELS if label_profile == "advanced" else SIMPLE_LABELS
+    del label_profile
+    return list(CANONICAL_LABELS)
 
 
 def build_extraction_system_prompt(
@@ -434,7 +412,9 @@ def build_extraction_system_prompt(
     label_profile: Literal["simple", "advanced"] = "simple",
     method_bundle: MethodBundleId = DEFAULT_METHOD_BUNDLE,
 ) -> str:
-    prompt = str(base_prompt or "").strip() or SYSTEM_PROMPT.strip()
+    prompt = str(base_prompt or "").strip()
+    if not prompt or prompt == SYSTEM_PROMPT.strip():
+        prompt = _build_profile_default_prompt(label_profile)
     allowed_labels = ", ".join(_labels_for_profile(label_profile))
     bundle = _normalize_method_bundle(method_bundle)
     formatted_prompt = (
@@ -451,39 +431,7 @@ def build_extraction_system_prompt(
         )
     return formatted_prompt
 
-ADVANCED_TOOL_LABEL_MAP: dict[str, str] = {
-    "AGE": "AGE",
-    "COURSE": "COURSE",
-    "DATE": "DATE",
-    "DATE_TIME": "DATE",
-    "EMAIL": "EMAIL_ADDRESS",
-    "EMAIL_ADDRESS": "EMAIL_ADDRESS",
-    "GRADE_LEVEL": "GRADE_LEVEL",
-    "IP_ADDRESS": "IP_ADDRESS",
-    "LOCATION": "LOCATION",
-    "ADDRESS": "LOCATION",
-    "GPE": "LOCATION",
-    "NRP": "NRP",
-    "NATIONALITY": "NRP",
-    "NORP": "NRP",
-    "RELIGION": "NRP",
-    "POLITICAL_GROUP": "NRP",
-    "PERSON": "PERSON",
-    "PER": "PERSON",
-    "NAME": "PERSON",
-    "PHONE": "PHONE_NUMBER",
-    "PHONE_NUMBER": "PHONE_NUMBER",
-    "FAX_NUMBER": "PHONE_NUMBER",
-    "SCHOOL": "SCHOOL",
-    "SOCIAL_HANDLE": "SOCIAL_HANDLE",
-    "URL": "URL",
-    "US_BANK_NUMBER": "US_BANK_NUMBER",
-    "ACCOUNT_NUMBER": "US_BANK_NUMBER",
-    "US_DRIVER_LICENSE": "US_DRIVER_LICENSE",
-    "US_PASSPORT": "US_PASSPORT",
-    "US_SSN": "US_SSN",
-    "SSN": "US_SSN",
-}
+ADVANCED_TOOL_LABEL_MAP: dict[str, str] = dict(TOOL_LABEL_MAP)
 
 PRESIDIO_DEFAULT_MODEL = "en_core_web_lg"
 PRESIDIO_SETUP_MESSAGE = (
@@ -714,49 +662,30 @@ LEGACY_METHOD_DEFINITION_BY_ID: dict[str, dict[str, Any]] = {
     method["id"]: method for method in LEGACY_METHOD_DEFINITIONS
 }
 
-_SIMPLE_PROMPT_LABEL_DESCRIPTIONS: dict[str, str] = {
-    "AGE": "ages over 89 or ages that directly identify an individual [AGE]",
-    "DATE": "dates directly tied to an individual, excluding standalone years [DATE]",
-    "EMAIL": "email addresses [EMAIL]",
-    "LOCATION": (
-        "geographic locations smaller than a state such as street addresses, cities, and "
-        "neighborhood names [LOCATION]"
-    ),
-    "MISC_ID": (
-        "other identifying numbers or codes such as student IDs, account numbers, SSNs, "
-        "device identifiers, license numbers, passport numbers, biometric identifiers, or "
-        "IP addresses [MISC_ID]"
-    ),
+_CANONICAL_PROMPT_LABEL_DESCRIPTIONS: dict[str, str] = {
     "NAME": "personal names, nicknames, and pseudonyms used for specific individuals [NAME]",
-    "PHONE": "phone or fax numbers [PHONE]",
-    "SCHOOL": "school names that identify a person or reveal location [SCHOOL]",
+    "ADDRESS": (
+        "street addresses, local landmarks, cities, and other geographic details smaller than "
+        "a state when they identify where a person lives, studies, or is located [ADDRESS]"
+    ),
+    "DATE": "dates or times directly tied to a specific individual [DATE]",
+    "PHONE_NUMBER": "phone numbers [PHONE_NUMBER]",
+    "FAX_NUMBER": "fax numbers [FAX_NUMBER]",
+    "EMAIL": "email addresses [EMAIL]",
+    "SSN": "Social Security numbers [SSN]",
+    "ACCOUNT_NUMBER": "bank, insurance, or other account numbers [ACCOUNT_NUMBER]",
+    "DEVICE_IDENTIFIER": "device serial numbers or unique device identifiers [DEVICE_IDENTIFIER]",
     "URL": "URLs or web domains tied to a person or account [URL]",
-}
-
-_ADVANCED_PROMPT_LABEL_DESCRIPTIONS: dict[str, str] = {
-    "AGE": "ages over 89 or ages that directly identify an individual [AGE]",
-    "COURSE": "course names or codes that identify a student's enrollment context [COURSE]",
-    "DATE": "dates directly tied to an individual, excluding standalone years [DATE]",
-    "EMAIL_ADDRESS": "email addresses [EMAIL_ADDRESS]",
-    "GRADE_LEVEL": "grade levels tied to a specific student [GRADE_LEVEL]",
     "IP_ADDRESS": "IP addresses [IP_ADDRESS]",
-    "LOCATION": (
-        "geographic locations smaller than a state such as street addresses, cities, and "
-        "neighborhood names [LOCATION]"
+    "BIOMETRIC_IDENTIFIER": "biometric identifiers such as fingerprints or voiceprints [BIOMETRIC_IDENTIFIER]",
+    "IMAGE": "photographs or images that could identify an individual [IMAGE]",
+    "IDENTIFYING_NUMBER": (
+        "passwords, usernames, social handles, student IDs, license numbers, passport numbers, "
+        "and other identifying numbers or codes [IDENTIFYING_NUMBER]"
     ),
-    "NRP": (
-        "nationality, religious, or political-group references when they are stated as a "
-        "personal attribute of an individual [NRP]"
-    ),
-    "PERSON": "personal names, nicknames, and pseudonyms used for specific individuals [PERSON]",
-    "PHONE_NUMBER": "phone or fax numbers [PHONE_NUMBER]",
-    "SCHOOL": "school names that identify a person or reveal location [SCHOOL]",
-    "SOCIAL_HANDLE": "social media handles or usernames [SOCIAL_HANDLE]",
-    "URL": "URLs or web domains tied to a person or account [URL]",
-    "US_BANK_NUMBER": "bank account or routing numbers [US_BANK_NUMBER]",
-    "US_DRIVER_LICENSE": "US driver license numbers [US_DRIVER_LICENSE]",
-    "US_PASSPORT": "US passport numbers [US_PASSPORT]",
-    "US_SSN": "US Social Security numbers [US_SSN]",
+    "AGE": "explicit person-linked ages such as '29 years old' or 'twenty-years-old' [AGE]",
+    "SCHOOL": "school or university names tied to a specific person [SCHOOL]",
+    "TUTOR_PROVIDER": "tutoring organizations or platforms such as Saga or UPchieve [TUTOR_PROVIDER]",
 }
 
 _METHOD_FALSE_POSITIVE_GUIDANCE = """\
@@ -778,11 +707,8 @@ def _ordered_difference(values: list[str], excluded: set[str]) -> list[str]:
 def _label_descriptions_for_profile(
     label_profile: Literal["simple", "advanced"],
 ) -> dict[str, str]:
-    return (
-        _ADVANCED_PROMPT_LABEL_DESCRIPTIONS
-        if label_profile == "advanced"
-        else _SIMPLE_PROMPT_LABEL_DESCRIPTIONS
-    )
+    del label_profile
+    return _CANONICAL_PROMPT_LABEL_DESCRIPTIONS
 
 
 def _render_prompt_category_catalog(
@@ -799,7 +725,7 @@ def _build_test_bundle_prompt_contract(
     label_profile: Literal["simple", "advanced"],
 ) -> str:
     labels = _labels_for_profile(label_profile)
-    example_label = "PERSON" if label_profile == "advanced" else "NAME"
+    example_label = "NAME"
     category_catalog = _render_prompt_category_catalog(labels, label_profile=label_profile)
     example_payload = json.dumps(
         {
@@ -864,7 +790,8 @@ def _build_profile_extended_prompt(
 def _build_profile_names_prompt(
     label_profile: Literal["simple", "advanced"],
 ) -> str:
-    target_label = "PERSON" if label_profile == "advanced" else "NAME"
+    del label_profile
+    target_label = "NAME"
     return (
         "You are a PII analyst specializing in personal names in tutoring chat transcripts. "
         f"Identify all personal names and label each one [{target_label}]. "
@@ -966,9 +893,9 @@ _AUDITED_NAMES_PROMPTS = {
     "advanced": _build_profile_names_prompt("advanced"),
 }
 _DUAL_SIMPLE_REMAINING_LABELS = _ordered_difference(SIMPLE_LABELS, {"NAME"})
-_DUAL_ADVANCED_REMAINING_LABELS = _ordered_difference(ADVANCED_LABELS, {"PERSON"})
-_DUAL_SPLIT_SIMPLE_PASS_ONE = ["NAME", "LOCATION", "SCHOOL"]
-_DUAL_SPLIT_ADVANCED_PASS_ONE = ["PERSON", "LOCATION", "SCHOOL"]
+_DUAL_ADVANCED_REMAINING_LABELS = _ordered_difference(ADVANCED_LABELS, {"NAME"})
+_DUAL_SPLIT_SIMPLE_PASS_ONE = ["NAME", "ADDRESS", "SCHOOL", "TUTOR_PROVIDER"]
+_DUAL_SPLIT_ADVANCED_PASS_ONE = ["NAME", "ADDRESS", "SCHOOL", "TUTOR_PROVIDER"]
 _DUAL_SPLIT_SIMPLE_PASS_TWO = _ordered_difference(
     SIMPLE_LABELS,
     set(_DUAL_SPLIT_SIMPLE_PASS_ONE),
@@ -977,41 +904,60 @@ _DUAL_SPLIT_ADVANCED_PASS_TWO = _ordered_difference(
     ADVANCED_LABELS,
     set(_DUAL_SPLIT_ADVANCED_PASS_ONE),
 )
-_PRESIDIO_DEFAULT_SIMPLE_OUTPUT = ["EMAIL", "PHONE", "URL", "MISC_ID"]
-_PRESIDIO_DEFAULT_ADVANCED_OUTPUT = [
-    "EMAIL_ADDRESS",
+_PRESIDIO_DEFAULT_SIMPLE_OUTPUT = [
+    "EMAIL",
     "PHONE_NUMBER",
     "URL",
     "IP_ADDRESS",
-    "US_SSN",
-    "US_BANK_NUMBER",
+    "SSN",
+    "ACCOUNT_NUMBER",
+]
+_PRESIDIO_DEFAULT_ADVANCED_OUTPUT = [
+    "EMAIL",
+    "PHONE_NUMBER",
+    "URL",
+    "IP_ADDRESS",
+    "SSN",
+    "ACCOUNT_NUMBER",
 ]
 _PRESIDIO_DEFAULT_SIMPLE_RESIDUAL = [
     "NAME",
-    "LOCATION",
+    "ADDRESS",
     "SCHOOL",
+    "TUTOR_PROVIDER",
     "DATE",
     "AGE",
-    "MISC_ID",
+    "FAX_NUMBER",
+    "DEVICE_IDENTIFIER",
+    "BIOMETRIC_IDENTIFIER",
+    "IMAGE",
+    "IDENTIFYING_NUMBER",
 ]
 _PRESIDIO_DEFAULT_ADVANCED_RESIDUAL = _ordered_difference(
     ADVANCED_LABELS,
     set(_PRESIDIO_DEFAULT_ADVANCED_OUTPUT),
 )
-_PRESIDIO_SPLIT_SIMPLE_OUTPUT = ["EMAIL", "PHONE", "URL", "MISC_ID"]
+_PRESIDIO_SPLIT_SIMPLE_OUTPUT = ["EMAIL", "PHONE_NUMBER", "URL", "IP_ADDRESS"]
 _PRESIDIO_SPLIT_ADVANCED_OUTPUT = [
-    "EMAIL_ADDRESS",
+    "EMAIL",
     "PHONE_NUMBER",
     "URL",
     "IP_ADDRESS",
 ]
 _PRESIDIO_SPLIT_SIMPLE_RESIDUAL = [
     "NAME",
-    "LOCATION",
+    "ADDRESS",
     "SCHOOL",
+    "TUTOR_PROVIDER",
     "DATE",
     "AGE",
-    "MISC_ID",
+    "FAX_NUMBER",
+    "SSN",
+    "ACCOUNT_NUMBER",
+    "DEVICE_IDENTIFIER",
+    "BIOMETRIC_IDENTIFIER",
+    "IMAGE",
+    "IDENTIFYING_NUMBER",
 ]
 _PRESIDIO_SPLIT_ADVANCED_RESIDUAL = _ordered_difference(
     ADVANCED_LABELS,
@@ -1220,8 +1166,8 @@ AUDITED_METHOD_DEFINITIONS: list[dict[str, Any]] = [
         "passes": [
             _build_profile_aware_llm_pass(
                 prompt_by_profile=_AUDITED_NAMES_PROMPTS,
-                entity_types_by_profile={"simple": ["NAME"], "advanced": ["PERSON"]},
-                requested_labels_by_profile={"simple": ["NAME"], "advanced": ["PERSON"]},
+                entity_types_by_profile={"simple": ["NAME"], "advanced": ["NAME"]},
+                requested_labels_by_profile={"simple": ["NAME"], "advanced": ["NAME"]},
                 pass_label="dual:names",
             ),
             _build_profile_aware_llm_pass(
@@ -1306,15 +1252,8 @@ AUDITED_METHOD_DEFINITIONS: list[dict[str, Any]] = [
                     ],
                 },
                 entity_types_by_profile={
-                    "simple": ["NAME", "LOCATION", "EMAIL", "URL", "PHONE", "MISC_ID"],
-                    "advanced": [
-                        "PERSON",
-                        "LOCATION",
-                        "EMAIL_ADDRESS",
-                        "URL",
-                        "PHONE_NUMBER",
-                        "IP_ADDRESS",
-                    ],
+                    "simple": ["NAME", "ADDRESS", "EMAIL", "URL", "PHONE_NUMBER", "IP_ADDRESS"],
+                    "advanced": ["NAME", "ADDRESS", "EMAIL", "URL", "PHONE_NUMBER", "IP_ADDRESS"],
                 },
                 pass_label="presidio:core",
             )
@@ -2177,11 +2116,8 @@ def _build_span_response_format(
     *,
     label_profile: Literal["simple", "advanced"] = "simple",
 ) -> dict[str, Any]:
-    label_schema: dict[str, Any]
-    if label_profile == "advanced":
-        label_schema = {"type": "string", "enum": ADVANCED_LABELS}
-    else:
-        label_schema = {"type": "string", "enum": SIMPLE_LABELS}
+    del label_profile
+    label_schema: dict[str, Any] = {"type": "string", "enum": list(CANONICAL_LABELS)}
     return {
         "type": "json_schema",
         "json_schema": {
@@ -2448,7 +2384,7 @@ def _repair_offset_mismatches(
         if had_mismatch and normalize_method_label(
             candidate.label,
             label_profile=label_profile,
-        ) in {"NAME", "PERSON"}:
+        ) == "NAME":
             if not _is_plausible_name_span(raw_text, candidate):
                 dropped += 1
                 continue
@@ -2482,7 +2418,7 @@ def _drop_implausible_name_spans(
 ) -> tuple[list[CanonicalSpan], int]:
     kept: list[CanonicalSpan] = []
     dropped = 0
-    target_label = "NAME" if label_profile == "simple" else "PERSON"
+    target_label = "NAME"
     for span in spans:
         if (
             normalize_method_label(span.label, label_profile=label_profile) == target_label
@@ -2670,12 +2606,7 @@ def _passes_label_profile_filters(
     *,
     label_profile: Literal["simple", "advanced"] = "simple",
 ) -> bool:
-    if label_profile != "advanced":
-        return True
-    if span.label == "COURSE":
-        return _is_valid_course_text(span.text)
-    if span.label == "DATE":
-        return _is_specific_date_text(span.text)
+    del label_profile
     return True
 
 
@@ -2686,31 +2617,47 @@ def normalize_method_label(
 ) -> str:
     normalized = label.strip().upper()
     if not normalized:
-        return "MISC_ID" if label_profile == "simple" else ""
-    if label_profile == "advanced":
-        mapped = ADVANCED_TOOL_LABEL_MAP.get(normalized, normalized)
-        return mapped if mapped in ADVANCED_LABEL_SET else ""
-    mapped = TOOL_LABEL_MAP.get(normalized, normalized)
-    if mapped in SIMPLE_LABEL_SET:
+        return ""
+    del label_profile
+    mapped = TOOL_LABEL_MAP.get(normalized)
+    if mapped:
         return mapped
-    # Heuristic fallback for near-miss label names from model outputs.
+    canonical = canonicalize_label(normalized)
+    if canonical is not None:
+        return canonical
     if "NAME" in normalized or normalized in {"PERSONAL", "PERSONAL_NAME"}:
         return "NAME"
     if "EMAIL" in normalized:
         return "EMAIL"
-    if "PHONE" in normalized or "FAX" in normalized:
-        return "PHONE"
+    if "PHONE" in normalized:
+        return "PHONE_NUMBER"
+    if "FAX" in normalized:
+        return "FAX_NUMBER"
     if "URL" in normalized or "URI" in normalized:
         return "URL"
     if "DATE" in normalized or "TIME" in normalized:
         return "DATE"
     if "LOC" in normalized or "ADDR" in normalized or normalized == "GPE":
-        return "LOCATION"
+        return "ADDRESS"
     if "SCHOOL" in normalized:
         return "SCHOOL"
     if "AGE" in normalized:
         return "AGE"
-    return "MISC_ID"
+    if "IP" in normalized:
+        return "IP_ADDRESS"
+    if "ACCOUNT" in normalized:
+        return "ACCOUNT_NUMBER"
+    if "DEVICE" in normalized:
+        return "DEVICE_IDENTIFIER"
+    if "BIOMETRIC" in normalized or "VOICEPRINT" in normalized or "FINGERPRINT" in normalized:
+        return "BIOMETRIC_IDENTIFIER"
+    if "IMAGE" in normalized or "PHOTO" in normalized:
+        return "IMAGE"
+    if "SSN" in normalized:
+        return "SSN"
+    if "PASSWORD" in normalized or "HANDLE" in normalized or "IDENTIFIER" in normalized:
+        return "IDENTIFYING_NUMBER"
+    return ""
 
 
 def normalize_method_spans(
@@ -2720,8 +2667,11 @@ def normalize_method_spans(
 ) -> list[CanonicalSpan]:
     normalized: list[CanonicalSpan] = []
     for span in spans:
+        original_label = span.label.strip().upper()
         mapped_label = normalize_method_label(span.label, label_profile=label_profile)
         if not mapped_label:
+            continue
+        if mapped_label == "DATE" and original_label == "DATE" and not _is_specific_date_text(span.text):
             continue
         candidate = CanonicalSpan(
             start=span.start,
@@ -3167,43 +3117,24 @@ def list_agent_methods(
         for pass_index, method_pass in enumerate(method.get("passes", []), start=1):
             if method_pass.get("kind") != "llm":
                 continue
-            system_prompt_by_profile = {
-                profile: _resolve_method_pass_prompt(
-                    method_pass,
-                    label_profile=profile,  # type: ignore[arg-type]
-                )
-                for profile in _supported_profiles_for_method(method)
-            }
-            entity_types_by_profile = {
-                profile: _resolve_method_pass_entity_types(
-                    method_pass,
-                    label_profile=profile,  # type: ignore[arg-type]
-                )
-                for profile in _supported_profiles_for_method(method)
-            }
             prompt_templates.append(
                 {
                     "pass_index": pass_index,
-                    "entity_types": entity_types_by_profile.get("simple"),
-                    "entity_types_by_profile": entity_types_by_profile,
-                    "system_prompt": system_prompt_by_profile.get("simple", SYSTEM_PROMPT),
-                    "system_prompt_by_profile": system_prompt_by_profile,
+                    "entity_types": _resolve_method_pass_entity_types(
+                        method_pass,
+                        label_profile="simple",
+                    ),
+                    "system_prompt": _resolve_method_pass_prompt(
+                        method_pass,
+                        label_profile="simple",
+                    ),
                 }
             )
-        supported_profiles = _supported_profiles_for_method(method)
-        if bundle == "deidentify-v2":
-            native_output_labels = _compute_native_method_output_labels(method)
-            output_labels_by_profile = {
-                profile: list(native_output_labels) for profile in supported_profiles
-            }
-        else:
-            output_labels_by_profile = {
-                profile: _compute_method_output_labels(
-                    method,
-                    label_profile=profile,  # type: ignore[arg-type]
-                )
-                for profile in supported_profiles
-            }
+        output_labels = (
+            _compute_native_method_output_labels(method)
+            if bundle == "deidentify-v2"
+            else _compute_method_output_labels(method, label_profile="simple")
+        )
         methods.append(
             {
                 "id": method["id"],
@@ -3214,8 +3145,7 @@ def list_agent_methods(
                 "supports_verify_override": method["supports_verify_override"],
                 "default_verify": method["default_verify"],
                 "prompt_templates": prompt_templates,
-                "supported_label_profiles": supported_profiles,
-                "output_labels_by_profile": output_labels_by_profile,
+                "output_labels": output_labels,
                 "known_limitations": list(method.get("known_limitations", [])),
                 "available": unavailable_reason is None,
                 "unavailable_reason": unavailable_reason,
@@ -3757,9 +3687,8 @@ def run_method_with_metadata(
         label_profile=label_profile,
     )
     if dropped_name_spans > 0:
-        target_label = "NAME" if label_profile == "simple" else "PERSON"
         warnings.append(
-            f"Dropped {dropped_name_spans} implausible {target_label} span(s) from method output."
+            f"Dropped {dropped_name_spans} implausible NAME span(s) from method output."
         )
 
     return MethodRunResult(
@@ -3912,7 +3841,8 @@ def run_llm_with_metadata(
             response_debug = [
                 "request_settings: "
                 f"provider={provider}; timeout={effective_timeout_seconds:g}; "
-                f"max_tokens={effective_max_tokens}; label_profile={label_profile}; "
+                f"max_tokens={effective_max_tokens}; "
+                f"canonical_label_count={len(_labels_for_profile(label_profile))}; "
                 f"reasoning_effort={reasoning_effort}; anthropic_thinking={anthropic_thinking}",
                 _build_response_debug_summary(resp),
             ]
@@ -3955,17 +3885,15 @@ def run_llm_with_metadata(
                 label_profile=label_profile,
             )
             if dropped_name_spans > 0:
-                target_label = "NAME" if label_profile == "simple" else "PERSON"
                 warnings.append(
-                    f"Dropped {dropped_name_spans} implausible {target_label} span(s) from LLM output."
+                    f"Dropped {dropped_name_spans} implausible NAME span(s) from LLM output."
                 )
             boundary_fix_count = sum(
                 1 for event in resolution_events if event.kind == "boundary_resolution"
             )
             if boundary_fix_count > 0:
-                target_label = "NAME" if label_profile == "simple" else "PERSON"
                 warnings.append(
-                    f"Resolved {boundary_fix_count} supported boundary issue(s) including {target_label} affixes."
+                    f"Resolved {boundary_fix_count} supported boundary issue(s) including NAME affixes."
                 )
             augmentation_count = sum(
                 1 for event in resolution_events if event.kind == "augmentation"

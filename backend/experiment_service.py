@@ -210,8 +210,6 @@ def resolve_prompt_lab_runtime(runtime: Any) -> dict[str, object]:
     match_mode = srv._normalize_match_mode(runtime.match_mode)
     chunk_mode = srv._normalize_chunk_mode(runtime.chunk_mode)
     chunk_size_chars = srv._normalize_chunk_size(runtime.chunk_size_chars)
-    label_profile = srv._normalize_label_profile(runtime.label_profile)
-    label_projection = srv._normalize_label_projection(runtime.label_projection)
     method_bundle = srv._normalize_method_bundle(getattr(runtime, "method_bundle", "audited"))
     return {
         "api_key": api_key,
@@ -222,8 +220,6 @@ def resolve_prompt_lab_runtime(runtime: Any) -> dict[str, object]:
         "fallback_reference_source": runtime.fallback_reference_source,
         "chunk_mode": chunk_mode,
         "chunk_size_chars": chunk_size_chars,
-        "label_profile": label_profile,
-        "label_projection": label_projection,
         "method_bundle": method_bundle,
     }
 
@@ -472,8 +468,6 @@ def initialize_prompt_lab_run(
             "match_mode": runtime["match_mode"],
             "reference_source": runtime["reference_source"],
             "fallback_reference_source": runtime["fallback_reference_source"],
-            "label_profile": runtime["label_profile"],
-            "label_projection": runtime["label_projection"],
             "method_bundle": runtime["method_bundle"],
             "api_base": runtime["api_base"],
             "chunk_mode": runtime["chunk_mode"],
@@ -882,8 +876,6 @@ def build_prompt_lab_run_detail(run: dict) -> dict:
             "match_mode": runtime.get("match_mode", "exact"),
             "reference_source": runtime.get("reference_source", "manual"),
             "fallback_reference_source": runtime.get("fallback_reference_source", "pre"),
-            "label_profile": runtime.get("label_profile", "simple"),
-            "label_projection": runtime.get("label_projection", "native"),
             "method_bundle": runtime.get("method_bundle", "audited"),
             "api_base": runtime.get("api_base", ""),
             "chunk_mode": runtime.get("chunk_mode", "off"),
@@ -958,8 +950,6 @@ def run_prompt_lab_job(
     match_mode = str(runtime["match_mode"])
     reference_source = str(runtime["reference_source"])
     fallback_reference_source = str(runtime["fallback_reference_source"])
-    label_profile = str(runtime["label_profile"])
-    label_projection = srv._normalize_label_projection(runtime.get("label_projection", "native"))
     method_bundle = srv._normalize_method_bundle(runtime.get("method_bundle", "audited"))
     chunk_mode = str(runtime["chunk_mode"])
     chunk_size_chars = int(runtime["chunk_size_chars"])
@@ -1048,7 +1038,7 @@ def run_prompt_lab_job(
                     anthropic_thinking=bool(model["anthropic_thinking"]),
                     anthropic_thinking_budget_tokens=model["anthropic_thinking_budget_tokens"],
                     method_verify=method_verify_override,
-                    label_profile=label_profile,  # type: ignore[arg-type]
+                    label_profile="simple",
                     chunk_mode=chunk_mode,
                     chunk_size_chars=chunk_size_chars,
                     method_bundle=method_bundle,  # type: ignore[arg-type]
@@ -1076,7 +1066,7 @@ def run_prompt_lab_job(
                     reasoning_effort=str(model["reasoning_effort"]),
                     anthropic_thinking=bool(model["anthropic_thinking"]),
                     anthropic_thinking_budget_tokens=model["anthropic_thinking_budget_tokens"],
-                    label_profile=label_profile,  # type: ignore[arg-type]
+                    label_profile="simple",
                     chunk_mode=chunk_mode,
                     chunk_size_chars=chunk_size_chars,
                     method_bundle=method_bundle,
@@ -1090,14 +1080,12 @@ def run_prompt_lab_job(
             projected_reference, projected_hypothesis = srv._prepare_experiment_scoring_spans(
                 reference_spans,
                 hypothesis_spans,
-                label_projection=label_projection,  # type: ignore[arg-type]
                 method_bundle=method_bundle,
                 reference_label_set=reference_label_set,
             )
             projected_reference_raw, projected_hypothesis_raw = srv._prepare_experiment_scoring_spans(
                 reference_spans,
                 raw_hypothesis_spans,
-                label_projection=label_projection,  # type: ignore[arg-type]
                 method_bundle=method_bundle,
                 reference_label_set=reference_label_set,
             )
@@ -1311,8 +1299,6 @@ def resolve_methods_lab_runtime(runtime: Any) -> dict[str, object]:
     match_mode = srv._normalize_match_mode(runtime.match_mode)
     chunk_mode = srv._normalize_chunk_mode(runtime.chunk_mode)
     chunk_size_chars = srv._normalize_chunk_size(runtime.chunk_size_chars)
-    label_profile = srv._normalize_label_profile(runtime.label_profile)
-    label_projection = srv._normalize_label_projection(runtime.label_projection)
     method_bundle = srv._normalize_method_bundle(getattr(runtime, "method_bundle", "audited"))
     task_timeout_seconds = srv._safe_float(getattr(runtime, "task_timeout_seconds", None))
     if task_timeout_seconds is not None and task_timeout_seconds <= 0:
@@ -1326,8 +1312,6 @@ def resolve_methods_lab_runtime(runtime: Any) -> dict[str, object]:
         "fallback_reference_source": runtime.fallback_reference_source,
         "chunk_mode": chunk_mode,
         "chunk_size_chars": chunk_size_chars,
-        "label_profile": label_profile,
-        "label_projection": label_projection,
         "method_bundle": method_bundle,
         "task_timeout_seconds": task_timeout_seconds,
     }
@@ -1479,8 +1463,6 @@ def initialize_methods_lab_run(
             "match_mode": runtime["match_mode"],
             "reference_source": runtime["reference_source"],
             "fallback_reference_source": runtime["fallback_reference_source"],
-            "label_profile": runtime["label_profile"],
-            "label_projection": runtime["label_projection"],
             "method_bundle": runtime["method_bundle"],
             "api_base": runtime["api_base"],
             "chunk_mode": runtime["chunk_mode"],
@@ -1735,8 +1717,6 @@ def build_methods_lab_run_detail(run: dict) -> dict:
             "match_mode": runtime.get("match_mode", "exact"),
             "reference_source": runtime.get("reference_source", "manual"),
             "fallback_reference_source": runtime.get("fallback_reference_source", "pre"),
-            "label_profile": runtime.get("label_profile", "simple"),
-            "label_projection": runtime.get("label_projection", "native"),
             "method_bundle": runtime.get("method_bundle", "audited"),
             "api_base": runtime.get("api_base", ""),
             "chunk_mode": runtime.get("chunk_mode", "off"),
@@ -1830,7 +1810,6 @@ def _sync_methods_lab_result_to_workspace(
     method_verify_override: bool | None,
     target_model_ids: list[str],
     model_by_id: dict[str, dict[str, Any]],
-    label_profile: str,
     method_bundle: str,
     result: dict[str, Any],
 ) -> None:
@@ -1894,12 +1873,10 @@ def _sync_methods_lab_result_to_workspace(
                 updated_at=updated_at,
                 method_id=method_id,
                 model=workspace_model,
-                label_profile=label_profile,  # type: ignore[arg-type]
                 prompt_snapshot=srv._build_method_prompt_snapshot(
                     method_id=method_id,
                     additional_constraints="",
                     method_verify=method_verify_override,
-                    label_profile=label_profile,  # type: ignore[arg-type]
                     method_bundle=method_bundle,
                 ),
                 llm_confidence=llm_confidence,
@@ -1929,8 +1906,6 @@ def run_methods_lab_job(
     match_mode = str(runtime["match_mode"])
     reference_source = str(runtime["reference_source"])
     fallback_reference_source = str(runtime["fallback_reference_source"])
-    label_profile = str(runtime["label_profile"])
-    label_projection = srv._normalize_label_projection(runtime.get("label_projection", "native"))
     chunk_mode = str(runtime["chunk_mode"])
     chunk_size_chars = int(runtime["chunk_size_chars"])
     task_timeout_seconds = srv._safe_float(runtime.get("task_timeout_seconds"))
@@ -2124,10 +2099,10 @@ def run_methods_lab_job(
                     anthropic_thinking=anthropic_thinking,
                     anthropic_thinking_budget_tokens=anthropic_budget,
                     method_verify=method_variant.get("method_verify_override"),
-                    label_profile=label_profile,  # type: ignore[arg-type]
+                    label_profile="simple",
                     chunk_mode=chunk_mode,
                     chunk_size_chars=chunk_size_chars,
-                runtime_progress_callback=_record_runtime_progress,
+                    runtime_progress_callback=_record_runtime_progress,
                 timeout_seconds=task_timeout_seconds,
                 method_bundle=method_bundle,
             )
@@ -2202,14 +2177,12 @@ def run_methods_lab_job(
             projected_reference, projected_hypothesis = srv._prepare_experiment_scoring_spans(
                 reference_spans,
                 hypothesis_spans,
-                label_projection=label_projection,  # type: ignore[arg-type]
                 method_bundle=method_bundle,
                 reference_label_set=reference_label_set,
             )
             projected_reference_raw, projected_hypothesis_raw = srv._prepare_experiment_scoring_spans(
                 reference_spans,
                 raw_hypothesis_spans,
-                label_projection=label_projection,  # type: ignore[arg-type]
                 method_bundle=method_bundle,
                 reference_label_set=reference_label_set,
             )
@@ -2342,7 +2315,6 @@ def run_methods_lab_job(
                             method_verify_override=method_variant.get("method_verify_override"),
                             target_model_ids=target_model_ids,
                             model_by_id=model_by_id,
-                            label_profile=label_profile,
                             method_bundle=method_bundle,
                             result=result,
                         )

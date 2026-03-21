@@ -6,24 +6,23 @@ from pathlib import Path
 from typing import Any
 
 from models import CanonicalDocument, CanonicalSpan, UtteranceRow
+from taxonomy import canonicalize_label
 
-PII_TYPE_MAP = {
-    "PERSON": "NAME",
-}
 TIMSS_LINE_RE = re.compile(r"^(?P<timestamp>\d{2}:\d{2}:\d{2})\t(?P<speaker>[^\t]+)\t(?P<content>.*)$")
 TEXT_ENCODINGS = ("utf-8-sig", "utf-8", "latin-1")
 
 
-def _map_label(raw: str) -> str:
-    return PII_TYPE_MAP.get(raw.upper(), raw.upper())
+def _map_label(raw: str, *, text: str | None = None) -> str | None:
+    return canonicalize_label(raw, text=text)
 
 
 def _collect_label_set(*label_lists: list[str]) -> list[str]:
     labels: set[str] = set()
     for values in label_lists:
         for label in values:
-            if label:
-                labels.add(_map_label(label))
+            mapped = _map_label(label)
+            if mapped:
+                labels.add(mapped)
     return sorted(labels)
 
 
@@ -150,10 +149,11 @@ def parse_hips_v1(data: dict, filename: str, doc_id: str) -> CanonicalDocument:
         CanonicalSpan(
             start=p["start"],
             end=p["end"],
-            label=_map_label(p["pii_type"]),
+            label=str(_map_label(p["pii_type"], text=p.get("text", full_text[p["start"]:p["end"]]))),
             text=p.get("text", full_text[p["start"]:p["end"]]),
         )
         for p in data.get("pii_occurrences", [])
+        if _map_label(p["pii_type"], text=p.get("text", full_text[p["start"]:p["end"]])) is not None
     ]
     deduped = _dedup_spans(spans)
     labels_from_distinct = list(data.get("distinct_pii", {}).keys())
@@ -175,10 +175,11 @@ def parse_hips_v2(data: dict, filename: str, doc_id: str) -> CanonicalDocument:
         CanonicalSpan(
             start=p["start"],
             end=p["end"],
-            label=_map_label(p["type"]),
+            label=str(_map_label(p["type"], text=p.get("pii", full_text[p["start"]:p["end"]]))),
             text=p.get("pii", full_text[p["start"]:p["end"]]),
         )
         for p in data.get("pii", [])
+        if _map_label(p["type"], text=p.get("pii", full_text[p["start"]:p["end"]])) is not None
     ]
     deduped = _dedup_spans(spans)
     labels_from_distinct = list(data.get("distinct_pii", {}).keys())
@@ -251,7 +252,9 @@ def parse_jsonl_record(data: dict, filename: str, doc_id: str) -> CanonicalDocum
             abs_end = content_start + end
             if abs_start < content_start or abs_end > content_end or abs_start >= abs_end:
                 continue
-            label = _map_label(pii_type)
+            label = _map_label(pii_type, text=content[start:end])
+            if label is None:
+                continue
             spans.append(
                 CanonicalSpan(
                     start=abs_start,

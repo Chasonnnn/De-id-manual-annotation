@@ -87,8 +87,6 @@ def _build_prompt_body_from_args(args: argparse.Namespace) -> PromptLabRunCreate
         match_mode=args.match_mode,
         reference_source=args.reference_source,
         fallback_reference_source=args.fallback_reference_source,
-        label_profile=args.label_profile,
-        label_projection=args.label_projection,
         chunk_mode=args.chunk_mode,
         chunk_size_chars=args.chunk_size_chars,
     )
@@ -125,8 +123,6 @@ def _build_methods_body_from_args(args: argparse.Namespace) -> MethodsLabRunCrea
         match_mode=args.match_mode,
         reference_source=args.reference_source,
         fallback_reference_source=args.fallback_reference_source,
-        label_profile=args.label_profile,
-        label_projection=args.label_projection,
         chunk_mode=args.chunk_mode,
         chunk_size_chars=args.chunk_size_chars,
         task_timeout_seconds=args.task_timeout_seconds,
@@ -997,16 +993,6 @@ def _add_runtime_args(parser: argparse.ArgumentParser, *, prompt_mode: bool) -> 
         "--fallback-reference-source",
         choices=["manual", "pre"],
         default="pre",
-    )
-    parser.add_argument(
-        "--label-profile",
-        choices=["simple", "advanced"],
-        default="simple",
-    )
-    parser.add_argument(
-        "--label-projection",
-        choices=["native", "coarse_simple"],
-        default="native",
     )
     parser.add_argument(
         "--chunk-mode",

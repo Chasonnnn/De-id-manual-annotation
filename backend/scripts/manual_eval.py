@@ -82,7 +82,6 @@ def _run_variant(
     reasoning_effort: str,
     anthropic_thinking: bool,
     anthropic_thinking_budget_tokens: int | None,
-    label_profile: str,
     chunk_mode: str,
     chunk_size_chars: int,
     enable_suspicious_empty_retry: bool,
@@ -98,7 +97,7 @@ def _run_variant(
         reasoning_effort=reasoning_effort,
         anthropic_thinking=anthropic_thinking,
         anthropic_thinking_budget_tokens=anthropic_thinking_budget_tokens,
-        label_profile=label_profile,  # type: ignore[arg-type]
+        label_profile="simple",
         chunk_mode=chunk_mode,
         chunk_size_chars=chunk_size_chars,
         enable_suspicious_empty_retry=enable_suspicious_empty_retry,
@@ -192,7 +191,6 @@ def run_compare(args: argparse.Namespace) -> int:
                             reasoning_effort=args.reasoning_effort,
                             anthropic_thinking=args.anthropic_thinking,
                             anthropic_thinking_budget_tokens=args.anthropic_thinking_budget_tokens,
-                            label_profile=args.label_profile,
                             chunk_mode=chunk_mode,
                             chunk_size_chars=args.chunk_size_chars,
                             enable_suspicious_empty_retry=enable_suspicious_empty_retry,
@@ -291,7 +289,7 @@ def run_probe(args: argparse.Namespace) -> int:
             reasoning_effort=args.reasoning_effort,
             anthropic_thinking=args.anthropic_thinking,
             anthropic_thinking_budget_tokens=args.anthropic_thinking_budget_tokens,
-            label_profile=args.label_profile,  # type: ignore[arg-type]
+            label_profile="simple",
             chunk_mode="off",
             chunk_size_chars=args.chunk_size_chars,
             enable_suspicious_empty_retry=args.retry_mode == "on",
@@ -344,7 +342,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reasoning-effort", default="xhigh")
     parser.add_argument("--anthropic-thinking", action="store_true")
     parser.add_argument("--anthropic-thinking-budget-tokens", type=int, default=None)
-    parser.add_argument("--label-profile", choices=["simple", "advanced"], default="simple")
     parser.add_argument("--chunk-size-chars", type=int, default=10_000)
 
     subparsers = parser.add_subparsers(dest="command", required=True)

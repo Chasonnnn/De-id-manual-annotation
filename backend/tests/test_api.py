@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from server import (
     app,
     _enrich_doc,
+    _ensure_dirs,
     _load_repo_env_file,
     _resolve_env_api_base,
     _resolve_env_api_key,
@@ -29,6 +30,7 @@ from server import (
     _session_dir,
     _session_docs,
     _methods_lab_run_path,
+    _normalize_and_validate_spans,
     ROOT_ENV_PATH,
 )
 from models import (
@@ -959,6 +961,296 @@ def test_session_export_import_roundtrip(client):
     assert isinstance(imported_doc["agent_outputs"]["rule"], list)
 
 
+def test_normalize_and_validate_spans_maps_legacy_labels_to_canonical_taxonomy():
+    raw_text = "UPchieve coach shared password 555-1212 at 123 Main St."
+
+    normalized = _normalize_and_validate_spans(
+        [
+            CanonicalSpan(start=0, end=8, label="SCHOOL", text="UPchieve"),
+            CanonicalSpan(start=22, end=30, label="MISC_ID", text="password"),
+            CanonicalSpan(start=31, end=39, label="PHONE", text="555-1212"),
+            CanonicalSpan(start=43, end=55, label="LOCATION", text="123 Main St."),
+        ],
+        raw_text,
+    )
+
+    assert [(span.label, span.text) for span in normalized] == [
+        ("TUTOR_PROVIDER", "UPchieve"),
+        ("IDENTIFYING_NUMBER", "password"),
+        ("PHONE_NUMBER", "555-1212"),
+        ("ADDRESS", "123 Main St."),
+    ]
+
+
+def test_normalize_and_validate_spans_drops_broad_geography_and_unsupported_legacy_labels():
+    raw_text = "Texas Algebra 300 tenth grade"
+
+    normalized = _normalize_and_validate_spans(
+        [
+            CanonicalSpan(start=0, end=5, label="LOCATION", text="Texas"),
+            CanonicalSpan(start=6, end=17, label="COURSE", text="Algebra 300"),
+            CanonicalSpan(start=18, end=29, label="GRADE_LEVEL", text="tenth grade"),
+        ],
+        raw_text,
+    )
+
+    assert normalized == []
+
+
+def test_session_import_normalizes_legacy_manual_labels_to_canonical_taxonomy(client):
+    import_payload = {
+        "format": "annotation_tool_session",
+        "version": 5,
+        "compatibility": {"tool_version": "2026.03.03", "import_supported_versions": [1, 2, 3, 4, 5]},
+        "documents": [
+            {
+                "source": {
+                    "id": "doc-import",
+                    "filename": "legacy.json",
+                    "format": "hips_v1",
+                    "raw_text": "UPchieve Texas 555-1212 password",
+                    "utterances": [
+                        {
+                            "speaker": "unknown",
+                            "text": "UPchieve Texas 555-1212 password",
+                            "global_start": 0,
+                            "global_end": 31,
+                        }
+                    ],
+                    "pre_annotations": [],
+                    "label_set": [],
+                    "manual_annotations": [],
+                    "agent_annotations": [],
+                    "agent_outputs": {
+                        "rule": [],
+                        "llm": [],
+                        "llm_runs": {},
+                        "llm_run_metadata": {},
+                        "methods": {},
+                        "method_run_metadata": {},
+                    },
+                    "agent_run_warnings": [],
+                    "agent_run_metrics": {"llm_confidence": None, "chunk_diagnostics": []},
+                    "status": "pending",
+                },
+                "manual_annotations": [
+                    {"start": 0, "end": 8, "label": "SCHOOL", "text": "UPchieve"},
+                    {"start": 9, "end": 14, "label": "LOCATION", "text": "Texas"},
+                    {"start": 15, "end": 23, "label": "PHONE", "text": "555-1212"},
+                    {"start": 24, "end": 32, "label": "MISC_ID", "text": "password"},
+                    {"start": 9, "end": 20, "label": "GRADE_LEVEL", "text": "Texas 555-12"},
+                ],
+            }
+        ],
+        "prompt_lab_runs": [],
+        "methods_lab_runs": [],
+    }
+
+    import_resp = client.post(
+        "/api/session/import",
+        files={"file": ("session_bundle.json", json.dumps(import_payload).encode(), "application/json")},
+    )
+
+    assert import_resp.status_code == 200
+    imported_id = import_resp.json()["imported_ids"][0]
+    doc_resp = client.get(f"/api/documents/{imported_id}")
+    assert doc_resp.status_code == 200
+    assert doc_resp.json()["manual_annotations"] == [
+        {"start": 0, "end": 8, "label": "TUTOR_PROVIDER", "text": "UPchieve"},
+        {"start": 15, "end": 23, "label": "PHONE_NUMBER", "text": "555-1212"},
+        {"start": 24, "end": 32, "label": "IDENTIFYING_NUMBER", "text": "password"},
+    ]
+
+
+def test_ensure_dirs_migrates_existing_storage_to_canonical_taxonomy():
+    raw_text = "UPchieve Texas password 555-1212 123 Main St."
+    doc_id = "doc-legacy"
+    session_dir = _session_dir("default")
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    (session_dir / f"{doc_id}.source.json").write_text(
+        json.dumps(
+            {
+                "id": doc_id,
+                "filename": "legacy.json",
+                "format": "hips_v1",
+                "raw_text": raw_text,
+                "utterances": [
+                    {
+                        "speaker": "unknown",
+                        "text": raw_text,
+                        "global_start": 0,
+                        "global_end": len(raw_text),
+                    }
+                ],
+                "pre_annotations": [
+                    {"start": 0, "end": 8, "label": "SCHOOL", "text": "UPchieve"},
+                    {"start": 9, "end": 14, "label": "LOCATION", "text": "Texas"},
+                ],
+                "label_set": ["SCHOOL", "LOCATION", "MISC_ID"],
+                "manual_annotations": [],
+                "agent_annotations": [],
+                "agent_outputs": {
+                    "rule": [],
+                    "llm": [],
+                    "llm_runs": {},
+                    "llm_run_metadata": {},
+                    "methods": {},
+                    "method_run_metadata": {},
+                },
+                "agent_run_warnings": [],
+                "agent_run_metrics": {
+                    "llm_confidence": None,
+                    "chunk_diagnostics": [],
+                    "raw_hypothesis_spans": [],
+                    "resolution_events": [],
+                    "resolution_policy_version": None,
+                },
+                "status": "pending",
+            },
+            indent=2,
+        )
+    )
+    (session_dir / f"{doc_id}.manual.json").write_text(
+        json.dumps(
+            [
+                {"start": 15, "end": 23, "label": "MISC_ID", "text": "password"},
+            ],
+            indent=2,
+        )
+    )
+    (session_dir / f"{doc_id}.agent.llm.json").write_text(
+        json.dumps(
+            [
+                {"start": 24, "end": 32, "label": "PHONE", "text": "555-1212"},
+                {"start": 33, "end": 45, "label": "LOCATION", "text": "123 Main St."},
+            ],
+            indent=2,
+        )
+    )
+    (session_dir / f"{doc_id}.agent.llm.runs.json").write_text(
+        json.dumps(
+            {
+                "run-1": [
+                    {"start": 24, "end": 32, "label": "PHONE", "text": "555-1212"},
+                    {"start": 33, "end": 45, "label": "LOCATION", "text": "123 Main St."},
+                ]
+            },
+            indent=2,
+        )
+    )
+    (session_dir / f"{doc_id}.agent.llm.runs.meta.json").write_text(
+        json.dumps(
+            {
+                "run-1": {
+                    "mode": "llm",
+                    "updated_at": "2026-03-10T00:00:00Z",
+                    "model": "openai.gpt-5.3-codex",
+                    "label_profile": "advanced",
+                    "raw_hypothesis_spans": [
+                        {"start": 9, "end": 14, "label": "LOCATION", "text": "Texas"},
+                        {"start": 15, "end": 23, "label": "MISC_ID", "text": "password"},
+                        {"start": 33, "end": 45, "label": "LOCATION", "text": "123 Main St."},
+                    ],
+                    "resolution_events": [
+                        {
+                            "kind": "boundary_resolution",
+                            "label": "LOCATION",
+                            "rule": "legacy-boundary",
+                            "before": {
+                                "start": 33,
+                                "end": 45,
+                                "label": "LOCATION",
+                                "text": "123 Main St.",
+                            },
+                            "after": {
+                                "start": 33,
+                                "end": 45,
+                                "label": "LOCATION",
+                                "text": "123 Main St.",
+                            },
+                        }
+                    ],
+                }
+            },
+            indent=2,
+        )
+    )
+    (session_dir / f"{doc_id}.agent.last_run.json").write_text(
+        json.dumps(
+            {
+                "mode": "llm",
+                "run_key": "run-1",
+                "label_profile": "advanced",
+                "updated_at": "2026-03-10T00:00:00Z",
+            },
+            indent=2,
+        )
+    )
+
+    prompt_lab_run_path = _prompt_lab_run_path("prompt-run-legacy")
+    prompt_lab_run_path.parent.mkdir(parents=True, exist_ok=True)
+    prompt_lab_run_path.write_text(
+        json.dumps(
+            {
+                "id": "prompt-run-legacy",
+                "runtime": {
+                    "label_profile": "advanced",
+                    "label_projection": "coarse_simple",
+                    "api_base": "https://proxy.example.com/v1",
+                },
+                "cells": {
+                    "cell-1": {
+                        "runtime": {
+                            "label_profile": "simple",
+                            "label_projection": "native",
+                        }
+                    }
+                },
+            },
+            indent=2,
+        )
+    )
+
+    _ensure_dirs()
+
+    migrated = _load_doc(doc_id)
+    assert migrated is not None
+    enriched = _enrich_doc(migrated)
+    assert [(span.label, span.text) for span in enriched.pre_annotations] == [
+        ("TUTOR_PROVIDER", "UPchieve")
+    ]
+    assert [(span.label, span.text) for span in enriched.manual_annotations] == [
+        ("IDENTIFYING_NUMBER", "password")
+    ]
+    assert [(span.label, span.text) for span in enriched.agent_outputs.llm] == [
+        ("PHONE_NUMBER", "555-1212"),
+        ("ADDRESS", "123 Main St."),
+    ]
+
+    run_meta = enriched.agent_outputs.llm_run_metadata["run-1"]
+    assert [(span.label, span.text) for span in run_meta.raw_hypothesis_spans] == [
+        ("IDENTIFYING_NUMBER", "password"),
+        ("ADDRESS", "123 Main St."),
+    ]
+    assert run_meta.resolution_events[0].label == "ADDRESS"
+    assert run_meta.resolution_events[0].before is not None
+    assert run_meta.resolution_events[0].before.label == "ADDRESS"
+    assert run_meta.resolution_events[0].after.label == "ADDRESS"
+
+    last_run_payload = json.loads((session_dir / f"{doc_id}.agent.last_run.json").read_text())
+    assert "label_profile" not in last_run_payload
+
+    prompt_lab_run = json.loads(prompt_lab_run_path.read_text())
+    assert "label_profile" not in prompt_lab_run["runtime"]
+    assert "label_projection" not in prompt_lab_run["runtime"]
+    assert "label_profile" not in prompt_lab_run["cells"]["cell-1"]["runtime"]
+    assert "label_projection" not in prompt_lab_run["cells"]["cell-1"]["runtime"]
+
+    sentinel = json.loads((session_dir.parent.parent / "canonical_taxonomy_migration_v1.json").read_text())
+    assert sentinel["version"] == "2026-03-canonical-taxonomy-v1"
+
+
 def test_session_export_import_roundtrip_preserves_folders_and_folder_run_selections(
     client,
     monkeypatch,
@@ -1148,7 +1440,7 @@ def test_session_import_matches_existing_doc_by_filename_and_transcript_and_pref
             "method_run_metadata": {},
         },
         "agent_run_warnings": [],
-        "agent_run_metrics": {"llm_confidence": None, "label_profile": None, "chunk_diagnostics": []},
+        "agent_run_metrics": {"llm_confidence": None, "chunk_diagnostics": []},
     }
     import_payload = {
         "format": "annotation_tool_session",
@@ -1227,7 +1519,7 @@ def test_session_import_keep_current_conflict_preserves_existing_document(client
             "method_run_metadata": {},
         },
         "agent_run_warnings": [],
-        "agent_run_metrics": {"llm_confidence": None, "label_profile": None, "chunk_diagnostics": []},
+        "agent_run_metrics": {"llm_confidence": None, "chunk_diagnostics": []},
     }
     import_payload = {
         "format": "annotation_tool_session",
@@ -1311,7 +1603,7 @@ def test_session_import_add_new_conflict_creates_duplicate_document(client):
             "method_run_metadata": {},
         },
         "agent_run_warnings": [],
-        "agent_run_metrics": {"llm_confidence": None, "label_profile": None, "chunk_diagnostics": []},
+        "agent_run_metrics": {"llm_confidence": None, "chunk_diagnostics": []},
     }
     import_payload = {
         "format": "annotation_tool_session",
@@ -1707,7 +1999,7 @@ def test_agent_llm_response_includes_llm_confidence_metrics(client, monkeypatch)
     assert payload["agent_run_metrics"]["llm_confidence"]["reason"] == "ok"
 
 
-def test_agent_llm_persists_label_profile(client, monkeypatch):
+def test_agent_llm_persists_canonical_labels_without_profile_metadata(client, monkeypatch):
     monkeypatch.setattr(
         "server._fetch_gateway_model_ids",
         lambda api_base, api_key: ["openai.gpt-5.2-chat"],
@@ -1736,13 +2028,13 @@ def test_agent_llm_persists_label_profile(client, monkeypatch):
     )
     assert run_resp.status_code == 200
     payload = run_resp.json()
-    assert payload["agent_outputs"]["llm"][0]["label"] == "PERSON"
-    assert payload["agent_run_metrics"]["label_profile"] == "advanced"
+    assert payload["agent_outputs"]["llm"][0]["label"] == "NAME"
+    assert "label_profile" not in payload["agent_run_metrics"]
 
     doc_resp = client.get(f"/api/documents/{doc_id}")
     assert doc_resp.status_code == 200
     reloaded = doc_resp.json()
-    assert reloaded["agent_run_metrics"]["label_profile"] == "advanced"
+    assert "label_profile" not in reloaded["agent_run_metrics"]
 
 
 def test_agent_llm_normalizes_person_label_to_name(client, monkeypatch):
@@ -2381,7 +2673,7 @@ def test_metrics(client):
     assert result["llm_confidence"] is None
 
 
-def test_metrics_supports_coarse_label_projection(client, monkeypatch):
+def test_metrics_uses_canonical_labels_without_projection(client, monkeypatch):
     monkeypatch.setattr(
         "server._fetch_gateway_model_ids",
         lambda api_base, api_key: ["openai.gpt-5.2-chat"],
@@ -2416,27 +2708,13 @@ def test_metrics_supports_coarse_label_projection(client, monkeypatch):
             "reference": "pre",
             "hypothesis": "agent.llm",
             "match_mode": "exact",
-            "label_projection": "native",
         },
     )
     assert native_resp.status_code == 200
     native = native_resp.json()
-    assert native["micro"]["f1"] == pytest.approx(0.0)
-
-    coarse_resp = client.get(
-        f"/api/documents/{doc_id}/metrics",
-        params={
-            "reference": "pre",
-            "hypothesis": "agent.llm",
-            "match_mode": "exact",
-            "label_projection": "coarse_simple",
-        },
-    )
-    assert coarse_resp.status_code == 200
-    coarse = coarse_resp.json()
-    assert coarse["label_projection"] == "coarse_simple"
-    assert coarse["micro"]["f1"] == pytest.approx(1.0)
-    assert coarse["per_label"]["NAME"]["tp"] == 1
+    assert native["micro"]["f1"] == pytest.approx(1.0)
+    assert "label_projection" not in native
+    assert native["per_label"]["NAME"]["tp"] == 1
 
 
 def test_metrics_exact_includes_name_tolerant_co_primary_metric(client, monkeypatch):
@@ -2664,9 +2942,9 @@ def test_experiment_limits_endpoint_uses_configured_caps(client):
     resp = client.get("/api/experiments/limits")
     assert resp.status_code == 200
     assert resp.json() == {
-        "prompt_lab_default_concurrency": 10,
+        "prompt_lab_default_concurrency": 32,
         "prompt_lab_max_concurrency": 17,
-        "methods_lab_default_concurrency": 10,
+        "methods_lab_default_concurrency": 32,
         "methods_lab_max_concurrency": 32,
     }
 
@@ -2688,8 +2966,8 @@ def test_experiment_diagnostics_endpoint_reports_gateway_catalog(client, monkeyp
     assert resp.json() == {
         "resolved_api_base": "https://proxy.example.com",
         "api_base_host": "proxy.example.com",
-        "prompt_lab_max_concurrency": 16,
-        "methods_lab_max_concurrency": 16,
+        "prompt_lab_max_concurrency": 32,
+        "methods_lab_max_concurrency": 32,
         "gateway_catalog": {
             "reachable": True,
             "model_count": 2,
@@ -2715,8 +2993,8 @@ def test_experiment_diagnostics_endpoint_reports_gateway_catalog_error(client, m
     assert resp.json() == {
         "resolved_api_base": "https://proxy.example.com",
         "api_base_host": "proxy.example.com",
-        "prompt_lab_max_concurrency": 16,
-        "methods_lab_max_concurrency": 16,
+        "prompt_lab_max_concurrency": 32,
+        "methods_lab_max_concurrency": 32,
         "gateway_catalog": {
             "reachable": False,
             "model_count": None,
@@ -3170,7 +3448,7 @@ def test_prompt_lab_cell_summary_includes_overlap_metrics_and_error_families(
     assert detail_resp.json()["error_family"] == "empty_output_finish_reason_length"
 
 
-def test_prompt_lab_runtime_supports_label_profile_and_coarse_projection(
+def test_prompt_lab_runtime_uses_canonical_taxonomy_without_profile_or_projection(
     client,
     monkeypatch,
 ):
@@ -3232,8 +3510,8 @@ def test_prompt_lab_runtime_supports_label_profile_and_coarse_projection(
 
     final = _wait_for_prompt_lab_terminal(client, run_id)
     assert final["status"] == "completed"
-    assert final["runtime"]["label_profile"] == "advanced"
-    assert final["runtime"]["label_projection"] == "coarse_simple"
+    assert "label_profile" not in final["runtime"]
+    assert "label_projection" not in final["runtime"]
     assert final["matrix"]["cells"][0]["micro"]["f1"] == pytest.approx(1.0)
 
 
@@ -5279,7 +5557,7 @@ def test_methods_lab_allows_empty_pre_reference_docs_and_syncs_workspace_runs(
     assert run_meta["mode"] == "method"
     assert run_meta["method_id"] == "presidio-lite+extended-v2"
     assert run_meta["model"] == model_id
-    assert run_meta["label_profile"] == "advanced"
+    assert "label_profile" not in run_meta
 
     runs_sidecar = (
         _session_dir("default") / f"{empty_pre_doc_id}.agent.method.runs.json"
@@ -5991,6 +6269,15 @@ def test_agent_llm_persists_outputs_per_model(client, monkeypatch):
     assert llm_prompt_snapshot["format_guardrail_appended"] is True
     assert "requested_system_prompt" in llm_prompt_snapshot
     assert "effective_system_prompt" in llm_prompt_snapshot
+    assert (
+        "tutoring organizations or platforms such as Saga or UPchieve [TUTOR_PROVIDER]"
+        in llm_prompt_snapshot["effective_system_prompt"]
+    )
+    assert (
+        "passwords, usernames, social handles, student IDs, license numbers, "
+        "passport numbers, and other identifying numbers or codes [IDENTIFYING_NUMBER]"
+        in llm_prompt_snapshot["effective_system_prompt"]
+    )
     assert "updated_at" in llm_run_metadata[run_key_a]
 
     metrics_resp = client.get(

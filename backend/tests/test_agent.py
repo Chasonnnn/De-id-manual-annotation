@@ -1018,9 +1018,10 @@ class TestRunLLM:
                 "items"
             ]["properties"]["label"]["enum"]
         )
-        assert "PERSON" in enum_values
-        assert "COURSE" in enum_values
-        assert "US_SSN" in enum_values
+        assert "NAME" in enum_values
+        assert "ADDRESS" in enum_values
+        assert "SSN" in enum_values
+        assert "IDENTIFYING_NUMBER" in enum_values
 
     @patch("agent.completion")
     def test_simple_profile_response_schema_enforces_label_enum(self, mock_completion):
@@ -1039,7 +1040,8 @@ class TestRunLLM:
         )
         assert "NAME" in enum_values
         assert "EMAIL" in enum_values
-        assert "MISC_ID" in enum_values
+        assert "ACCOUNT_NUMBER" in enum_values
+        assert "PHONE_NUMBER" in enum_values
 
     def test_build_extraction_system_prompt_is_label_profile_specific(self):
         simple_prompt = build_extraction_system_prompt(SYSTEM_PROMPT, label_profile="simple")
@@ -1049,10 +1051,37 @@ class TestRunLLM:
         )
 
         assert '{"spans": []}' in simple_prompt
-        assert "Allowed labels for this run: AGE, DATE, EMAIL, LOCATION, MISC_ID, NAME, PHONE, SCHOOL, URL." in simple_prompt
+        assert (
+            "Allowed labels for this run: NAME, ADDRESS, DATE, PHONE_NUMBER, FAX_NUMBER, "
+            "EMAIL, SSN, ACCOUNT_NUMBER, DEVICE_IDENTIFIER, URL, IP_ADDRESS, "
+            "BIOMETRIC_IDENTIFIER, IMAGE, IDENTIFYING_NUMBER, AGE, SCHOOL, TUTOR_PROVIDER."
+            in simple_prompt
+        )
         assert "TIME" not in simple_prompt
-        assert "PERSON" in advanced_prompt
-        assert "US_SSN" in advanced_prompt
+        assert "IDENTIFYING_NUMBER" in advanced_prompt
+        assert "US_SSN" not in advanced_prompt
+        assert (
+            "tutoring organizations or platforms such as Saga or UPchieve [TUTOR_PROVIDER]"
+            in simple_prompt
+        )
+        assert (
+            "passwords, usernames, social handles, student IDs, license numbers, "
+            "passport numbers, and other identifying numbers or codes [IDENTIFYING_NUMBER]"
+            in simple_prompt
+        )
+
+    @patch("agent.completion")
+    def test_run_llm_response_debug_omits_label_profile(self, mock_completion):
+        mock_completion.return_value = _mock_completion_response('{"spans":[]}')
+
+        result = run_llm_with_metadata(
+            text="text",
+            api_key="k",
+            model="openai/gpt-4o",
+        )
+
+        assert result.response_debug
+        assert "label_profile" not in result.response_debug[0]
 
     @patch("agent.completion")
     def test_simple_profile_maps_person_name_and_time_labels(self, mock_completion):
@@ -1243,10 +1272,7 @@ class TestRunLLM:
             model="openai/gpt-4o",
             label_profile="advanced",
         )
-        assert [(span.label, span.text) for span in result.spans] == [
-            ("COURSE", "Algebra 300"),
-            ("DATE", "January 5, 2026"),
-        ]
+        assert [(span.label, span.text) for span in result.spans] == [("DATE", "January 5, 2026")]
 
 def test_run_method_with_metadata_emits_dual_pass_progress(monkeypatch):
     progress_events: list[tuple[int, str]] = []
@@ -1360,8 +1386,8 @@ def test_test_bundle_prompt_wrapper_includes_examples_and_label_catalog():
     assert "Use only these exact label strings" in prompt
     assert '{"spans":[]}' in prompt
     assert '"label":"NAME"' in prompt
-    assert "ages over 89" in prompt
-    assert "geographic locations smaller than a state" in prompt
+    assert "street addresses" in prompt
+    assert "bank, insurance, or other account numbers" in prompt
 
 
 def test_normalize_method_bundle_accepts_v2_post_process():
@@ -1400,13 +1426,12 @@ def test_expand_detected_value_occurrences_prefers_longer_overlap():
     assert [(span.label, span.text) for span in expanded] == [("PHONE", "555-123-4567")]
 
 
-def test_list_agent_methods_reports_profile_metadata_for_audited_bundle():
+def test_list_agent_methods_reports_canonical_metadata_for_audited_bundle():
     methods = agent.list_agent_methods(method_bundle="audited")
     dual_split = next(item for item in methods if item["id"] == "dual-split")
 
-    assert dual_split["supported_label_profiles"] == ["advanced", "simple"]
-    assert "SCHOOL" in dual_split["output_labels_by_profile"]["simple"]
-    assert "SCHOOL" in dual_split["output_labels_by_profile"]["advanced"]
+    assert "SCHOOL" in dual_split["output_labels"]
+    assert "TUTOR_PROVIDER" in dual_split["output_labels"]
     assert isinstance(dual_split["known_limitations"], list)
 
 
@@ -1440,27 +1465,21 @@ def test_audited_presidio_default_uses_residual_llm_scope():
     assert definition is not None
 
     llm_pass = definition["passes"][1]
-    assert llm_pass["entity_types_by_profile"]["simple"] == [
+    expected_residual = {
         "NAME",
-        "LOCATION",
-        "SCHOOL",
+        "ADDRESS",
         "DATE",
         "AGE",
-        "MISC_ID",
-    ]
-    assert set(llm_pass["entity_types_by_profile"]["advanced"]) == {
-        "AGE",
-        "COURSE",
-        "DATE",
-        "GRADE_LEVEL",
-        "LOCATION",
-        "NRP",
-        "PERSON",
         "SCHOOL",
-        "SOCIAL_HANDLE",
-        "US_DRIVER_LICENSE",
-        "US_PASSPORT",
+        "TUTOR_PROVIDER",
+        "FAX_NUMBER",
+        "DEVICE_IDENTIFIER",
+        "BIOMETRIC_IDENTIFIER",
+        "IMAGE",
+        "IDENTIFYING_NUMBER",
     }
+    assert set(llm_pass["entity_types_by_profile"]["simple"]) == expected_residual
+    assert set(llm_pass["entity_types_by_profile"]["advanced"]) == expected_residual
 
 
 def test_audited_presidio_llm_split_advanced_labels_stay_within_schema():
@@ -1472,10 +1491,11 @@ def test_audited_presidio_llm_split_advanced_labels_stay_within_schema():
 
     llm_pass = definition["passes"][1]
     advanced_labels = set(llm_pass["entity_types_by_profile"]["advanced"])
-    assert "DEVICE_IDENTIFIER" not in advanced_labels
-    assert "BIOMETRIC_IDENTIFIER" not in advanced_labels
-    assert "IMAGE" not in advanced_labels
-    assert "IDENTIFYING_NUMBER" not in advanced_labels
+    assert "ADDRESS" in advanced_labels
+    assert "DEVICE_IDENTIFIER" in advanced_labels
+    assert "BIOMETRIC_IDENTIFIER" in advanced_labels
+    assert "IMAGE" in advanced_labels
+    assert "IDENTIFYING_NUMBER" in advanced_labels
     assert advanced_labels <= set(agent.ADVANCED_LABELS)
 
 

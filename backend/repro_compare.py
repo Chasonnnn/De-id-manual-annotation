@@ -36,8 +36,6 @@ DEFAULT_SESSION_ID = "default"
 DEFAULT_METHODS_API_URL = "http://localhost:8001/api"
 DEFAULT_MODEL = "openai.gpt-5.2-chat"
 DEFAULT_MATCH_MODE = "overlap"
-DEFAULT_LABEL_PROFILE = "simple"
-DEFAULT_LABEL_PROJECTION = "native"
 DEFAULT_CHUNK_MODE = "off"
 DEFAULT_CHUNK_SIZE_CHARS = 10_000
 DEFAULT_CURRENT_BUNDLES = ("deidentify-v2", "v2+post-process")
@@ -588,8 +586,6 @@ def build_methods_lab_run_body(
     match_mode: str = DEFAULT_MATCH_MODE,
     reference_source: str = "manual",
     fallback_reference_source: str = "pre",
-    label_profile: str = DEFAULT_LABEL_PROFILE,
-    label_projection: str = DEFAULT_LABEL_PROJECTION,
     chunk_mode: str = DEFAULT_CHUNK_MODE,
     chunk_size_chars: int = DEFAULT_CHUNK_SIZE_CHARS,
 ) -> MethodsLabRunCreateBody:
@@ -604,8 +600,6 @@ def build_methods_lab_run_body(
         match_mode=match_mode,  # type: ignore[arg-type]
         reference_source=reference_source,  # type: ignore[arg-type]
         fallback_reference_source=fallback_reference_source,  # type: ignore[arg-type]
-        label_profile=label_profile,  # type: ignore[arg-type]
-        label_projection=label_projection,  # type: ignore[arg-type]
         method_bundle=bundle,  # type: ignore[arg-type]
         chunk_mode=chunk_mode,  # type: ignore[arg-type]
         chunk_size_chars=chunk_size_chars,
