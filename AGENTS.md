@@ -36,3 +36,8 @@
 - When making plans, implementation decisions, or technical recommendations, check official documentation first.
 - Prefer primary sources such as official docs, specs, and repositories over memory or third-party summaries.
 - If documentation is missing or ambiguous, call it out explicitly and list assumptions.
+
+## 9) No PR Creation Unless Requested
+- Do not create pull requests by default.
+- Push directly to the requested branch when the user asks for a push.
+- Only create a PR when the user explicitly asks for one.
