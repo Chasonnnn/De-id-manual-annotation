@@ -92,6 +92,21 @@ wait_for_port_release() {
     return 1
 }
 
+wait_for_backend_http_ready() {
+    local port="$1"
+    local url="http://127.0.0.1:${port}/api/agent/methods"
+    local attempts=100
+    while [[ $attempts -gt 0 ]]; do
+        if curl -fsS "$url" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.1
+        attempts=$((attempts - 1))
+    done
+    echo "Timed out waiting for backend HTTP readiness at $url."
+    return 1
+}
+
 restart_repo_processes_on_port() {
     local port="$1"
     local label="$2"
@@ -169,6 +184,8 @@ restart_repo_processes_on_port "$FRONTEND_PORT" "frontend" "$FRONTEND_DIR" "vite
 echo "Starting backend (FastAPI)..."
 (cd "$BACKEND_DIR" && uv run uvicorn server:app --reload --port "$BACKEND_PORT") &
 backend_job_pid=$!
+
+wait_for_backend_http_ready "$BACKEND_PORT"
 
 echo "Starting frontend (Vite)..."
 (cd "$FRONTEND_DIR" && npm run dev -- --port "$FRONTEND_PORT") &

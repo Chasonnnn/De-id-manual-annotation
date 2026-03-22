@@ -14,13 +14,19 @@ import {
 
 const CONFIG_ROOT = fileURLToPath(new URL(".", import.meta.url));
 
+export function resolveApiProxyTarget(env: NodeJS.ProcessEnv = process.env): string {
+  const rawPort = typeof env.BACKEND_PORT === "string" ? env.BACKEND_PORT.trim() : "";
+  const port = rawPort || "8000";
+  return `http://localhost:${port}`;
+}
+
 export function createBaseViteConfig(): UserConfig {
   return {
     plugins: [react()],
     server: {
       proxy: {
         "/api": {
-          target: "http://localhost:8000",
+          target: resolveApiProxyTarget(),
           changeOrigin: true,
         },
       },

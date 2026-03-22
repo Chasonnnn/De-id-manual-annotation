@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { ConfigEnv } from "vite";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createBaseViteConfig, loadMergedViteConfig } from "./viteConfig";
+import { createBaseViteConfig, loadMergedViteConfig, resolveApiProxyTarget } from "./viteConfig";
 
 const DEV_ENV: ConfigEnv = {
   command: "serve",
@@ -93,5 +93,17 @@ export default defineConfig({
 
     expect(pluginNames.filter((name) => name === "vite:react-babel")).toHaveLength(1);
     expect(pluginNames.filter((name) => name === "vite:react-refresh")).toHaveLength(1);
+  });
+});
+
+describe("resolveApiProxyTarget", () => {
+  it("uses port 8000 by default", () => {
+    expect(resolveApiProxyTarget({} as NodeJS.ProcessEnv)).toBe("http://localhost:8000");
+  });
+
+  it("uses BACKEND_PORT when present", () => {
+    expect(resolveApiProxyTarget({ BACKEND_PORT: "8001" } as NodeJS.ProcessEnv)).toBe(
+      "http://localhost:8001",
+    );
   });
 });
