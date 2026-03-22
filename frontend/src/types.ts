@@ -27,6 +27,8 @@ export const PII_LABELS: PIILabel[] = [
   "AGE",
   "SCHOOL",
   "TUTOR_PROVIDER",
+  "CUSTOMIZED_FIELD",
+  "OTHER_LOCATIONS_IDENTIFIED",
 ];
 
 export const LABEL_COLORS: Record<string, string> = {
@@ -47,6 +49,8 @@ export const LABEL_COLORS: Record<string, string> = {
   AGE: "#F0E68C",
   SCHOOL: "#90EE90",
   TUTOR_PROVIDER: "#20B2AA",
+  CUSTOMIZED_FIELD: "#FFB347",
+  OTHER_LOCATIONS_IDENTIFIED: "#7FFFD4",
 };
 
 export function getLabelColor(label: string): string {

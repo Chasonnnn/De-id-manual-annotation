@@ -6278,6 +6278,15 @@ def test_agent_llm_persists_outputs_per_model(client, monkeypatch):
         "passport numbers, and other identifying numbers or codes [IDENTIFYING_NUMBER]"
         in llm_prompt_snapshot["effective_system_prompt"]
     )
+    assert (
+        "custom project-specific sensitive fields [CUSTOMIZED_FIELD]"
+        in llm_prompt_snapshot["effective_system_prompt"]
+    )
+    assert (
+        "other person-linked locations that should be tracked separately from addresses "
+        "[OTHER_LOCATIONS_IDENTIFIED]"
+        in llm_prompt_snapshot["effective_system_prompt"]
+    )
     assert "updated_at" in llm_run_metadata[run_key_a]
 
     metrics_resp = client.get(

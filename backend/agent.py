@@ -123,7 +123,9 @@ dates related to an individual (except year) and ages over 89 [DATE]; phone/fax 
 numbers [ACCOUNT_NUMBER]; device identifiers [DEVICE_IDENTIFIER]; URLs [URL]; IP addresses
 [IP_ADDRESS]; biometric identifiers [BIOMETRIC_IDENTIFIER]; full-face or comparable images
 [IMAGE]; and any other unique number, characteristic or code that is capable of identifying
-the individual [IDENTIFYING_NUMBER].
+the individual [IDENTIFYING_NUMBER]; custom project-specific sensitive fields
+[CUSTOMIZED_FIELD]; and other person-linked locations tracked separately from addresses
+[OTHER_LOCATIONS_IDENTIFIED].
 Matches should be minimal exact spans of the sensitive value; include anything that could
 reasonably be considered PII.
 Output data following the provided JSON schema.
@@ -141,7 +143,9 @@ reveal location [ADDRESS]; dates directly related to an individual such as birth
 [ACCOUNT_NUMBER]; device identifiers [DEVICE_IDENTIFIER]; URLs [URL]; IP addresses
 [IP_ADDRESS]; biometric identifiers [BIOMETRIC_IDENTIFIER]; full-face or comparable
 images [IMAGE]; and any other unique identifying number such as student IDs, medical
-record numbers, or license numbers [IDENTIFYING_NUMBER].
+record numbers, or license numbers [IDENTIFYING_NUMBER]; custom project-specific sensitive
+fields [CUSTOMIZED_FIELD]; and other person-linked locations tracked separately from
+addresses [OTHER_LOCATIONS_IDENTIFIED].
 DO NOT mark any of the following as PII:
 - Historical figures, scientists, mathematicians (e.g., Einstein, Pythagoras, Euler)
 - Public figures, celebrities, book authors
@@ -185,7 +189,9 @@ than a State) [ADDRESS]; Social Security numbers [SSN]; phone numbers [PHONE_NUM
 fax numbers [FAX_NUMBER]; financial account numbers such as bank or insurance accounts
 [ACCOUNT_NUMBER]; device identifiers [DEVICE_IDENTIFIER]; IP addresses [IP_ADDRESS];
 and any other unique identifying number such as student IDs, medical record numbers,
-or license numbers [IDENTIFYING_NUMBER].
+or license numbers [IDENTIFYING_NUMBER]; custom project-specific sensitive fields
+[CUSTOMIZED_FIELD]; and other person-linked locations tracked separately from addresses
+[OTHER_LOCATIONS_IDENTIFIED].
 DO NOT mark any of the following:
 - Personal names (these are handled separately)
 - Mathematical expressions, equations, formulas, or variables
@@ -203,9 +209,11 @@ Output data following the provided JSON schema.
 METHOD_DUAL_NAMES_LOCATION_PROMPT = """\
 You are a PII analyst specializing in detecting personal names and locations in tutoring
 chat transcripts.
-Identify all personal names [NAME] and geographic locations smaller than a State [ADDRESS].
-Names include first names, last names, nicknames, and pseudonyms. Locations include street
-addresses, city names, school names that reveal location, and neighborhood names.
+Identify all personal names [NAME], geographic locations smaller than a State [ADDRESS],
+and other person-linked locations tracked separately from addresses
+[OTHER_LOCATIONS_IDENTIFIED]. Names include first names, last names, nicknames, and
+pseudonyms. Locations include street addresses, city names, school names that reveal
+location, and neighborhood names.
 DO NOT mark:
 - Historical figures, scientists, or mathematicians (e.g., Einstein, Pythagoras, Euler)
 - Book authors, public figures, or celebrities
@@ -223,7 +231,8 @@ content mixed with personal information.
 Identify: email addresses [EMAIL]; URLs [URL]; Social Security numbers [SSN]; phone numbers
 [PHONE_NUMBER]; fax numbers [FAX_NUMBER]; account numbers [ACCOUNT_NUMBER];
 device identifiers [DEVICE_IDENTIFIER]; IP addresses [IP_ADDRESS]; and unique identifying
-numbers such as student IDs, medical record numbers, or license numbers [IDENTIFYING_NUMBER].
+numbers such as student IDs, medical record numbers, or license numbers [IDENTIFYING_NUMBER];
+custom project-specific sensitive fields [CUSTOMIZED_FIELD].
 DO NOT mark any of the following:
 - Personal names or locations (these are handled separately)
 - Mathematical expressions, equations, formulas, or variables
@@ -248,7 +257,9 @@ dates related to an individual (except year) and ages over 89 [DATE]; Social Sec
 [SSN]; account numbers [ACCOUNT_NUMBER]; device identifiers [DEVICE_IDENTIFIER];
 biometric identifiers [BIOMETRIC_IDENTIFIER]; full-face or comparable images [IMAGE];
 and any other unique number, characteristic or code that is capable of identifying the
-individual [IDENTIFYING_NUMBER].
+individual [IDENTIFYING_NUMBER]; custom project-specific sensitive fields
+[CUSTOMIZED_FIELD]; and other person-linked locations tracked separately from addresses
+[OTHER_LOCATIONS_IDENTIFIED].
 Matches should be minimal exact spans of the sensitive value; include anything that could
 reasonably be considered PII.
 Output data following the provided JSON schema.
@@ -391,6 +402,8 @@ TOOL_LABEL_MAP: dict[str, str] = {
     "US_DRIVER_LICENSE": "IDENTIFYING_NUMBER",
     "US_PASSPORT": "IDENTIFYING_NUMBER",
     "TUTOR_PROVIDER": "TUTOR_PROVIDER",
+    "CUSTOMIZED_FIELD": "CUSTOMIZED_FIELD",
+    "OTHER_LOCATIONS_IDENTIFIED": "OTHER_LOCATIONS_IDENTIFIED",
 }
 
 SIMPLE_LABELS: list[str] = list(CANONICAL_LABELS)
@@ -522,6 +535,8 @@ METHOD_DEFINITIONS: list[dict[str, Any]] = [
                     "DEVICE_IDENTIFIER",
                     "IP_ADDRESS",
                     "IDENTIFYING_NUMBER",
+                    "CUSTOMIZED_FIELD",
+                    "OTHER_LOCATIONS_IDENTIFIED",
                 ],
                 "pass_label": "dual:identifiers",
             },
@@ -539,7 +554,7 @@ METHOD_DEFINITIONS: list[dict[str, Any]] = [
             {
                 "kind": "llm",
                 "prompt": METHOD_DUAL_NAMES_LOCATION_PROMPT,
-                "entity_types": ["NAME", "ADDRESS"],
+                "entity_types": ["NAME", "ADDRESS", "OTHER_LOCATIONS_IDENTIFIED"],
                 "pass_label": "dual-split:names_locations",
             },
             {
@@ -555,6 +570,7 @@ METHOD_DEFINITIONS: list[dict[str, Any]] = [
                     "DEVICE_IDENTIFIER",
                     "IP_ADDRESS",
                     "IDENTIFYING_NUMBER",
+                    "CUSTOMIZED_FIELD",
                 ],
                 "pass_label": "dual-split:numeric_identifiers",
             },
@@ -686,6 +702,11 @@ _CANONICAL_PROMPT_LABEL_DESCRIPTIONS: dict[str, str] = {
     "AGE": "explicit person-linked ages such as '29 years old' or 'twenty-years-old' [AGE]",
     "SCHOOL": "school or university names tied to a specific person [SCHOOL]",
     "TUTOR_PROVIDER": "tutoring organizations or platforms such as Saga or UPchieve [TUTOR_PROVIDER]",
+    "CUSTOMIZED_FIELD": "custom project-specific sensitive fields [CUSTOMIZED_FIELD]",
+    "OTHER_LOCATIONS_IDENTIFIED": (
+        "other person-linked locations that should be tracked separately from addresses "
+        "[OTHER_LOCATIONS_IDENTIFIED]"
+    ),
 }
 
 _METHOD_FALSE_POSITIVE_GUIDANCE = """\
@@ -894,8 +915,20 @@ _AUDITED_NAMES_PROMPTS = {
 }
 _DUAL_SIMPLE_REMAINING_LABELS = _ordered_difference(SIMPLE_LABELS, {"NAME"})
 _DUAL_ADVANCED_REMAINING_LABELS = _ordered_difference(ADVANCED_LABELS, {"NAME"})
-_DUAL_SPLIT_SIMPLE_PASS_ONE = ["NAME", "ADDRESS", "SCHOOL", "TUTOR_PROVIDER"]
-_DUAL_SPLIT_ADVANCED_PASS_ONE = ["NAME", "ADDRESS", "SCHOOL", "TUTOR_PROVIDER"]
+_DUAL_SPLIT_SIMPLE_PASS_ONE = [
+    "NAME",
+    "ADDRESS",
+    "SCHOOL",
+    "TUTOR_PROVIDER",
+    "OTHER_LOCATIONS_IDENTIFIED",
+]
+_DUAL_SPLIT_ADVANCED_PASS_ONE = [
+    "NAME",
+    "ADDRESS",
+    "SCHOOL",
+    "TUTOR_PROVIDER",
+    "OTHER_LOCATIONS_IDENTIFIED",
+]
 _DUAL_SPLIT_SIMPLE_PASS_TWO = _ordered_difference(
     SIMPLE_LABELS,
     set(_DUAL_SPLIT_SIMPLE_PASS_ONE),
@@ -925,6 +958,7 @@ _PRESIDIO_DEFAULT_SIMPLE_RESIDUAL = [
     "ADDRESS",
     "SCHOOL",
     "TUTOR_PROVIDER",
+    "OTHER_LOCATIONS_IDENTIFIED",
     "DATE",
     "AGE",
     "FAX_NUMBER",
@@ -932,6 +966,7 @@ _PRESIDIO_DEFAULT_SIMPLE_RESIDUAL = [
     "BIOMETRIC_IDENTIFIER",
     "IMAGE",
     "IDENTIFYING_NUMBER",
+    "CUSTOMIZED_FIELD",
 ]
 _PRESIDIO_DEFAULT_ADVANCED_RESIDUAL = _ordered_difference(
     ADVANCED_LABELS,
@@ -949,6 +984,7 @@ _PRESIDIO_SPLIT_SIMPLE_RESIDUAL = [
     "ADDRESS",
     "SCHOOL",
     "TUTOR_PROVIDER",
+    "OTHER_LOCATIONS_IDENTIFIED",
     "DATE",
     "AGE",
     "FAX_NUMBER",
@@ -958,6 +994,7 @@ _PRESIDIO_SPLIT_SIMPLE_RESIDUAL = [
     "BIOMETRIC_IDENTIFIER",
     "IMAGE",
     "IDENTIFYING_NUMBER",
+    "CUSTOMIZED_FIELD",
 ]
 _PRESIDIO_SPLIT_ADVANCED_RESIDUAL = _ordered_difference(
     ADVANCED_LABELS,
@@ -1380,10 +1417,13 @@ and regions mentioned as general context.
 - Schools or universities that an individual attends or is associated with \
 (e.g., Jackson High, PS 123, University of Phoenix) [SCHOOL]. Exclude institutions \
 mentioned only as general references (e.g., "MIT research", "Stanford algorithm").
+- Tutoring organizations or platforms tied to a specific person (e.g., Saga, UPchieve) \
+[TUTOR_PROVIDER].
 - Birth dates, admission dates, discharge dates, or dates of death directly tied to a \
 specific individual (year may be kept); ages over 89 [DATE]. Exclude all other dates: \
 days of the week, times of day, due dates, class schedules, semesters, and dates or \
 date ranges appearing in math problems.
+- Explicit person-linked ages such as "29 years old" or "twenty-years-old" [AGE].
 - Phone numbers [PHONE_NUMBER]; fax numbers [FAX_NUMBER].
 - Email addresses [EMAIL].
 - Social Security numbers [SSN].
@@ -1398,26 +1438,13 @@ Exclude descriptions of seeing or sharing images.
 - Any other unique identifying number such as student IDs, medical record numbers, \
 license numbers, or social media handles [IDENTIFYING_NUMBER]. Exclude problem numbers, \
 scores, grades, mathematical expressions, and numbers used in an educational context.
+- Custom project-specific sensitive fields [CUSTOMIZED_FIELD].
+- Other person-linked locations tracked separately from addresses \
+[OTHER_LOCATIONS_IDENTIFIED].
 Matches should be minimal exact spans of the sensitive value.
 Output data following the provided JSON schema."""
 
-DEIDENTIFY_V2_EXTENDED_TYPES: list[str] = [
-    "NAME",
-    "ADDRESS",
-    "DATE",
-    "PHONE_NUMBER",
-    "FAX_NUMBER",
-    "EMAIL",
-    "SSN",
-    "ACCOUNT_NUMBER",
-    "DEVICE_IDENTIFIER",
-    "URL",
-    "IP_ADDRESS",
-    "BIOMETRIC_IDENTIFIER",
-    "IMAGE",
-    "IDENTIFYING_NUMBER",
-    "SCHOOL",
-]
+DEIDENTIFY_V2_EXTENDED_TYPES: list[str] = list(CANONICAL_LABELS)
 
 DEIDENTIFY_V2_NAMES_PROMPT = """\
 You are a PII analyst reviewing tutoring chat transcripts per HIPAA Safe Harbor.
@@ -1441,10 +1468,13 @@ and regions mentioned as general context.
 - Schools or universities that an individual attends or is associated with \
 (e.g., Jackson High, PS 123, University of Phoenix) [SCHOOL]. Exclude institutions \
 mentioned only as general references (e.g., "MIT research", "Stanford algorithm").
+- Tutoring organizations or platforms tied to a specific person (e.g., Saga, UPchieve) \
+[TUTOR_PROVIDER].
 - Birth dates, admission dates, discharge dates, or dates of death directly tied to a \
 specific individual (year may be kept); ages over 89 [DATE]. Exclude all other dates: \
 days of the week, times of day, due dates, class schedules, semesters, and dates or \
 date ranges appearing in math problems.
+- Explicit person-linked ages such as "29 years old" or "twenty-years-old" [AGE].
 - Email addresses [EMAIL].
 - URLs that identify or link to an individual [URL]. Exclude generic tool or platform URLs.
 - Phone numbers [PHONE_NUMBER]; fax numbers [FAX_NUMBER].
@@ -1459,25 +1489,13 @@ Exclude descriptions of seeing or sharing images.
 - Any other unique identifying number such as student IDs, medical record numbers, \
 license numbers, or social media handles [IDENTIFYING_NUMBER]. Exclude problem numbers, \
 scores, grades, mathematical expressions, and numbers used in an educational context.
+- Custom project-specific sensitive fields [CUSTOMIZED_FIELD].
+- Other person-linked locations tracked separately from addresses \
+[OTHER_LOCATIONS_IDENTIFIED].
 Matches should be minimal exact spans of the sensitive value.
 Output data following the provided JSON schema."""
 
-DEIDENTIFY_V2_IDENTIFIERS_TYPES = [
-    "ADDRESS",
-    "SCHOOL",
-    "DATE",
-    "EMAIL",
-    "URL",
-    "PHONE_NUMBER",
-    "FAX_NUMBER",
-    "SSN",
-    "ACCOUNT_NUMBER",
-    "DEVICE_IDENTIFIER",
-    "IP_ADDRESS",
-    "BIOMETRIC_IDENTIFIER",
-    "IMAGE",
-    "IDENTIFYING_NUMBER",
-]
+DEIDENTIFY_V2_IDENTIFIERS_TYPES = _ordered_difference(CANONICAL_LABELS, {"NAME"})
 
 DEIDENTIFY_V2_PRESIDIO_LITE_TYPES = ["EMAIL_ADDRESS", "PHONE_NUMBER", "IP_ADDRESS"]
 

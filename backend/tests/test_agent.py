@@ -1022,6 +1022,8 @@ class TestRunLLM:
         assert "ADDRESS" in enum_values
         assert "SSN" in enum_values
         assert "IDENTIFYING_NUMBER" in enum_values
+        assert "CUSTOMIZED_FIELD" in enum_values
+        assert "OTHER_LOCATIONS_IDENTIFIED" in enum_values
 
     @patch("agent.completion")
     def test_simple_profile_response_schema_enforces_label_enum(self, mock_completion):
@@ -1042,6 +1044,8 @@ class TestRunLLM:
         assert "EMAIL" in enum_values
         assert "ACCOUNT_NUMBER" in enum_values
         assert "PHONE_NUMBER" in enum_values
+        assert "CUSTOMIZED_FIELD" in enum_values
+        assert "OTHER_LOCATIONS_IDENTIFIED" in enum_values
 
     def test_build_extraction_system_prompt_is_label_profile_specific(self):
         simple_prompt = build_extraction_system_prompt(SYSTEM_PROMPT, label_profile="simple")
@@ -1054,7 +1058,8 @@ class TestRunLLM:
         assert (
             "Allowed labels for this run: NAME, ADDRESS, DATE, PHONE_NUMBER, FAX_NUMBER, "
             "EMAIL, SSN, ACCOUNT_NUMBER, DEVICE_IDENTIFIER, URL, IP_ADDRESS, "
-            "BIOMETRIC_IDENTIFIER, IMAGE, IDENTIFYING_NUMBER, AGE, SCHOOL, TUTOR_PROVIDER."
+            "BIOMETRIC_IDENTIFIER, IMAGE, IDENTIFYING_NUMBER, AGE, SCHOOL, TUTOR_PROVIDER, "
+            "CUSTOMIZED_FIELD, OTHER_LOCATIONS_IDENTIFIED."
             in simple_prompt
         )
         assert "TIME" not in simple_prompt
@@ -1062,6 +1067,12 @@ class TestRunLLM:
         assert "US_SSN" not in advanced_prompt
         assert (
             "tutoring organizations or platforms such as Saga or UPchieve [TUTOR_PROVIDER]"
+            in simple_prompt
+        )
+        assert "custom project-specific sensitive fields [CUSTOMIZED_FIELD]" in simple_prompt
+        assert (
+            "other person-linked locations that should be tracked separately from addresses "
+            "[OTHER_LOCATIONS_IDENTIFIED]"
             in simple_prompt
         )
         assert (
@@ -1472,11 +1483,13 @@ def test_audited_presidio_default_uses_residual_llm_scope():
         "AGE",
         "SCHOOL",
         "TUTOR_PROVIDER",
+        "OTHER_LOCATIONS_IDENTIFIED",
         "FAX_NUMBER",
         "DEVICE_IDENTIFIER",
         "BIOMETRIC_IDENTIFIER",
         "IMAGE",
         "IDENTIFYING_NUMBER",
+        "CUSTOMIZED_FIELD",
     }
     assert set(llm_pass["entity_types_by_profile"]["simple"]) == expected_residual
     assert set(llm_pass["entity_types_by_profile"]["advanced"]) == expected_residual
@@ -1721,7 +1734,11 @@ def test_run_method_with_metadata_deidentify_v2_extended_uses_original_entity_or
         "BIOMETRIC_IDENTIFIER",
         "IMAGE",
         "IDENTIFYING_NUMBER",
+        "AGE",
         "SCHOOL",
+        "TUTOR_PROVIDER",
+        "CUSTOMIZED_FIELD",
+        "OTHER_LOCATIONS_IDENTIFIED",
     ]
 
 

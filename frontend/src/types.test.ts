@@ -22,6 +22,8 @@ describe("PII_LABELS", () => {
       "AGE",
       "SCHOOL",
       "TUTOR_PROVIDER",
+      "CUSTOMIZED_FIELD",
+      "OTHER_LOCATIONS_IDENTIFIED",
     ]);
   });
 });
