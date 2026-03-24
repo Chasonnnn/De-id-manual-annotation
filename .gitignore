@@ -5,6 +5,7 @@ backend/.benchmark_artifacts/
 output/
 TIMSS/
 UPchieve/
+Thirdspace/
 
 # Python
 __pycache__/
