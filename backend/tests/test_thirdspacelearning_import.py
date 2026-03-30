@@ -6,12 +6,20 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from models import CanonicalSpan, FolderRecord
+from normalizer import parse_jsonl_record
 from server import (
     app,
     _methods_lab_cancel_events,
     _methods_lab_runs,
+    _load_doc,
+    _load_sidecar,
+    _persist_manual_annotations,
     _prompt_lab_cancel_events,
     _prompt_lab_runs,
+    _save_doc,
+    _save_folder,
+    _save_folder_index,
     _session_docs,
 )
 
@@ -335,3 +343,253 @@ def test_import_thirdspace_jsonl_fails_when_folder_already_exists(tmp_path):
 
     with pytest.raises(ValueError, match="thirdspacelearning"):
         module.import_thirdspace_jsonl(output_path)
+
+
+def test_sync_existing_thirdspace_folder_patches_docs_in_place_and_overwrites_manual(tmp_path):
+    module = _load_thirdspace_module()
+    transcript_path = tmp_path / "transcripts.csv"
+    index_path = tmp_path / "indices_updated.csv"
+
+    _write_csv(
+        transcript_path,
+        ["session_id", "sequence_id", "start_time", "end_time", "speaker", "content"],
+        [
+            {
+                "session_id": "session-a",
+                "sequence_id": "1",
+                "start_time": "00:00:00,000",
+                "end_time": "00:00:01,000",
+                "speaker": "Tutor",
+                "content": "Meet Manchester.",
+            },
+            {
+                "session_id": "session-b",
+                "sequence_id": "1",
+                "start_time": "00:00:02,000",
+                "end_time": "00:00:03,000",
+                "speaker": "Tutor",
+                "content": "You live in Canada.",
+            },
+            {
+                "session_id": "session-b",
+                "sequence_id": "2",
+                "start_time": "00:00:04,000",
+                "end_time": "00:00:05,000",
+                "speaker": "Tutor",
+                "content": "Welcome to third space.",
+            },
+        ],
+    )
+    _write_csv(
+        index_path,
+        [
+            "session_id",
+            "sequence_id",
+            "pii_id",
+            "pii_type",
+            "surrogate",
+            "starting index",
+            "ending index",
+            "content",
+        ],
+        [
+            {
+                "session_id": "session-a",
+                "sequence_id": "1",
+                "pii_id": "0",
+                "pii_type": "ADDRESS",
+                "surrogate": "Manchester",
+                "starting index": "5",
+                "ending index": "15",
+                "content": "Meet Manchester.",
+            },
+            {
+                "session_id": "session-b",
+                "sequence_id": "1",
+                "pii_id": "0",
+                "pii_type": "ADDRESS",
+                "surrogate": "Canada",
+                "starting index": "12",
+                "ending index": "18",
+                "content": "You live in Canada.",
+            },
+            {
+                "session_id": "session-b",
+                "sequence_id": "2",
+                "pii_id": "1",
+                "pii_type": "TUTORING_PROVIDER",
+                "surrogate": "third space",
+                "starting index": "11",
+                "ending index": "22",
+                "content": "Welcome to third space.",
+            },
+        ],
+    )
+
+    stale_doc_a = parse_jsonl_record(
+        {
+            "session_id": "session-a",
+            "transcript": [
+                {
+                    "session_id": "session-a",
+                    "sequence_id": 1,
+                    "role": "Tutor",
+                    "start_time": "00:00:00,000",
+                    "end_time": "00:00:01,000",
+                    "content": "Meet Manchester.",
+                    "annotations": [
+                        {
+                            "start": 5,
+                            "end": 15,
+                            "text": "Manchester",
+                            "pii_type": "OTHER_LOCATION",
+                        }
+                    ],
+                }
+            ],
+        },
+        "thirdspacelearning.record-0001.json",
+        "doc-a",
+    )
+    stale_doc_b = parse_jsonl_record(
+        {
+            "session_id": "session-b",
+            "transcript": [
+                {
+                    "session_id": "session-b",
+                    "sequence_id": 1,
+                    "role": "Tutor",
+                    "start_time": "00:00:02,000",
+                    "end_time": "00:00:03,000",
+                    "content": "You live in Canada.",
+                    "annotations": [],
+                },
+                {
+                    "session_id": "session-b",
+                    "sequence_id": 2,
+                    "role": "Tutor",
+                    "start_time": "00:00:04,000",
+                    "end_time": "00:00:05,000",
+                    "content": "Welcome to third space.",
+                    "annotations": [],
+                },
+            ],
+        },
+        "thirdspacelearning.record-0002.json",
+        "doc-b",
+    )
+    outside_doc = parse_jsonl_record(
+        {
+            "session_id": "outside-session",
+            "transcript": [
+                {
+                    "session_id": "outside-session",
+                    "sequence_id": 1,
+                    "role": "Tutor",
+                    "start_time": "00:00:06,000",
+                    "end_time": "00:00:07,000",
+                    "content": "Hello Liam.",
+                    "annotations": [
+                        {
+                            "start": 6,
+                            "end": 10,
+                            "text": "Liam",
+                            "pii_type": "NAME",
+                        }
+                    ],
+                }
+            ],
+        },
+        "outside.json",
+        "outside-doc",
+    )
+
+    _save_doc(stale_doc_a)
+    _save_doc(stale_doc_b)
+    _save_doc(outside_doc)
+
+    manchester_start = stale_doc_a.raw_text.index("Manchester")
+    _persist_manual_annotations(
+        "doc-a",
+        [
+            CanonicalSpan(
+                start=manchester_start,
+                end=manchester_start + len("Manchester"),
+                label="OTHER_LOCATIONS_IDENTIFIED",
+                text="Manchester",
+            )
+        ],
+    )
+    third_start = stale_doc_b.raw_text.index("third")
+    _persist_manual_annotations(
+        "doc-b",
+        [
+            CanonicalSpan(
+                start=third_start,
+                end=third_start + len("third"),
+                label="NAME",
+                text="third",
+            )
+        ],
+    )
+    _persist_manual_annotations("outside-doc", list(outside_doc.pre_annotations))
+
+    folder = FolderRecord(
+        id="folder-1",
+        name="thirdspacelearning",
+        kind="import",
+        doc_ids=["doc-a", "doc-b"],
+        created_at="2026-03-24T00:00:00Z",
+        source_filename="thirdspacelearning.jsonl",
+        doc_display_names={
+            "doc-a": "Session session-a",
+            "doc-b": "Session session-b",
+        },
+    )
+    _save_folder(folder)
+    _save_folder_index([folder.id])
+
+    result = module.sync_existing_thirdspace_folder(
+        transcript_csv_path=transcript_path,
+        index_csv_path=index_path,
+    )
+
+    assert result["folder_id"] == "folder-1"
+    assert result["processed_count"] == 2
+    assert result["updated_doc_ids"] == ["doc-a", "doc-b"]
+    assert result["label_counts"] == {
+        "ADDRESS": 1,
+        "TUTOR_PROVIDER": 1,
+    }
+
+    updated_a = _load_doc("doc-a")
+    updated_b = _load_doc("doc-b")
+    manual_a = _load_sidecar("doc-a", "manual")
+    manual_b = _load_sidecar("doc-b", "manual")
+    outside_after = _load_doc("outside-doc")
+    outside_manual = _load_sidecar("outside-doc", "manual")
+
+    assert updated_a is not None
+    assert updated_b is not None
+    assert manual_a is not None
+    assert manual_b is not None
+    assert outside_after is not None
+    assert outside_manual is not None
+
+    assert updated_a.id == "doc-a"
+    assert updated_b.id == "doc-b"
+    assert [(span.label, span.text) for span in updated_a.pre_annotations] == [
+        ("ADDRESS", "Manchester")
+    ]
+    assert [(span.label, span.text) for span in manual_a] == [("ADDRESS", "Manchester")]
+
+    assert [(span.label, span.text) for span in updated_b.pre_annotations] == [
+        ("TUTOR_PROVIDER", "third space")
+    ]
+    assert [(span.label, span.text) for span in manual_b] == [
+        ("TUTOR_PROVIDER", "third space")
+    ]
+    assert "Canada" not in [span.text for span in updated_b.pre_annotations]
+
+    assert outside_after.pre_annotations == outside_doc.pre_annotations
+    assert outside_manual == list(outside_doc.pre_annotations)
