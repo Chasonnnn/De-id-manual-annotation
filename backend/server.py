@@ -39,6 +39,7 @@ from models import (
 from normalizer import parse_file, parse_jsonl_file
 from agent import (
     METHOD_DEFINITION_BY_ID,
+    _is_deid_pipeline_method_id,
     _bundle_preserves_native_labels,
     MODEL_PRESETS,
     SYSTEM_PROMPT,
@@ -3770,6 +3771,8 @@ def _run_method_for_document(
 
     use_detected_value_post_process = _bundle_uses_detected_value_post_process(method_bundle)
     preserve_native_labels = _bundle_preserves_native_labels(method_bundle)
+    if _is_deid_pipeline_method_id(method_id):
+        chunk_mode = "off"
 
     if _normalize_method_bundle(method_bundle) == "deidentify-v2":
         return _run_deidentify_v2_method_for_document(
@@ -5602,10 +5605,14 @@ def run_agent(doc_id: str, body: AgentRunBody):
         anthropic_thinking_budget_tokens = llm_runtime["anthropic_thinking_budget_tokens"]
         chunk_mode = str(llm_runtime["chunk_mode"])
         chunk_size_chars = int(llm_runtime["chunk_size_chars"])
-        total_chunks = _estimate_chunk_total(
-            doc,
-            chunk_mode=chunk_mode,
-            chunk_size_chars=chunk_size_chars,
+        total_chunks = (
+            1
+            if _is_deid_pipeline_method_id(method_id)
+            else _estimate_chunk_total(
+                doc,
+                chunk_mode=chunk_mode,
+                chunk_size_chars=chunk_size_chars,
+            )
         )
 
         if method_definition["uses_llm"] and not api_key:

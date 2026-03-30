@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 import sys
 import types
 from concurrent.futures import ThreadPoolExecutor
@@ -1446,6 +1448,76 @@ def test_list_agent_methods_reports_canonical_metadata_for_audited_bundle():
     assert isinstance(dual_split["known_limitations"], list)
 
 
+def _configure_deid_pipeline_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Path]:
+    repo_root = tmp_path / "contextshift-deid"
+    export_script = repo_root / "scripts" / "export_phase21_candidate_predictions.py"
+    export_script.parent.mkdir(parents=True)
+    export_script.write_text("# test export script\n", encoding="utf-8")
+    (repo_root / "pyproject.toml").write_text("[project]\nname='contextshift-deid'\n", encoding="utf-8")
+
+    workspace_root = repo_root / "workspaces" / "candidate"
+    workspace_root.mkdir(parents=True)
+
+    uv_bin = tmp_path / "bin" / "uv"
+    uv_bin.parent.mkdir(parents=True)
+    uv_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    uv_bin.chmod(0o755)
+
+    env_path = tmp_path / ".env.local"
+    monkeypatch.setattr(agent, "ROOT_ENV_PATH", env_path)
+    monkeypatch.setenv("DEID_PIPELINE_REPO_ROOT", str(repo_root))
+    monkeypatch.setenv("DEID_PIPELINE_WORKSPACE_ROOT", str(workspace_root))
+    monkeypatch.setenv("DEID_PIPELINE_UV_BIN", str(uv_bin))
+    return {
+        "repo_root": repo_root,
+        "workspace_root": workspace_root,
+        "uv_bin": uv_bin,
+        "export_script": export_script,
+    }
+
+
+def test_list_agent_methods_reports_deid_pipeline_catalog_entries(monkeypatch, tmp_path):
+    _configure_deid_pipeline_runtime(monkeypatch, tmp_path)
+
+    methods = agent.list_agent_methods(method_bundle="audited")
+
+    by_id = {item["id"]: item for item in methods}
+    assert by_id["deid_pipeline_deberta"]["label"] == "de-id pipeline · DeBERTa sidecar"
+    assert by_id["deid_pipeline_modernbert"]["label"] == "de-id pipeline · ModernBERT C len384"
+    assert by_id["deid_pipeline_union"]["label"] == "de-id pipeline · Operational union"
+    assert by_id["deid_pipeline_deberta"]["uses_llm"] is False
+    assert by_id["deid_pipeline_deberta"]["available"] is True
+    assert "NAME" in by_id["deid_pipeline_union"]["output_labels"]
+
+
+def test_list_agent_methods_marks_deid_pipeline_unavailable_without_runtime_config(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(agent, "ROOT_ENV_PATH", tmp_path / ".env.local")
+    monkeypatch.delenv("DEID_PIPELINE_REPO_ROOT", raising=False)
+    monkeypatch.delenv("DEID_PIPELINE_WORKSPACE_ROOT", raising=False)
+    monkeypatch.delenv("DEID_PIPELINE_UV_BIN", raising=False)
+
+    methods = agent.list_agent_methods(method_bundle="audited")
+
+    deid_method = next(item for item in methods if item["id"] == "deid_pipeline_deberta")
+    assert deid_method["available"] is False
+    assert "DEID_PIPELINE_REPO_ROOT" in str(deid_method["unavailable_reason"])
+
+
+def test_list_agent_methods_marks_deid_pipeline_unavailable_for_non_executable_uv_bin(
+    monkeypatch, tmp_path
+):
+    runtime = _configure_deid_pipeline_runtime(monkeypatch, tmp_path)
+    runtime["uv_bin"].chmod(0o644)
+
+    methods = agent.list_agent_methods(method_bundle="audited")
+
+    deid_method = next(item for item in methods if item["id"] == "deid_pipeline_deberta")
+    assert deid_method["available"] is False
+    assert "DEID_PIPELINE_UV_BIN" in str(deid_method["unavailable_reason"])
+
+
 def test_list_agent_methods_reports_deidentify_v2_catalog_entries():
     methods = agent.list_agent_methods(method_bundle="deidentify-v2")
 
@@ -1740,6 +1812,119 @@ def test_run_method_with_metadata_deidentify_v2_extended_uses_original_entity_or
         "CUSTOMIZED_FIELD",
         "OTHER_LOCATIONS_IDENTIFIED",
     ]
+
+
+def test_run_method_with_metadata_deid_pipeline_builds_expected_union_command_and_parses_spans(
+    monkeypatch, tmp_path
+):
+    runtime = _configure_deid_pipeline_runtime(monkeypatch, tmp_path)
+    seen: dict[str, object] = {}
+
+    def fake_run(command, cwd, capture_output, text, check=False):
+        assert capture_output is True
+        assert text is True
+        assert check is False
+        seen["command"] = list(command)
+        seen["cwd"] = cwd
+
+        output_dir = Path(command[command.index("--output-dir") + 1])
+        input_dir = Path(command[command.index("--input-dir") + 1])
+        input_name = next(input_dir.glob("*.json")).name
+        export_file = output_dir / "operational_union" / input_name
+        export_file.parent.mkdir(parents=True, exist_ok=True)
+        export_file.write_text(
+            json.dumps(
+                {
+                    "id": "doc-1",
+                    "transcript": "Call Alice at alice.example.com",
+                    "pii_occurrences": [
+                        {
+                            "start": 5,
+                            "end": 10,
+                            "text": "Alice",
+                            "pii_type": "NAME",
+                            "entity_type": "NAME",
+                        },
+                        {
+                            "start": 14,
+                            "end": 31,
+                            "text": "alice.example.com",
+                            "pii_type": "URL",
+                            "entity_type": "URL",
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return types.SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(agent.subprocess, "run", fake_run)
+
+    result = run_method_with_metadata(
+        text="Call Alice at alice.example.com",
+        method_id="deid_pipeline_union",
+        api_key=None,
+        api_base=None,
+        model="ignored-model",
+        system_prompt="ignored extra constraints",
+        temperature=0.0,
+        reasoning_effort="none",
+        anthropic_thinking=False,
+        anthropic_thinking_budget_tokens=None,
+        method_verify=True,
+        label_profile="simple",
+        method_bundle="audited",
+    )
+
+    command = seen["command"]
+    assert isinstance(command, list)
+    assert command[0] == str(runtime["uv_bin"])
+    assert command[1:5] == ["run", "--project", str(runtime["repo_root"]), "python"]
+    assert command[5] == str(runtime["export_script"])
+    assert command.count("--model-slot") == 2
+    assert "--include-operational-union" in command
+    assert command[command.index("--span-field") + 1] == "pii_occurrences"
+    assert seen["cwd"] == runtime["repo_root"]
+    assert [(span.label, span.text) for span in result.spans] == [
+        ("NAME", "Alice"),
+        ("URL", "alice.example.com"),
+    ]
+    assert result.raw_spans == result.spans
+    assert any("ignore additional system prompt constraints" in warning for warning in result.warnings)
+    assert any("method_verify was ignored" in warning for warning in result.warnings)
+
+
+def test_run_method_with_metadata_deid_pipeline_raises_on_subprocess_failure(
+    monkeypatch, tmp_path
+):
+    _configure_deid_pipeline_runtime(monkeypatch, tmp_path)
+
+    def fake_run(command, cwd, capture_output, text, check=False):
+        return types.SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="missing frozen checkpoint",
+        )
+
+    monkeypatch.setattr(agent.subprocess, "run", fake_run)
+
+    with pytest.raises(ValueError, match="missing frozen checkpoint"):
+        run_method_with_metadata(
+            text="Call Alice",
+            method_id="deid_pipeline_deberta",
+            api_key=None,
+            api_base=None,
+            model="ignored-model",
+            system_prompt="",
+            temperature=0.0,
+            reasoning_effort="none",
+            anthropic_thinking=False,
+            anthropic_thinking_budget_tokens=None,
+            method_verify=False,
+            label_profile="simple",
+            method_bundle="audited",
+        )
 
 
 def test_run_method_with_metadata_audited_does_not_expand_repeated_occurrences(monkeypatch):

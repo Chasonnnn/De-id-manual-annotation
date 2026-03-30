@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 import threading
 import time
 import zipfile
@@ -339,6 +340,32 @@ def _upload(client, data=None, filename="test.json"):
         files={"file": (filename, data, "application/json")},
     )
     return resp
+
+
+def _configure_deid_pipeline_runtime(monkeypatch, tmp_path: Path) -> dict[str, Path]:
+    repo_root = tmp_path / "contextshift-deid"
+    export_script = repo_root / "scripts" / "export_phase21_candidate_predictions.py"
+    export_script.parent.mkdir(parents=True)
+    export_script.write_text("# test export script\n", encoding="utf-8")
+    (repo_root / "pyproject.toml").write_text("[project]\nname='contextshift-deid'\n", encoding="utf-8")
+
+    workspace_root = repo_root / "workspaces" / "candidate"
+    workspace_root.mkdir(parents=True)
+
+    uv_bin = tmp_path / "bin" / "uv"
+    uv_bin.parent.mkdir(parents=True)
+    uv_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    uv_bin.chmod(0o755)
+
+    monkeypatch.setenv("DEID_PIPELINE_REPO_ROOT", str(repo_root))
+    monkeypatch.setenv("DEID_PIPELINE_WORKSPACE_ROOT", str(workspace_root))
+    monkeypatch.setenv("DEID_PIPELINE_UV_BIN", str(uv_bin))
+    return {
+        "repo_root": repo_root,
+        "workspace_root": workspace_root,
+        "uv_bin": uv_bin,
+        "export_script": export_script,
+    }
 
 
 def _wait_for_prompt_lab_terminal(client: TestClient, run_id: str, attempts: int = 30):
@@ -6567,6 +6594,73 @@ def test_method_persists_outputs_per_method_model(client, monkeypatch):
     assert len(method_prompt_snapshot["passes"]) >= 1
 
 
+def test_method_persists_deid_pipeline_outputs(client, monkeypatch, tmp_path):
+    runtime = _configure_deid_pipeline_runtime(monkeypatch, tmp_path)
+    seen: dict[str, object] = {}
+
+    def fake_run(command, cwd, capture_output, text, check=False):
+        seen["command"] = list(command)
+        seen["cwd"] = cwd
+        output_dir = Path(command[command.index("--output-dir") + 1])
+        input_dir = Path(command[command.index("--input-dir") + 1])
+        input_name = next(input_dir.glob("*.json")).name
+        export_path = output_dir / "deberta_phase21_sidecar" / input_name
+        export_path.parent.mkdir(parents=True, exist_ok=True)
+        export_path.write_text(
+            json.dumps(
+                {
+                    "id": "doc-1",
+                    "transcript": "Hello Anna, call Sue please.",
+                    "pii_occurrences": [
+                        {
+                            "start": 6,
+                            "end": 10,
+                            "text": "Anna",
+                            "pii_type": "NAME",
+                            "entity_type": "NAME",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+    monkeypatch.setattr("agent.subprocess.run", fake_run)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    run_resp = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "method",
+            "method_id": "deid_pipeline_deberta",
+            "chunk_mode": "force",
+            "chunk_size_chars": 2000,
+        },
+    )
+    assert run_resp.status_code == 200
+
+    payload = run_resp.json()
+    method_outputs = payload["agent_outputs"]["methods"]
+    assert method_outputs["deid_pipeline_deberta"][0]["text"] == "Anna"
+    assert payload["agent_outputs"]["method_run_metadata"]["deid_pipeline_deberta::rule"][
+        "method_id"
+    ] == "deid_pipeline_deberta"
+    assert payload["agent_outputs"]["method_run_metadata"]["deid_pipeline_deberta::rule"][
+        "model"
+    ] is None
+    assert seen["cwd"] == runtime["repo_root"]
+    command = seen["command"]
+    assert isinstance(command, list)
+    assert command[0] == str(runtime["uv_bin"])
+    assert command[command.index("--model-slot") + 1] == "deberta_phase21_sidecar"
+    assert "--include-operational-union" not in command
+    assert all("Chunked method run used" not in warning for warning in payload["agent_run_warnings"])
+
+
 def test_agent_method_default_chunk_mode_stays_single_pass_for_long_text(client, monkeypatch):
     monkeypatch.setattr(
         "server._fetch_gateway_model_ids",
@@ -7954,6 +8048,18 @@ def test_prepare_experiment_scoring_spans_deidentify_v2_uses_run_level_gold_labe
     assert projected_hypothesis[0].label == "ADDRESS"
 
 
+def test_list_agent_methods_exposes_deid_pipeline_entries(client, monkeypatch, tmp_path):
+    _configure_deid_pipeline_runtime(monkeypatch, tmp_path)
+
+    response = client.get("/api/agent/methods")
+
+    assert response.status_code == 200
+    methods = {item["id"]: item for item in response.json()["methods"]}
+    assert methods["deid_pipeline_deberta"]["label"] == "de-id pipeline · DeBERTa sidecar"
+    assert methods["deid_pipeline_modernbert"]["label"] == "de-id pipeline · ModernBERT C len384"
+    assert methods["deid_pipeline_union"]["label"] == "de-id pipeline · Operational union"
+
+
 def test_run_method_for_document_v2_post_process_expands_repeated_occurrences(
     client, monkeypatch
 ):
@@ -8002,6 +8108,59 @@ def test_run_method_for_document_v2_post_process_expands_repeated_occurrences(
         (0, 4, "Anna"),
         (9, 13, "Anna"),
     ]
+
+
+def test_run_method_for_document_deid_pipeline_bypasses_annotation_chunking(monkeypatch):
+    raw_text = ("Alice " * 4000).strip()
+    doc = CanonicalDocument(
+        id="doc-deid-pipeline",
+        filename="session.json",
+        format="hips_v1",
+        raw_text=raw_text,
+        utterances=[],
+        pre_annotations=[],
+        label_set=["NAME"],
+    )
+    seen_texts: list[str] = []
+
+    def fake_run_method_with_metadata(**kwargs):
+        seen_texts.append(str(kwargs["text"]))
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=0, end=5, label="NAME", text="Alice")],
+            raw_spans=[CanonicalSpan(start=0, end=5, label="NAME", text="Alice")],
+            warnings=[],
+            llm_confidence=None,
+            response_debug=[],
+            resolution_events=[],
+            resolution_policy_version=None,
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    spans, warnings, _confidence, diagnostics, raw_spans, events, policy, _debug = _run_method_for_document(
+        doc=doc,
+        method_id="deid_pipeline_deberta",
+        api_key=None,
+        api_base=None,
+        model="ignored-model",
+        system_prompt="",
+        temperature=0.0,
+        reasoning_effort="none",
+        anthropic_thinking=False,
+        anthropic_thinking_budget_tokens=None,
+        method_verify=False,
+        label_profile="simple",
+        chunk_mode="force",
+        chunk_size_chars=2000,
+    )
+
+    assert seen_texts == [raw_text]
+    assert warnings == []
+    assert diagnostics == []
+    assert events == []
+    assert policy is None
+    assert [(span.start, span.end, span.text) for span in spans] == [(0, 5, "Alice")]
+    assert [(span.start, span.end, span.text) for span in raw_spans] == [(0, 5, "Alice")]
 
 
 def test_run_method_for_document_deidentify_v2_uses_legacy_chunking_and_propagation(monkeypatch):

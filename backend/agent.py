@@ -6,12 +6,18 @@ from functools import lru_cache
 import importlib.util
 import json
 import math
+import os
+from pathlib import Path
 import re
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
 from typing import Any, Callable, Literal
 
 import litellm
+from dotenv import dotenv_values
 from litellm import completion
 
 from models import CanonicalSpan, LLMConfidenceMetric, ResolutionEvent
@@ -411,6 +417,147 @@ SIMPLE_LABEL_SET = set(SIMPLE_LABELS)
 
 ADVANCED_LABELS: list[str] = list(CANONICAL_LABELS)
 ADVANCED_LABEL_SET = set(ADVANCED_LABELS)
+
+BACKEND_DIR = Path(__file__).resolve().parent
+REPO_ROOT = BACKEND_DIR.parent
+ROOT_ENV_PATH = REPO_ROOT / ".env.local"
+DEID_PIPELINE_REPO_ROOT_ENV = "DEID_PIPELINE_REPO_ROOT"
+DEID_PIPELINE_WORKSPACE_ROOT_ENV = "DEID_PIPELINE_WORKSPACE_ROOT"
+DEID_PIPELINE_UV_BIN_ENV = "DEID_PIPELINE_UV_BIN"
+DEID_PIPELINE_EXPORT_SCRIPT = Path("scripts/export_phase21_candidate_predictions.py")
+DEID_PIPELINE_TRANSCRIPT_ID = "annotation-tool-document"
+DEID_PIPELINE_INPUT_FILENAME = "document.json"
+
+DEID_PIPELINE_METHOD_SPECS: dict[str, dict[str, Any]] = {
+    "deid_pipeline_deberta": {
+        "label": "de-id pipeline · DeBERTa sidecar",
+        "description": "Frozen Phase 21 DeBERTa sidecar candidate detector.",
+        "model_slots": ["deberta_phase21_sidecar"],
+        "export_slot": "deberta_phase21_sidecar",
+        "include_operational_union": False,
+    },
+    "deid_pipeline_modernbert": {
+        "label": "de-id pipeline · ModernBERT C len384",
+        "description": "Frozen Phase 21 ModernBERT C len384 candidate detector.",
+        "model_slots": ["modernbert_phase21_c_len384"],
+        "export_slot": "modernbert_phase21_c_len384",
+        "include_operational_union": False,
+    },
+    "deid_pipeline_union": {
+        "label": "de-id pipeline · Operational union",
+        "description": "Frozen learned union across the operational Phase 21 candidate detectors.",
+        "model_slots": ["deberta_phase21_sidecar", "modernbert_phase21_c_len384"],
+        "export_slot": "operational_union",
+        "include_operational_union": True,
+    },
+}
+
+
+def _load_repo_env_file() -> dict[str, str]:
+    if not ROOT_ENV_PATH.is_file():
+        return {}
+    loaded: dict[str, str] = {}
+    for key, value in dotenv_values(ROOT_ENV_PATH).items():
+        if not key or value is None or key in os.environ:
+            continue
+        loaded[key] = str(value)
+    return loaded
+
+
+def _resolve_repo_env_value(name: str) -> str:
+    return str(os.environ.get(name) or _load_repo_env_file().get(name) or "").strip()
+
+
+def _resolve_deid_pipeline_repo_root() -> Path | None:
+    raw = _resolve_repo_env_value(DEID_PIPELINE_REPO_ROOT_ENV)
+    if not raw:
+        return None
+    return Path(raw).expanduser().resolve()
+
+
+def _resolve_deid_pipeline_workspace_root(repo_root: Path | None) -> Path | None:
+    raw = _resolve_repo_env_value(DEID_PIPELINE_WORKSPACE_ROOT_ENV)
+    if raw:
+        return Path(raw).expanduser().resolve()
+    if repo_root is None:
+        return None
+    return (repo_root / "workspaces" / "candidate").expanduser().resolve()
+
+
+def _resolve_deid_pipeline_uv_bin() -> str | None:
+    raw = _resolve_repo_env_value(DEID_PIPELINE_UV_BIN_ENV)
+    if raw:
+        resolved = Path(raw).expanduser().resolve()
+        if resolved.is_file() and os.access(resolved, os.X_OK):
+            return str(resolved)
+        return None
+    found = shutil.which("uv")
+    if found:
+        return found
+    return None
+
+
+def _is_deid_pipeline_method_id(method_id: str) -> bool:
+    return method_id in DEID_PIPELINE_METHOD_SPECS
+
+
+def _deid_pipeline_runtime_error() -> str | None:
+    repo_root = _resolve_deid_pipeline_repo_root()
+    if repo_root is None:
+        return (
+            f"{DEID_PIPELINE_REPO_ROOT_ENV} must point to a local contextshift-deid checkout "
+            "to enable de-id pipeline methods."
+        )
+    if not repo_root.is_dir():
+        return f"{DEID_PIPELINE_REPO_ROOT_ENV} does not exist: {repo_root}"
+
+    export_script = repo_root / DEID_PIPELINE_EXPORT_SCRIPT
+    if not export_script.is_file():
+        return f"Missing export script at {export_script}"
+
+    workspace_root = _resolve_deid_pipeline_workspace_root(repo_root)
+    if workspace_root is None:
+        return (
+            f"{DEID_PIPELINE_WORKSPACE_ROOT_ENV} must point to the candidate workspace root "
+            "or the repo must contain workspaces/candidate."
+        )
+    if not workspace_root.is_dir():
+        return f"Missing candidate workspace root: {workspace_root}"
+
+    uv_bin = _resolve_deid_pipeline_uv_bin()
+    if uv_bin is None:
+        if _resolve_repo_env_value(DEID_PIPELINE_UV_BIN_ENV):
+            return f"{DEID_PIPELINE_UV_BIN_ENV} does not point to an executable file."
+        return "Could not find `uv` on PATH; set DEID_PIPELINE_UV_BIN to the local uv binary."
+    return None
+
+
+def _build_deid_pipeline_method_definitions() -> list[dict[str, Any]]:
+    definitions: list[dict[str, Any]] = []
+    limitations = [
+        "Requires a local contextshift-deid checkout configured via DEID_PIPELINE_REPO_ROOT.",
+        "Requires frozen Phase 21 candidate workspace assets under DEID_PIPELINE_WORKSPACE_ROOT or repo_root/workspaces/candidate.",
+    ]
+    for method_id, spec in DEID_PIPELINE_METHOD_SPECS.items():
+        definitions.append(
+            {
+                "id": method_id,
+                "label": str(spec["label"]),
+                "description": str(spec["description"]),
+                "requires_presidio": False,
+                "uses_llm": False,
+                "supports_verify_override": False,
+                "default_verify": False,
+                "supported_label_profiles": ["advanced", "simple"],
+                "known_limitations": list(limitations),
+                "output_labels_by_profile": {
+                    "simple": list(SIMPLE_LABELS),
+                    "advanced": list(ADVANCED_LABELS),
+                },
+                "passes": [],
+            }
+        )
+    return definitions
 
 
 def _labels_for_profile(
@@ -1400,6 +1547,11 @@ V2_POST_PROCESS_METHOD_DEFINITIONS: list[dict[str, Any]] = copy.deepcopy(
 )
 V2_POST_PROCESS_METHOD_DEFINITION_BY_ID: dict[str, dict[str, Any]] = {
     method["id"]: method for method in V2_POST_PROCESS_METHOD_DEFINITIONS
+}
+
+AUDITED_METHOD_DEFINITIONS.extend(_build_deid_pipeline_method_definitions())
+AUDITED_METHOD_DEFINITION_BY_ID = {
+    method["id"]: method for method in AUDITED_METHOD_DEFINITIONS
 }
 
 DEIDENTIFY_V2_EXTENDED_PROMPT = """\
@@ -2811,6 +2963,20 @@ def _compute_method_output_labels(
     *,
     label_profile: Literal["simple", "advanced"],
 ) -> list[str]:
+    output_labels_by_profile = method.get("output_labels_by_profile")
+    if isinstance(output_labels_by_profile, dict):
+        value = output_labels_by_profile.get(label_profile)
+        if isinstance(value, list):
+            ordered: list[str] = []
+            seen: set[str] = set()
+            for label in value:
+                normalized = normalize_method_label(str(label), label_profile=label_profile)
+                if not normalized or normalized in seen:
+                    continue
+                seen.add(normalized)
+                ordered.append(normalized)
+            return ordered
+
     ordered: list[str] = []
     seen: set[str] = set()
     for method_pass in method.get("passes", []):
@@ -3129,7 +3295,10 @@ def list_agent_methods(
     methods: list[dict[str, Any]] = []
     for method in get_method_definitions(method_bundle=bundle):
         unavailable_reason = None
-        if method["requires_presidio"] and presidio_error:
+        method_id = str(method.get("id") or "")
+        if _is_deid_pipeline_method_id(method_id):
+            unavailable_reason = _deid_pipeline_runtime_error()
+        elif method["requires_presidio"] and presidio_error:
             unavailable_reason = presidio_error
         prompt_templates: list[dict[str, Any]] = []
         for pass_index, method_pass in enumerate(method.get("passes", []), start=1):
@@ -3528,6 +3697,174 @@ def _run_deidentify_v2_method_with_metadata(
     )
 
 
+def _build_deid_pipeline_command(
+    *,
+    method_id: str,
+    repo_root: Path,
+    workspace_root: Path,
+    uv_bin: str,
+    input_dir: Path,
+    output_dir: Path,
+) -> list[str]:
+    spec = DEID_PIPELINE_METHOD_SPECS[method_id]
+    command = [
+        uv_bin,
+        "run",
+        "--project",
+        str(repo_root),
+        "python",
+        str(repo_root / DEID_PIPELINE_EXPORT_SCRIPT),
+        "--workspace-root",
+        str(workspace_root),
+        "--input-dir",
+        str(input_dir),
+        "--output-dir",
+        str(output_dir),
+        "--span-field",
+        "pii_occurrences",
+    ]
+    for slot in spec["model_slots"]:
+        command.extend(["--model-slot", str(slot)])
+    if bool(spec["include_operational_union"]):
+        command.append("--include-operational-union")
+    return command
+
+
+def _load_deid_pipeline_spans(
+    *,
+    export_path: Path,
+    text: str,
+) -> list[CanonicalSpan]:
+    if not export_path.is_file():
+        raise ValueError(f"de-id pipeline export did not produce {export_path}")
+
+    payload = json.loads(export_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"de-id pipeline export is not a JSON object: {export_path}")
+    raw_occurrences = payload.get("pii_occurrences", [])
+    if not isinstance(raw_occurrences, list):
+        raise ValueError(f"de-id pipeline export has invalid pii_occurrences: {export_path}")
+
+    spans: list[CanonicalSpan] = []
+    for index, item in enumerate(raw_occurrences):
+        if not isinstance(item, dict):
+            raise ValueError(f"pii_occurrences[{index}] must be an object")
+        start = item.get("start")
+        end = item.get("end")
+        span_text = str(item.get("text") or "")
+        raw_label = str(item.get("entity_type") or item.get("pii_type") or "").strip()
+        if not isinstance(start, int) or not isinstance(end, int):
+            raise ValueError(f"pii_occurrences[{index}] must include integer start/end offsets")
+        if start < 0 or end < start or end > len(text):
+            raise ValueError(
+                f"pii_occurrences[{index}] offsets are outside the transcript: {start}-{end}"
+            )
+        expected_text = text[start:end]
+        if span_text != expected_text:
+            raise ValueError(
+                f"pii_occurrences[{index}] text does not match transcript slice at {start}-{end}"
+            )
+        label = canonicalize_label(raw_label, text=span_text)
+        if label is None:
+            raise ValueError(f"pii_occurrences[{index}] has unsupported label {raw_label!r}")
+        spans.append(
+            CanonicalSpan(
+                start=start,
+                end=end,
+                label=label,
+                text=span_text,
+            )
+        )
+    return merge_method_spans(spans)
+
+
+def _run_deid_pipeline_method_with_metadata(
+    *,
+    text: str,
+    method_id: str,
+    system_prompt: str,
+    method_verify: bool | None,
+    progress_callback: Callable[[int, str], None] | None = None,
+) -> MethodRunResult:
+    runtime_error = _deid_pipeline_runtime_error()
+    if runtime_error is not None:
+        raise ValueError(runtime_error)
+
+    repo_root = _resolve_deid_pipeline_repo_root()
+    workspace_root = _resolve_deid_pipeline_workspace_root(repo_root)
+    uv_bin = _resolve_deid_pipeline_uv_bin()
+    if repo_root is None or workspace_root is None or uv_bin is None:
+        raise ValueError("de-id pipeline runtime configuration resolved incompletely")
+
+    warnings: list[str] = []
+    if system_prompt.strip():
+        warnings.append(
+            "de-id pipeline methods ignore additional system prompt constraints "
+            "to preserve the frozen candidate pipeline."
+        )
+    if method_verify:
+        warnings.append(
+            "de-id pipeline methods do not attach a verifier; method_verify was ignored."
+        )
+
+    with tempfile.TemporaryDirectory(prefix="deid-pipeline-") as temp_dir:
+        temp_root = Path(temp_dir)
+        input_dir = temp_root / "input"
+        output_dir = temp_root / "output"
+        input_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        input_path = input_dir / DEID_PIPELINE_INPUT_FILENAME
+        input_path.write_text(
+            json.dumps(
+                {
+                    "id": DEID_PIPELINE_TRANSCRIPT_ID,
+                    "transcript": text,
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        command = _build_deid_pipeline_command(
+            method_id=method_id,
+            repo_root=repo_root,
+            workspace_root=workspace_root,
+            uv_bin=uv_bin,
+            input_dir=input_dir,
+            output_dir=output_dir,
+        )
+        if progress_callback is not None:
+            progress_callback(1, f"{method_id}:export")
+        result = subprocess.run(
+            command,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            error_text = (result.stderr or result.stdout or "").strip()
+            detail = error_text or f"export command exited with status {result.returncode}"
+            raise ValueError(f"de-id pipeline export failed: {detail}")
+
+        export_slot = str(DEID_PIPELINE_METHOD_SPECS[method_id]["export_slot"])
+        spans = _load_deid_pipeline_spans(
+            export_path=output_dir / export_slot / input_path.name,
+            text=text,
+        )
+    return MethodRunResult(
+        spans=list(spans),
+        warnings=warnings,
+        llm_confidence=None,
+        response_debug=[],
+        raw_spans=list(spans),
+        resolution_events=[],
+        resolution_policy_version=None,
+    )
+
+
 def run_method_with_metadata(
     *,
     text: str,
@@ -3550,6 +3887,15 @@ def run_method_with_metadata(
     method = get_method_definition_by_id(method_id, method_bundle=normalized_method_bundle)
     if method is None:
         raise ValueError(f"Unknown method: {method_id}")
+
+    if _is_deid_pipeline_method_id(method_id):
+        return _run_deid_pipeline_method_with_metadata(
+            text=text,
+            method_id=method_id,
+            system_prompt=system_prompt,
+            method_verify=method_verify,
+            progress_callback=progress_callback,
+        )
 
     if normalized_method_bundle == "deidentify-v2":
         return _run_deidentify_v2_method_with_metadata(
