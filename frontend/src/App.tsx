@@ -172,6 +172,13 @@ function nonChunkWarningMessage(messages: string[]): string | null {
   return filtered.length > 0 ? filtered.join(" ") : null;
 }
 
+function getSortableTimestamp(value: string | null | undefined): number {
+  if (!value) return Number.NEGATIVE_INFINITY;
+  const date = new Date(value);
+  const timestamp = date.getTime();
+  return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
+}
+
 function getChunkDiagnosticsCount(
   diagnostics: AgentChunkDiagnostic[] | null | undefined,
 ): number {
@@ -198,6 +205,58 @@ function resolveMethodChunkDiagnostics(
     latestDiagnostics = metadata.chunk_diagnostics ?? [];
   }
   return latestDiagnostics;
+}
+
+function getLatestReadyMethodView(doc: CanonicalDocument | null): MethodView | null {
+  if (!doc) return null;
+  const outputs = doc.agent_outputs?.methods ?? {};
+  const metadata = doc.agent_outputs?.method_run_metadata ?? {};
+  const outputIds = Object.keys(outputs);
+  if (outputIds.length === 0) return null;
+
+  let latestId: string | null = null;
+  let latestTimestamp = Number.NEGATIVE_INFINITY;
+  for (const outputId of outputIds) {
+    const timestamp = getSortableTimestamp(metadata[outputId]?.updated_at);
+    if (latestId === null || timestamp >= latestTimestamp) {
+      latestId = outputId;
+      latestTimestamp = timestamp;
+    }
+  }
+  return latestId;
+}
+
+function getLatestReadyAgentSelection(
+  doc: CanonicalDocument | null,
+): { view: AgentView; llmRunKey: string } | null {
+  if (!doc) return null;
+  const llmRuns = doc.agent_outputs?.llm_runs ?? {};
+  const llmMetadata = doc.agent_outputs?.llm_run_metadata ?? {};
+  const llmRunKeys = Object.keys(llmRuns);
+  if (llmRunKeys.length > 0) {
+    let latestKey: string | null = null;
+    let latestTimestamp = Number.NEGATIVE_INFINITY;
+    for (const runKey of llmRunKeys) {
+      const timestamp = getSortableTimestamp(llmMetadata[runKey]?.updated_at);
+      if (latestKey === null || timestamp >= latestTimestamp) {
+        latestKey = runKey;
+        latestTimestamp = timestamp;
+      }
+    }
+    if (latestKey) {
+      return { view: "llm", llmRunKey: latestKey };
+    }
+  }
+  if ((doc.agent_outputs?.llm?.length ?? 0) > 0) {
+    return { view: "llm", llmRunKey: "__latest__" };
+  }
+  if ((doc.agent_outputs?.rule?.length ?? 0) > 0) {
+    return { view: "rule", llmRunKey: "__latest__" };
+  }
+  if ((doc.agent_annotations?.length ?? 0) > 0) {
+    return { view: "combined", llmRunKey: "__latest__" };
+  }
+  return null;
 }
 
 function toPromptTemplatesFromSnapshot(
@@ -294,6 +353,9 @@ function useAppContentController() {
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(null);
   const savedTimer = useRef<ReturnType<typeof setTimeout>>(null);
   const dashboardRefreshTimer = useRef<ReturnType<typeof setTimeout>>(null);
+  const agentViewRef = useRef<AgentView>("combined");
+  const agentLlmRunRef = useRef<string>("__latest__");
+  const methodViewRef = useRef<MethodView>("default");
 
   const { registerPane, handleScroll } = useSyncScroll();
 
@@ -831,6 +893,43 @@ function useAppContentController() {
     });
   }, [doc]);
 
+  const agentOutputSignature = useMemo(() => {
+    if (!doc) return "";
+    const llmRunMeta = doc.agent_outputs?.llm_run_metadata ?? {};
+    const llmRunKeys = Object.keys(doc.agent_outputs?.llm_runs ?? {}).sort();
+    return JSON.stringify({
+      docId: doc.id,
+      llmRunKeys,
+      llmRunTimestamps: llmRunKeys.map((key) => llmRunMeta[key]?.updated_at ?? null),
+      llmCount: doc.agent_outputs?.llm?.length ?? 0,
+      ruleCount: doc.agent_outputs?.rule?.length ?? 0,
+      combinedCount: doc.agent_annotations?.length ?? 0,
+    });
+  }, [doc]);
+
+  const methodOutputSignature = useMemo(() => {
+    if (!doc) return "";
+    const methodMeta = doc.agent_outputs?.method_run_metadata ?? {};
+    const methodIds = Object.keys(doc.agent_outputs?.methods ?? {}).sort();
+    return JSON.stringify({
+      docId: doc.id,
+      methodIds,
+      methodTimestamps: methodIds.map((id) => methodMeta[id]?.updated_at ?? null),
+    });
+  }, [doc]);
+
+  useEffect(() => {
+    agentViewRef.current = agentView;
+  }, [agentView]);
+
+  useEffect(() => {
+    agentLlmRunRef.current = agentLlmRun;
+  }, [agentLlmRun]);
+
+  useEffect(() => {
+    methodViewRef.current = methodView;
+  }, [methodView]);
+
   const agentChunkDiagnostics = useMemo<AgentChunkDiagnostic[]>(() => {
     if (!doc) return [];
     if (agentView === "rule") return [];
@@ -852,6 +951,23 @@ function useAppContentController() {
       setAgentLlmRun("__latest__");
     }
   }, [agentLlmRun, llmRunOptions]);
+
+  useEffect(() => {
+    const nextSelection = getLatestReadyAgentSelection(doc);
+    if (!nextSelection) return;
+    if (nextSelection.view !== agentViewRef.current) {
+      setAgentView(nextSelection.view);
+    }
+    if (nextSelection.llmRunKey !== agentLlmRunRef.current) {
+      setAgentLlmRun(nextSelection.llmRunKey);
+    }
+  }, [agentOutputSignature, doc]);
+
+  useEffect(() => {
+    const latestMethodView = getLatestReadyMethodView(doc);
+    if (!latestMethodView || latestMethodView === methodViewRef.current) return;
+    setMethodView(latestMethodView);
+  }, [doc, methodOutputSignature]);
 
   useEffect(() => {
     if (sourceOptions.length === 0) return;
