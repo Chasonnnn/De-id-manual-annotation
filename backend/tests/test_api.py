@@ -630,6 +630,73 @@ def test_prune_folder_removes_docs_without_pre_or_manual_annotations_and_updates
     assert client.get(f"/api/documents/{kept_manual_doc_id}").status_code == 200
 
 
+def test_delete_folder_document_removes_doc_and_updates_samples(client):
+    upload_resp = _upload(
+        client,
+        data=_make_prunable_multi_record_jsonl(),
+        filename="sessions.jsonl",
+    )
+    assert upload_resp.status_code == 200
+
+    folder_id = client.get("/api/folders").json()[0]["id"]
+    import_detail = client.get(f"/api/folders/{folder_id}").json()
+    removed_doc_id, kept_doc_id, other_kept_doc_id = [
+        item["id"] for item in import_detail["documents"]
+    ]
+
+    sample_resp = client.post(
+        f"/api/folders/{folder_id}/samples",
+        json={"count": 3},
+    )
+    assert sample_resp.status_code == 200
+    sample_id = sample_resp.json()["id"]
+
+    delete_resp = client.delete(f"/api/folders/{folder_id}/documents/{removed_doc_id}")
+    assert delete_resp.status_code == 200
+    assert delete_resp.json() == {
+        "deleted": True,
+        "folder_id": folder_id,
+        "doc_id": removed_doc_id,
+        "updated_folder_ids": [folder_id, sample_id],
+    }
+
+    refreshed_import = client.get(f"/api/folders/{folder_id}").json()
+    assert refreshed_import["doc_ids"] == [kept_doc_id, other_kept_doc_id]
+
+    refreshed_sample = client.get(f"/api/folders/{sample_id}").json()
+    assert set(refreshed_sample["doc_ids"]) == {kept_doc_id, other_kept_doc_id}
+
+    assert client.get(f"/api/documents/{removed_doc_id}").status_code == 404
+    assert client.get(f"/api/documents/{kept_doc_id}").status_code == 200
+    assert client.get(f"/api/documents/{other_kept_doc_id}").status_code == 200
+
+
+def test_delete_folder_document_requires_membership(client):
+    upload_resp = _upload(
+        client,
+        data=_make_prunable_multi_record_jsonl(),
+        filename="sessions.jsonl",
+    )
+    assert upload_resp.status_code == 200
+
+    folder_id = client.get("/api/folders").json()[0]["id"]
+    detail = client.get(f"/api/folders/{folder_id}").json()
+    doc_id = detail["doc_ids"][0]
+
+    create_other_folder_resp = client.post(
+        "/api/folders",
+        json={"name": "Other"},
+    )
+    assert create_other_folder_resp.status_code == 200
+    other_folder_id = create_other_folder_resp.json()["id"]
+
+    delete_resp = client.delete(f"/api/folders/{other_folder_id}/documents/{doc_id}")
+    assert delete_resp.status_code == 404
+    assert delete_resp.json()["detail"] == "Document not found in folder"
+
+    assert client.get(f"/api/documents/{doc_id}").status_code == 200
+
+
 def test_create_manual_folder_and_nested_subfolder(client):
     create_root_resp = client.post(
         "/api/folders",

@@ -17,6 +17,7 @@ interface Props {
   onSelect: (id: string) => void;
   onIngestFiles: (files: File[], conflictPolicy: ImportConflictPolicy) => void;
   onDelete: (id: string) => void;
+  onDeleteFolderDocument: (folderId: string, docId: string) => void;
   onCreateFolder: (name: string, parentFolderId: string | null) => void;
   onCreateFolderSample: (folderId: string, count: number) => void;
   onDeleteFolder: (folderId: string) => void;
@@ -271,12 +272,14 @@ function SidebarFolderBranch({
   expandedFolders,
   folderBusyId,
   selectedId,
+  deletingId,
   onToggleFolder,
   onSelect,
   onCreateFolder,
   onRequestSample,
   onRequestNewSubfolder,
   onDeleteFolder,
+  onDeleteFolderDocument,
   onPruneFolder,
 }: {
   folder: FolderSummary;
@@ -287,12 +290,14 @@ function SidebarFolderBranch({
   expandedFolders: Record<string, boolean>;
   folderBusyId: string | null;
   selectedId: string | null;
+  deletingId: string | null;
   onToggleFolder: (folderId: string) => void;
   onSelect: (id: string) => void;
   onCreateFolder: (name: string, parentFolderId: string | null) => void;
   onRequestSample: (folder: FolderSummary) => void;
   onRequestNewSubfolder: (folder: FolderSummary) => void;
   onDeleteFolder: (folderId: string) => void;
+  onDeleteFolderDocument: (folderId: string, docId: string) => void;
   onPruneFolder: (folderId: string) => void;
 }) {
   const isExpanded = expandedFolders[folder.id] ?? false;
@@ -381,6 +386,19 @@ function SidebarFolderBranch({
                 {document.id}
               </span>
             </span>
+            <button
+              type="button"
+              className="doc-delete-btn"
+              title="Delete transcript"
+              aria-label={`Delete transcript ${document.id}`}
+              disabled={Boolean(deletingId) || Boolean(folderBusyId)}
+              onClick={(e) => {
+                e.stopPropagation();
+                onDeleteFolderDocument(folder.id, document.id);
+              }}
+            >
+              {deletingId === document.id ? "..." : "Delete"}
+            </button>
           </li>
         ))}
       {isExpanded &&
@@ -399,12 +417,14 @@ function SidebarFolderBranch({
               expandedFolders={expandedFolders}
               folderBusyId={folderBusyId}
               selectedId={selectedId}
+              deletingId={deletingId}
               onToggleFolder={onToggleFolder}
               onSelect={onSelect}
               onCreateFolder={onCreateFolder}
               onRequestSample={onRequestSample}
               onRequestNewSubfolder={onRequestNewSubfolder}
               onDeleteFolder={onDeleteFolder}
+              onDeleteFolderDocument={onDeleteFolderDocument}
               onPruneFolder={onPruneFolder}
             />
           );
@@ -424,6 +444,7 @@ function SidebarDocumentTree({
   folderBusyId,
   onSelect,
   onDelete,
+  onDeleteFolderDocument,
   onToggleFolder,
   onRequestSample,
   onRequestNewSubfolder,
@@ -441,6 +462,7 @@ function SidebarDocumentTree({
   folderBusyId: string | null;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
+  onDeleteFolderDocument: (folderId: string, docId: string) => void;
   onToggleFolder: (folderId: string) => void;
   onRequestSample: (folder: FolderSummary) => void;
   onRequestNewSubfolder: (folder: FolderSummary) => void;
@@ -479,12 +501,14 @@ function SidebarDocumentTree({
             expandedFolders={expandedFolders}
             folderBusyId={folderBusyId}
             selectedId={selectedId}
+            deletingId={deletingId}
             onToggleFolder={onToggleFolder}
             onSelect={onSelect}
             onCreateFolder={onCreateFolder}
             onRequestSample={onRequestSample}
             onRequestNewSubfolder={onRequestNewSubfolder}
             onDeleteFolder={onDeleteFolder}
+            onDeleteFolderDocument={onDeleteFolderDocument}
             onPruneFolder={onPruneFolder}
           />
         );
@@ -735,6 +759,7 @@ export default function Sidebar({
   onSelect,
   onIngestFiles,
   onDelete,
+  onDeleteFolderDocument,
   onCreateFolder,
   onCreateFolderSample,
   onDeleteFolder,
@@ -892,6 +917,7 @@ export default function Sidebar({
         folderBusyId={folderBusyId}
         onSelect={onSelect}
         onDelete={onDelete}
+        onDeleteFolderDocument={onDeleteFolderDocument}
         onToggleFolder={(folderId) => dispatch({ type: "toggle_folder", folderId })}
         onCreateFolder={onCreateFolder}
         onRequestSample={handleRequestSample}

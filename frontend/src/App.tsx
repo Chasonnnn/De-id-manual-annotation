@@ -24,6 +24,7 @@ import {
   createFolder,
   createFolderSample,
   deleteFolder,
+  deleteFolderDocument,
   deleteDocument,
   exportGroundTruth,
   exportSession,
@@ -383,12 +384,14 @@ function useAppContentController() {
     setDocuments(docs);
     setFolders(nextFolders);
     setFolderDetailsById(detailMap);
+    const firstFolderDocId = folderDetails.flatMap((detail) => detail.documents.map((item) => item.id))[0] ?? null;
     return {
       documents: docs,
       allDocIds: new Set([
         ...docs.map((item) => item.id),
         ...folderDetails.flatMap((detail) => detail.documents.map((item) => item.id)),
       ]),
+      firstAvailableId: docs[0]?.id ?? firstFolderDocId,
     };
   }, []);
 
@@ -547,7 +550,30 @@ function useAppContentController() {
         await deleteDocument(docId);
         const refreshed = await refreshDocuments();
         if (selectedId === docId || !refreshed.allDocIds.has(selectedId ?? "")) {
-          const nextId = refreshed.documents[0]?.id ?? null;
+          const nextId = refreshed.firstAvailableId;
+          setSelectedId(nextId);
+          if (!nextId) {
+            setDoc(null);
+            setMetrics(null);
+          }
+        }
+      } catch (e: unknown) {
+        setError(String(e));
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [refreshDocuments, selectedId],
+  );
+
+  const doDeleteFolderDocument = useCallback(
+    async (folderId: string, docId: string) => {
+      setDeletingId(docId);
+      try {
+        await deleteFolderDocument(folderId, docId);
+        const refreshed = await refreshDocuments();
+        if (selectedId === docId || !refreshed.allDocIds.has(selectedId ?? "")) {
+          const nextId = refreshed.firstAvailableId;
           setSelectedId(nextId);
           if (!nextId) {
             setDoc(null);
@@ -577,6 +603,23 @@ function useAppContentController() {
       });
     },
     [doDeleteDocument],
+  );
+
+  const handleDeleteFolderDocument = useCallback(
+    (folderId: string, docId: string) => {
+      setPendingConfirm({
+        title: "Delete Transcript",
+        message:
+          "Delete this transcript and its annotations? This removes it from any folders that include it. This cannot be undone.",
+        confirmLabel: "Delete Transcript",
+        destructive: true,
+        onConfirm: () => {
+          setPendingConfirm(null);
+          void doDeleteFolderDocument(folderId, docId);
+        },
+      });
+    },
+    [doDeleteFolderDocument],
   );
 
   const handleCreateFolderSample = useCallback(
@@ -616,7 +659,7 @@ function useAppContentController() {
         await deleteFolder(folderId);
         const refreshed = await refreshDocuments();
         if (selectedId && !refreshed.allDocIds.has(selectedId)) {
-          const nextId = refreshed.documents[0]?.id ?? null;
+          const nextId = refreshed.firstAvailableId;
           setSelectedId(nextId);
           if (!nextId) {
             setDoc(null);
@@ -655,7 +698,7 @@ function useAppContentController() {
         const result = await pruneEmptyFolderDocs(folderId);
         const refreshed = await refreshDocuments();
         if (selectedId && !refreshed.allDocIds.has(selectedId)) {
-          const nextId = refreshed.documents[0]?.id ?? null;
+          const nextId = refreshed.firstAvailableId;
           setSelectedId(nextId);
           if (!nextId) {
             setDoc(null);
@@ -1345,6 +1388,7 @@ function useAppContentController() {
     methodChunkDiagnostics,
     handleIngestFiles,
     handleDeleteDocument,
+    handleDeleteFolderDocument,
     handleCreateFolder,
     handleCreateFolderSample,
     handleDeleteFolder,
@@ -1423,6 +1467,7 @@ function renderAppContent(controller: AppContentController) {
     methodChunkDiagnostics,
     handleIngestFiles,
     handleDeleteDocument,
+    handleDeleteFolderDocument,
     handleCreateFolder,
     handleCreateFolderSample,
     handleDeleteFolder,
@@ -1453,6 +1498,7 @@ function renderAppContent(controller: AppContentController) {
         onSelect={setSelectedId}
         onIngestFiles={handleIngestFiles}
         onDelete={handleDeleteDocument}
+        onDeleteFolderDocument={handleDeleteFolderDocument}
         onCreateFolder={handleCreateFolder}
         onCreateFolderSample={handleCreateFolderSample}
         onDeleteFolder={handleDeleteFolder}

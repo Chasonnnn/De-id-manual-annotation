@@ -108,6 +108,13 @@ export async function deleteFolder(
   return request(`/folders/${folderId}`, { method: "DELETE" });
 }
 
+export async function deleteFolderDocument(
+  folderId: string,
+  docId: string,
+): Promise<{ deleted: boolean; folder_id: string; doc_id: string; updated_folder_ids: string[] }> {
+  return request(`/folders/${folderId}/documents/${docId}`, { method: "DELETE" });
+}
+
 export async function pruneEmptyFolderDocs(folderId: string): Promise<FolderPruneResult> {
   return request(`/folders/${folderId}/prune-empty-docs`, { method: "POST" });
 }

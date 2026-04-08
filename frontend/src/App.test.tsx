@@ -3,10 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
 import {
+  deleteFolderDocument,
   getAgentCredentialStatus,
   getAgentMethods,
   getDocument,
+  getFolder,
   getMetricsDashboard,
+  listFolders,
   listDocuments,
 } from "./api/client";
 
@@ -14,6 +17,7 @@ vi.mock("./api/client", () => ({
   createFolder: vi.fn(),
   createFolderSample: vi.fn(),
   deleteFolder: vi.fn(),
+  deleteFolderDocument: vi.fn(),
   deleteDocument: vi.fn(),
   exportGroundTruth: vi.fn(),
   exportSession: vi.fn(),
@@ -227,5 +231,80 @@ describe("App", () => {
     const agentRun = screen.getByLabelText("Run:") as HTMLSelectElement;
     expect(agentView.value).toBe("llm");
     expect(agentRun.value).toBe("newer_run");
+  });
+
+  it("deletes a folder transcript through the dedicated folder-doc flow", async () => {
+    vi.mocked(listDocuments).mockResolvedValue([]);
+    vi.mocked(listFolders).mockResolvedValue([
+      {
+        id: "folder-1",
+        name: "Folder 1",
+        kind: "manual",
+        parent_folder_id: null,
+        merged_doc_id: null,
+        doc_count: 1,
+        child_folder_count: 0,
+        source_filename: null,
+        source_folder_id: null,
+        sample_size: null,
+        sample_seed: null,
+        created_at: "2026-04-08T00:00:00Z",
+      },
+    ]);
+    vi.mocked(getFolder).mockResolvedValue({
+      id: "folder-1",
+      name: "Folder 1",
+      kind: "manual",
+      parent_folder_id: null,
+      merged_doc_id: null,
+      doc_count: 1,
+      child_folder_count: 0,
+      source_filename: null,
+      source_folder_id: null,
+      sample_size: null,
+      sample_seed: null,
+      created_at: "2026-04-08T00:00:00Z",
+      doc_ids: ["child-1"],
+      child_folder_ids: [],
+      documents: [
+        {
+          id: "child-1",
+          filename: "child-1.json",
+          display_name: "child-1",
+          status: "pending",
+        },
+      ],
+      child_folders: [],
+    } as never);
+    vi.mocked(deleteFolderDocument).mockResolvedValue({
+      deleted: true,
+      folder_id: "folder-1",
+      doc_id: "child-1",
+      updated_folder_ids: ["folder-1"],
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Folder 1")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand folder" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("child-1")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete transcript child-1" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("dialog")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete Transcript" }));
+
+    await waitFor(() => {
+      expect(deleteFolderDocument).toHaveBeenCalledWith("folder-1", "child-1");
+    });
   });
 });

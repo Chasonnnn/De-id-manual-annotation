@@ -622,6 +622,21 @@ def _prune_unannotated_folder_docs(
     return removed_doc_ids, updated_folder_ids
 
 
+def _delete_folder_doc(
+    folder: FolderRecord,
+    doc_id: str,
+    session_id: str = "default",
+) -> list[str]:
+    if doc_id not in folder.doc_ids:
+        raise HTTPException(status_code=404, detail="Document not found in folder")
+
+    removed_doc_id_set = {doc_id}
+    updated_folder_ids = _remove_doc_ids_from_folder_records(removed_doc_id_set, session_id)
+    _remove_doc_ids_from_session_index(removed_doc_id_set, session_id)
+    _delete_doc_files(doc_id, session_id)
+    return updated_folder_ids
+
+
 def _save_hidden_doc(doc: CanonicalDocument, session_id: str = "default") -> None:
     _save_doc(doc, session_id)
 
@@ -4316,6 +4331,21 @@ async def delete_folder(folder_id: str):
         raise HTTPException(status_code=404, detail="Folder not found")
     _delete_folder_tree(folder, session_id)
     return {"deleted": True, "folder_id": folder_id}
+
+
+@app.delete("/api/folders/{folder_id}/documents/{doc_id}")
+async def delete_folder_document(folder_id: str, doc_id: str):
+    session_id = "default"
+    folder = _load_folder(folder_id, session_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    updated_folder_ids = _delete_folder_doc(folder, doc_id, session_id)
+    return {
+        "deleted": True,
+        "folder_id": folder_id,
+        "doc_id": doc_id,
+        "updated_folder_ids": updated_folder_ids,
+    }
 
 
 @app.put("/api/documents/{doc_id}/manual-annotations")

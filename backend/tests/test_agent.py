@@ -1895,6 +1895,65 @@ def test_run_method_with_metadata_deid_pipeline_builds_expected_union_command_an
     assert any("method_verify was ignored" in warning for warning in result.warnings)
 
 
+def test_run_method_with_metadata_deid_pipeline_drops_broad_geography_address_spans(
+    monkeypatch, tmp_path
+):
+    _configure_deid_pipeline_runtime(monkeypatch, tmp_path)
+
+    def fake_run(command, cwd, capture_output, text, check=False):
+        output_dir = Path(command[command.index("--output-dir") + 1])
+        input_dir = Path(command[command.index("--input-dir") + 1])
+        input_name = next(input_dir.glob("*.json")).name
+        export_file = output_dir / "operational_union" / input_name
+        export_file.parent.mkdir(parents=True, exist_ok=True)
+        export_file.write_text(
+            json.dumps(
+                {
+                    "id": "doc-1",
+                    "transcript": "Kansas met Alice",
+                    "pii_occurrences": [
+                        {
+                            "start": 0,
+                            "end": 6,
+                            "text": "Kansas",
+                            "pii_type": "ADDRESS",
+                            "entity_type": "ADDRESS",
+                        },
+                        {
+                            "start": 11,
+                            "end": 16,
+                            "text": "Alice",
+                            "pii_type": "NAME",
+                            "entity_type": "NAME",
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return types.SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(agent.subprocess, "run", fake_run)
+
+    result = run_method_with_metadata(
+        text="Kansas met Alice",
+        method_id="deid_pipeline_union",
+        api_key=None,
+        api_base=None,
+        model="ignored-model",
+        system_prompt="",
+        temperature=0.0,
+        reasoning_effort="none",
+        anthropic_thinking=False,
+        anthropic_thinking_budget_tokens=None,
+        method_verify=False,
+        label_profile="simple",
+        method_bundle="audited",
+    )
+
+    assert [(span.label, span.text) for span in result.spans] == [("NAME", "Alice")]
+
+
 def test_run_method_with_metadata_deid_pipeline_raises_on_subprocess_failure(
     monkeypatch, tmp_path
 ):

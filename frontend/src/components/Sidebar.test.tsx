@@ -122,6 +122,7 @@ describe("Sidebar", () => {
         onSelect={vi.fn()}
         onIngestFiles={vi.fn()}
         onDelete={vi.fn()}
+        onDeleteFolderDocument={vi.fn()}
         onCreateFolder={vi.fn()}
         onCreateFolderSample={vi.fn()}
         onDeleteFolder={vi.fn()}

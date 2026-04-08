@@ -3764,9 +3764,12 @@ def _load_deid_pipeline_spans(
             raise ValueError(
                 f"pii_occurrences[{index}] text does not match transcript slice at {start}-{end}"
             )
+        baseline_label = canonicalize_label(raw_label)
+        if baseline_label is None:
+            raise ValueError(f"pii_occurrences[{index}] has unsupported label {raw_label!r}")
         label = canonicalize_label(raw_label, text=span_text)
         if label is None:
-            raise ValueError(f"pii_occurrences[{index}] has unsupported label {raw_label!r}")
+            continue
         spans.append(
             CanonicalSpan(
                 start=start,
