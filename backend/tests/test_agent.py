@@ -599,8 +599,8 @@ class TestRunLLM:
         )
 
         call_kwargs = mock_completion.call_args
-        assert call_kwargs.kwargs["timeout"] == pytest.approx(60.0)
-        assert call_kwargs.kwargs["max_tokens"] == 4096
+        assert call_kwargs.kwargs["timeout"] == pytest.approx(agent.DEFAULT_LLM_EXTRACTION_TIMEOUT_SECONDS)
+        assert call_kwargs.kwargs["max_tokens"] == agent.DEFAULT_LLM_EXTRACTION_MAX_TOKENS
 
     @patch("agent.completion")
     def test_extraction_clamps_timeout_to_explicit_budget(self, mock_completion):
@@ -615,7 +615,7 @@ class TestRunLLM:
 
         call_kwargs = mock_completion.call_args
         assert call_kwargs.kwargs["timeout"] == pytest.approx(15.0)
-        assert call_kwargs.kwargs["max_tokens"] == 4096
+        assert call_kwargs.kwargs["max_tokens"] == agent.DEFAULT_LLM_EXTRACTION_MAX_TOKENS
 
     @patch("agent.completion")
     def test_default_model_uses_litellm_prefix(self, mock_completion):
@@ -1152,8 +1152,8 @@ class TestRunLLM:
             model="openai/gpt-4o",
         )
 
-        assert calls[0]["timeout"] == pytest.approx(60.0)
-        assert calls[0]["max_tokens"] == 4096
+        assert calls[0]["timeout"] == pytest.approx(agent.DEFAULT_LLM_EXTRACTION_TIMEOUT_SECONDS)
+        assert calls[0]["max_tokens"] == agent.DEFAULT_LLM_EXTRACTION_MAX_TOKENS
         assert calls[1]["timeout"] == pytest.approx(30.0)
         assert calls[1]["max_tokens"] == 1024
 
@@ -1187,7 +1187,7 @@ class TestRunLLM:
             model="openai/gpt-4o",
         )
 
-        assert calls[0]["max_tokens"] == 4096
+        assert calls[0]["max_tokens"] == agent.DEFAULT_LLM_EXTRACTION_MAX_TOKENS
         assert calls[1]["timeout"] == pytest.approx(30.0)
         assert calls[1]["max_tokens"] > 1024
         repair_messages = calls[1]["messages"]

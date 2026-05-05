@@ -285,10 +285,10 @@ MethodBundleId = Literal[
 CONFIDENCE_HIGH_THRESHOLD = 0.9
 CONFIDENCE_MEDIUM_THRESHOLD = 0.75
 DEFAULT_METHOD_BUNDLE: MethodBundleId = "audited"
-DEFAULT_LLM_EXTRACTION_TIMEOUT_SECONDS = 60.0
+DEFAULT_LLM_EXTRACTION_TIMEOUT_SECONDS = 900.0
 DEFAULT_LLM_VERIFIER_TIMEOUT_SECONDS = 30.0
 DEFAULT_LLM_REPAIR_TIMEOUT_SECONDS = 30.0
-DEFAULT_LLM_EXTRACTION_MAX_TOKENS = 4096
+DEFAULT_LLM_EXTRACTION_MAX_TOKENS = 32768
 DEFAULT_LLM_VERIFIER_MAX_TOKENS = 1024
 DEFAULT_LLM_REPAIR_MAX_TOKENS = 1024
 
@@ -2003,6 +2003,45 @@ def _describe_payload_for_debug(value: Any) -> str:
     return type(value).__name__
 
 
+def _extract_usage_info(resp: Any) -> dict[str, Any]:
+    """Extract token usage + cost info from a LiteLLM response, if available."""
+    usage = getattr(resp, "usage", None)
+    if usage is None and isinstance(resp, dict):
+        usage = resp.get("usage")
+    if usage is None:
+        return {}
+    out: dict[str, Any] = {}
+    for key in (
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "reasoning_tokens",
+        "input_tokens",
+        "output_tokens",
+    ):
+        raw = usage.get(key) if isinstance(usage, dict) else getattr(usage, key, None)
+        if isinstance(raw, (int, float)) and raw >= 0:
+            out[key] = int(raw)
+    # Nested reasoning token details on gpt-5 responses
+    details = None
+    if isinstance(usage, dict):
+        details = usage.get("completion_tokens_details")
+    else:
+        details = getattr(usage, "completion_tokens_details", None)
+    if details is not None:
+        rt = details.get("reasoning_tokens") if isinstance(details, dict) else getattr(details, "reasoning_tokens", None)
+        if isinstance(rt, (int, float)) and rt >= 0:
+            out["reasoning_tokens"] = int(rt)
+    # Hidden params may carry response cost (LiteLLM convention)
+    hidden = getattr(resp, "_hidden_params", None)
+    if isinstance(hidden, dict):
+        for key in ("response_cost", "response_cost_usd", "cost"):
+            if key in hidden and isinstance(hidden[key], (int, float)):
+                out["response_cost_usd"] = float(hidden[key])
+                break
+    return out
+
+
 def _build_response_debug_summary(resp: Any) -> str:
     parts: list[str] = [f"resp_type={type(resp).__name__}"]
     choices = getattr(resp, "choices", None)
@@ -2022,6 +2061,9 @@ def _build_response_debug_summary(resp: Any) -> str:
                 f"message.tool_calls={_describe_payload_for_debug(getattr(message, 'tool_calls', None))}"
             )
     parts.append(f"output_text={_describe_payload_for_debug(getattr(resp, 'output_text', None))}")
+    usage_info = _extract_usage_info(resp)
+    if usage_info:
+        parts.append(f"usage={json.dumps(usage_info, separators=(',',':'))}")
 
     preview = ""
     for attr_name in ("model_dump", "dict", "json"):
