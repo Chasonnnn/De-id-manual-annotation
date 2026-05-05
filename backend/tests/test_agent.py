@@ -1451,28 +1451,52 @@ def test_list_agent_methods_reports_canonical_metadata_for_audited_bundle():
 def _configure_deid_pipeline_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Path]:
     repo_root = tmp_path / "contextshift-deid"
     export_script = repo_root / "scripts" / "export_phase21_candidate_predictions.py"
+    cascade_export_script = repo_root / "scripts" / "export_phase31_cascade_predictions.py"
     export_script.parent.mkdir(parents=True)
     export_script.write_text("# test export script\n", encoding="utf-8")
+    cascade_export_script.write_text("# test cascade export script\n", encoding="utf-8")
     (repo_root / "pyproject.toml").write_text("[project]\nname='contextshift-deid'\n", encoding="utf-8")
 
     workspace_root = repo_root / "workspaces" / "candidate"
     workspace_root.mkdir(parents=True)
+    action_workspace_root = repo_root / "workspaces" / "action"
+    action_workspace_root.mkdir(parents=True)
 
     uv_bin = tmp_path / "bin" / "uv"
     uv_bin.parent.mkdir(parents=True)
     uv_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     uv_bin.chmod(0o755)
+    mlx_python = tmp_path / "bin" / "python3"
+    mlx_python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    mlx_python.chmod(0o755)
+
+    reviewer_model_path = repo_root / "models" / "gemma-4-31B-it-q4"
+    reviewer_model_path.mkdir(parents=True)
+    reviewer_adapter_path = repo_root / "adapters" / "phase32-seed42"
+    reviewer_adapter_path.mkdir(parents=True)
+    (reviewer_adapter_path / "adapter_config.json").write_text("{}", encoding="utf-8")
+    (reviewer_adapter_path / "adapters.safetensors").write_bytes(b"fake adapter")
 
     env_path = tmp_path / ".env.local"
     monkeypatch.setattr(agent, "ROOT_ENV_PATH", env_path)
     monkeypatch.setenv("DEID_PIPELINE_REPO_ROOT", str(repo_root))
     monkeypatch.setenv("DEID_PIPELINE_WORKSPACE_ROOT", str(workspace_root))
+    monkeypatch.setenv("DEID_PIPELINE_ACTION_WORKSPACE_ROOT", str(action_workspace_root))
     monkeypatch.setenv("DEID_PIPELINE_UV_BIN", str(uv_bin))
+    monkeypatch.setenv("DEID_PIPELINE_MLX_PYTHON", str(mlx_python))
+    monkeypatch.setenv("DEID_PIPELINE_REVIEWER_MODEL_PATH", str(reviewer_model_path))
+    monkeypatch.setenv("DEID_PIPELINE_REVIEWER_ADAPTER_PATH", str(reviewer_adapter_path))
+    monkeypatch.setenv("DEID_PIPELINE_REVIEWER_PROMPT_VARIANT", "variant_b_plus")
     return {
         "repo_root": repo_root,
         "workspace_root": workspace_root,
+        "action_workspace_root": action_workspace_root,
         "uv_bin": uv_bin,
+        "mlx_python": mlx_python,
         "export_script": export_script,
+        "cascade_export_script": cascade_export_script,
+        "reviewer_model_path": reviewer_model_path,
+        "reviewer_adapter_path": reviewer_adapter_path,
     }
 
 
@@ -1485,8 +1509,11 @@ def test_list_agent_methods_reports_deid_pipeline_catalog_entries(monkeypatch, t
     assert by_id["deid_pipeline_deberta"]["label"] == "de-id pipeline · DeBERTa sidecar"
     assert by_id["deid_pipeline_modernbert"]["label"] == "de-id pipeline · ModernBERT C len384"
     assert by_id["deid_pipeline_union"]["label"] == "de-id pipeline · Operational union"
+    assert by_id["deid_pipeline_cascade_gemma31b"]["label"] == "de-id pipeline · Operational union + Gemma 31B reviewer"
     assert by_id["deid_pipeline_deberta"]["uses_llm"] is False
+    assert by_id["deid_pipeline_cascade_gemma31b"]["uses_llm"] is False
     assert by_id["deid_pipeline_deberta"]["available"] is True
+    assert by_id["deid_pipeline_cascade_gemma31b"]["available"] is True
     assert "NAME" in by_id["deid_pipeline_union"]["output_labels"]
 
 
@@ -1516,6 +1543,20 @@ def test_list_agent_methods_marks_deid_pipeline_unavailable_for_non_executable_u
     deid_method = next(item for item in methods if item["id"] == "deid_pipeline_deberta")
     assert deid_method["available"] is False
     assert "DEID_PIPELINE_UV_BIN" in str(deid_method["unavailable_reason"])
+
+
+def test_list_agent_methods_marks_only_cascade_unavailable_for_missing_reviewer_adapter(
+    monkeypatch, tmp_path
+):
+    runtime = _configure_deid_pipeline_runtime(monkeypatch, tmp_path)
+    (runtime["reviewer_adapter_path"] / "adapters.safetensors").unlink()
+
+    methods = agent.list_agent_methods(method_bundle="audited")
+    by_id = {item["id"]: item for item in methods}
+
+    assert by_id["deid_pipeline_union"]["available"] is True
+    assert by_id["deid_pipeline_cascade_gemma31b"]["available"] is False
+    assert "adapters.safetensors" in str(by_id["deid_pipeline_cascade_gemma31b"]["unavailable_reason"])
 
 
 def test_list_agent_methods_reports_deidentify_v2_catalog_entries():
@@ -1893,6 +1934,80 @@ def test_run_method_with_metadata_deid_pipeline_builds_expected_union_command_an
     assert result.raw_spans == result.spans
     assert any("ignore additional system prompt constraints" in warning for warning in result.warnings)
     assert any("method_verify was ignored" in warning for warning in result.warnings)
+
+
+def test_run_method_with_metadata_deid_pipeline_builds_expected_cascade_command_and_parses_spans(
+    monkeypatch, tmp_path
+):
+    runtime = _configure_deid_pipeline_runtime(monkeypatch, tmp_path)
+    seen: dict[str, object] = {}
+
+    def fake_run(command, cwd, capture_output, text, check=False):
+        seen["command"] = list(command)
+        seen["cwd"] = cwd
+        output_dir = Path(command[command.index("--output-dir") + 1])
+        input_dir = Path(command[command.index("--input-dir") + 1])
+        input_name = next(input_dir.glob("*.json")).name
+        export_file = output_dir / "operational_union_gemma31b_reviewer" / input_name
+        export_file.parent.mkdir(parents=True, exist_ok=True)
+        export_file.write_text(
+            json.dumps(
+                {
+                    "id": "doc-1",
+                    "transcript": "Call Alice at alice.example.com",
+                    "pii_occurrences": [
+                        {
+                            "start": 5,
+                            "end": 10,
+                            "text": "Alice",
+                            "pii_type": "NAME",
+                            "entity_type": "NAME",
+                            "reviewer_action": "REDACT",
+                        }
+                    ],
+                    "cascade_prediction_export": {
+                        "reviewer_artifact_id": "phase32-31b-seed42-variant-b-plus",
+                        "reviewer_prompt_variant": "variant_b_plus",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return types.SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(agent.subprocess, "run", fake_run)
+
+    result = run_method_with_metadata(
+        text="Call Alice at alice.example.com",
+        method_id="deid_pipeline_cascade_gemma31b",
+        api_key=None,
+        api_base=None,
+        model="ignored-model",
+        system_prompt="",
+        temperature=0.0,
+        reasoning_effort="none",
+        anthropic_thinking=False,
+        anthropic_thinking_budget_tokens=None,
+        method_verify=False,
+        label_profile="simple",
+        method_bundle="audited",
+    )
+
+    command = seen["command"]
+    assert isinstance(command, list)
+    assert command[0] == str(runtime["mlx_python"])
+    assert command[1] == str(runtime["cascade_export_script"])
+    assert "--uv-bin" in command
+    assert command[command.index("--uv-bin") + 1] == str(runtime["uv_bin"])
+    assert command[command.index("--action-workspace-root") + 1] == str(runtime["action_workspace_root"])
+    assert command[command.index("--reviewer-model-path") + 1] == str(runtime["reviewer_model_path"])
+    assert command[command.index("--reviewer-adapter-path") + 1] == str(runtime["reviewer_adapter_path"])
+    assert command[command.index("--reviewer-prompt-variant") + 1] == "variant_b_plus"
+    assert command[command.index("--output-slot") + 1] == "operational_union_gemma31b_reviewer"
+    assert command.count("--model-slot") == 2
+    assert "--include-operational-union" not in command
+    assert seen["cwd"] == runtime["repo_root"]
+    assert [(span.label, span.text) for span in result.spans] == [("NAME", "Alice")]
 
 
 def test_run_method_with_metadata_deid_pipeline_drops_broad_geography_address_spans(

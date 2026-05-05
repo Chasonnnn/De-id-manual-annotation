@@ -424,7 +424,27 @@ ROOT_ENV_PATH = REPO_ROOT / ".env.local"
 DEID_PIPELINE_REPO_ROOT_ENV = "DEID_PIPELINE_REPO_ROOT"
 DEID_PIPELINE_WORKSPACE_ROOT_ENV = "DEID_PIPELINE_WORKSPACE_ROOT"
 DEID_PIPELINE_UV_BIN_ENV = "DEID_PIPELINE_UV_BIN"
+DEID_PIPELINE_MLX_PYTHON_ENV = "DEID_PIPELINE_MLX_PYTHON"
+DEID_PIPELINE_ACTION_WORKSPACE_ROOT_ENV = "DEID_PIPELINE_ACTION_WORKSPACE_ROOT"
+DEID_PIPELINE_REVIEWER_MODEL_PATH_ENV = "DEID_PIPELINE_REVIEWER_MODEL_PATH"
+DEID_PIPELINE_REVIEWER_ADAPTER_PATH_ENV = "DEID_PIPELINE_REVIEWER_ADAPTER_PATH"
+DEID_PIPELINE_REVIEWER_PROMPT_VARIANT_ENV = "DEID_PIPELINE_REVIEWER_PROMPT_VARIANT"
 DEID_PIPELINE_EXPORT_SCRIPT = Path("scripts/export_phase21_candidate_predictions.py")
+DEID_PIPELINE_CASCADE_EXPORT_SCRIPT = Path("scripts/export_phase31_cascade_predictions.py")
+DEID_PIPELINE_DEFAULT_REVIEWER_MODEL_PATH = Path("/Users/chason/llm-models/mlx/gemma-4-31B-it-q4")
+DEID_PIPELINE_DEFAULT_REVIEWER_ADAPTER_PATH = Path(
+    "/Users/chason/contextshift-deid/workspaces/action/artifacts/experiments/"
+    "20260410_phase32-31b-1epoch/configs/r8-lr1e05-ep1-binary-asis-v2current/"
+    "run/training/adapters"
+)
+DEID_PIPELINE_DEFAULT_REVIEWER_PROMPT_VARIANT = "variant_b_plus"
+DEID_PIPELINE_REVIEWER_ARTIFACT_ID = "phase32-31b-seed42-variant-b-plus"
+DEID_PIPELINE_DEFAULT_MLX_PYTHON_CANDIDATES = (
+    Path("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"),
+    Path("/opt/homebrew/bin/python3"),
+    Path("/usr/local/bin/python3"),
+    Path("/usr/bin/python3"),
+)
 DEID_PIPELINE_TRANSCRIPT_ID = "annotation-tool-document"
 DEID_PIPELINE_INPUT_FILENAME = "document.json"
 
@@ -449,6 +469,15 @@ DEID_PIPELINE_METHOD_SPECS: dict[str, dict[str, Any]] = {
         "model_slots": ["deberta_phase21_sidecar", "modernbert_phase21_c_len384"],
         "export_slot": "operational_union",
         "include_operational_union": True,
+        "cascade_reviewer": False,
+    },
+    "deid_pipeline_cascade_gemma31b": {
+        "label": "de-id pipeline · Operational union + Gemma 31B reviewer",
+        "description": "Operational Phase 21 union filtered by the seed42 Gemma 4 31B Phase31 reviewer with the variant_b_plus prompt.",
+        "model_slots": ["deberta_phase21_sidecar", "modernbert_phase21_c_len384"],
+        "export_slot": "operational_union_gemma31b_reviewer",
+        "include_operational_union": True,
+        "cascade_reviewer": True,
     },
 }
 
@@ -497,11 +526,64 @@ def _resolve_deid_pipeline_uv_bin() -> str | None:
     return None
 
 
+def _resolve_deid_pipeline_mlx_python() -> str | None:
+    raw = _resolve_repo_env_value(DEID_PIPELINE_MLX_PYTHON_ENV)
+    if raw:
+        raw_path = Path(raw).expanduser()
+        if not raw_path.is_absolute() and raw in {"python3", "python"}:
+            for candidate in DEID_PIPELINE_DEFAULT_MLX_PYTHON_CANDIDATES:
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    return str(candidate)
+        resolved = raw_path.resolve()
+        if resolved.is_file() and os.access(resolved, os.X_OK):
+            return str(resolved)
+        found = shutil.which(raw)
+        if found:
+            return found
+        return None
+    for candidate in DEID_PIPELINE_DEFAULT_MLX_PYTHON_CANDIDATES:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return shutil.which("python3")
+
+
+def _resolve_deid_pipeline_action_workspace_root(repo_root: Path | None) -> Path | None:
+    raw = _resolve_repo_env_value(DEID_PIPELINE_ACTION_WORKSPACE_ROOT_ENV)
+    if raw:
+        return Path(raw).expanduser().resolve()
+    if repo_root is None:
+        return None
+    return (repo_root / "workspaces" / "action").expanduser().resolve()
+
+
+def _resolve_deid_pipeline_reviewer_model_path() -> Path:
+    raw = _resolve_repo_env_value(DEID_PIPELINE_REVIEWER_MODEL_PATH_ENV)
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return DEID_PIPELINE_DEFAULT_REVIEWER_MODEL_PATH.expanduser().resolve()
+
+
+def _resolve_deid_pipeline_reviewer_adapter_path() -> Path:
+    raw = _resolve_repo_env_value(DEID_PIPELINE_REVIEWER_ADAPTER_PATH_ENV)
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return DEID_PIPELINE_DEFAULT_REVIEWER_ADAPTER_PATH.expanduser().resolve()
+
+
+def _resolve_deid_pipeline_reviewer_prompt_variant() -> str:
+    raw = _resolve_repo_env_value(DEID_PIPELINE_REVIEWER_PROMPT_VARIANT_ENV)
+    return raw or DEID_PIPELINE_DEFAULT_REVIEWER_PROMPT_VARIANT
+
+
+def _is_deid_pipeline_cascade_method_id(method_id: str) -> bool:
+    return bool((DEID_PIPELINE_METHOD_SPECS.get(method_id) or {}).get("cascade_reviewer"))
+
+
 def _is_deid_pipeline_method_id(method_id: str) -> bool:
     return method_id in DEID_PIPELINE_METHOD_SPECS
 
 
-def _deid_pipeline_runtime_error() -> str | None:
+def _deid_pipeline_runtime_error(method_id: str | None = None) -> str | None:
     repo_root = _resolve_deid_pipeline_repo_root()
     if repo_root is None:
         return (
@@ -514,6 +596,10 @@ def _deid_pipeline_runtime_error() -> str | None:
     export_script = repo_root / DEID_PIPELINE_EXPORT_SCRIPT
     if not export_script.is_file():
         return f"Missing export script at {export_script}"
+    cascade_export_script = repo_root / DEID_PIPELINE_CASCADE_EXPORT_SCRIPT
+    cascade_requested = method_id is None or _is_deid_pipeline_cascade_method_id(method_id)
+    if cascade_requested and not cascade_export_script.is_file():
+        return f"Missing cascade export script at {cascade_export_script}"
 
     workspace_root = _resolve_deid_pipeline_workspace_root(repo_root)
     if workspace_root is None:
@@ -529,6 +615,26 @@ def _deid_pipeline_runtime_error() -> str | None:
         if _resolve_repo_env_value(DEID_PIPELINE_UV_BIN_ENV):
             return f"{DEID_PIPELINE_UV_BIN_ENV} does not point to an executable file."
         return "Could not find `uv` on PATH; set DEID_PIPELINE_UV_BIN to the local uv binary."
+
+    if cascade_requested:
+        action_workspace_root = _resolve_deid_pipeline_action_workspace_root(repo_root)
+        if action_workspace_root is None or not action_workspace_root.is_dir():
+            return f"Missing action workspace root: {action_workspace_root}"
+        mlx_python = _resolve_deid_pipeline_mlx_python()
+        if mlx_python is None:
+            if _resolve_repo_env_value(DEID_PIPELINE_MLX_PYTHON_ENV):
+                return f"{DEID_PIPELINE_MLX_PYTHON_ENV} does not point to an executable Python."
+            return "Could not find python3 for the local MLX reviewer; set DEID_PIPELINE_MLX_PYTHON."
+        reviewer_model_path = _resolve_deid_pipeline_reviewer_model_path()
+        if not reviewer_model_path.is_dir():
+            return f"Missing reviewer model path: {reviewer_model_path}"
+        reviewer_adapter_path = _resolve_deid_pipeline_reviewer_adapter_path()
+        if not reviewer_adapter_path.is_dir():
+            return f"Missing reviewer adapter path: {reviewer_adapter_path}"
+        if not (reviewer_adapter_path / "adapter_config.json").is_file():
+            return f"Missing reviewer adapter config: {reviewer_adapter_path / 'adapter_config.json'}"
+        if not (reviewer_adapter_path / "adapters.safetensors").is_file():
+            return f"Missing reviewer adapter weights: {reviewer_adapter_path / 'adapters.safetensors'}"
     return None
 
 
@@ -537,6 +643,10 @@ def _build_deid_pipeline_method_definitions() -> list[dict[str, Any]]:
     limitations = [
         "Requires a local contextshift-deid checkout configured via DEID_PIPELINE_REPO_ROOT.",
         "Requires frozen Phase 21 candidate workspace assets under DEID_PIPELINE_WORKSPACE_ROOT or repo_root/workspaces/candidate.",
+    ]
+    reviewer_limitations = [
+        f"Requires the local Gemma 31B MLX reviewer configured via {DEID_PIPELINE_MLX_PYTHON_ENV}, {DEID_PIPELINE_ACTION_WORKSPACE_ROOT_ENV}, {DEID_PIPELINE_REVIEWER_MODEL_PATH_ENV}, and {DEID_PIPELINE_REVIEWER_ADAPTER_PATH_ENV}.",
+        "Uses the seed42 Phase32 31B adapter with the variant_b_plus reviewer prompt by default.",
     ]
     for method_id, spec in DEID_PIPELINE_METHOD_SPECS.items():
         definitions.append(
@@ -549,7 +659,7 @@ def _build_deid_pipeline_method_definitions() -> list[dict[str, Any]]:
                 "supports_verify_override": False,
                 "default_verify": False,
                 "supported_label_profiles": ["advanced", "simple"],
-                "known_limitations": list(limitations),
+                "known_limitations": list(limitations) + (list(reviewer_limitations) if bool(spec.get("cascade_reviewer")) else []),
                 "output_labels_by_profile": {
                     "simple": list(SIMPLE_LABELS),
                     "advanced": list(ADVANCED_LABELS),
@@ -3297,7 +3407,7 @@ def list_agent_methods(
         unavailable_reason = None
         method_id = str(method.get("id") or "")
         if _is_deid_pipeline_method_id(method_id):
-            unavailable_reason = _deid_pipeline_runtime_error()
+            unavailable_reason = _deid_pipeline_runtime_error(method_id)
         elif method["requires_presidio"] and presidio_error:
             unavailable_reason = presidio_error
         prompt_templates: list[dict[str, Any]] = []
@@ -3707,25 +3817,59 @@ def _build_deid_pipeline_command(
     output_dir: Path,
 ) -> list[str]:
     spec = DEID_PIPELINE_METHOD_SPECS[method_id]
-    command = [
-        uv_bin,
-        "run",
-        "--project",
-        str(repo_root),
-        "python",
-        str(repo_root / DEID_PIPELINE_EXPORT_SCRIPT),
-        "--workspace-root",
-        str(workspace_root),
-        "--input-dir",
-        str(input_dir),
-        "--output-dir",
-        str(output_dir),
-        "--span-field",
-        "pii_occurrences",
-    ]
+    if bool(spec.get("cascade_reviewer")):
+        mlx_python = _resolve_deid_pipeline_mlx_python()
+        if mlx_python is None:
+            raise ValueError(f"{DEID_PIPELINE_MLX_PYTHON_ENV} does not resolve to an executable Python")
+        action_workspace_root = _resolve_deid_pipeline_action_workspace_root(repo_root)
+        if action_workspace_root is None:
+            raise ValueError(f"{DEID_PIPELINE_ACTION_WORKSPACE_ROOT_ENV} does not resolve")
+        command = [
+            mlx_python,
+            str(repo_root / DEID_PIPELINE_CASCADE_EXPORT_SCRIPT),
+            "--workspace-root",
+            str(workspace_root),
+            "--action-workspace-root",
+            str(action_workspace_root),
+            "--uv-bin",
+            uv_bin,
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--span-field",
+            "pii_occurrences",
+            "--reviewer-model-path",
+            str(_resolve_deid_pipeline_reviewer_model_path()),
+            "--reviewer-adapter-path",
+            str(_resolve_deid_pipeline_reviewer_adapter_path()),
+            "--reviewer-artifact-id",
+            DEID_PIPELINE_REVIEWER_ARTIFACT_ID,
+            "--reviewer-prompt-variant",
+            _resolve_deid_pipeline_reviewer_prompt_variant(),
+            "--output-slot",
+            str(spec["export_slot"]),
+        ]
+    else:
+        command = [
+            uv_bin,
+            "run",
+            "--project",
+            str(repo_root),
+            "python",
+            str(repo_root / DEID_PIPELINE_EXPORT_SCRIPT),
+            "--workspace-root",
+            str(workspace_root),
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--span-field",
+            "pii_occurrences",
+        ]
     for slot in spec["model_slots"]:
         command.extend(["--model-slot", str(slot)])
-    if bool(spec["include_operational_union"]):
+    if bool(spec["include_operational_union"]) and not bool(spec.get("cascade_reviewer")):
         command.append("--include-operational-union")
     return command
 
@@ -3789,7 +3933,7 @@ def _run_deid_pipeline_method_with_metadata(
     method_verify: bool | None,
     progress_callback: Callable[[int, str], None] | None = None,
 ) -> MethodRunResult:
-    runtime_error = _deid_pipeline_runtime_error()
+    runtime_error = _deid_pipeline_runtime_error(method_id)
     if runtime_error is not None:
         raise ValueError(runtime_error)
 
@@ -3803,7 +3947,7 @@ def _run_deid_pipeline_method_with_metadata(
     if system_prompt.strip():
         warnings.append(
             "de-id pipeline methods ignore additional system prompt constraints "
-            "to preserve the frozen candidate pipeline."
+            "to preserve the frozen local cascade."
         )
     if method_verify:
         warnings.append(
