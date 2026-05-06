@@ -1899,7 +1899,7 @@ def _strip_code_fences(content: str) -> str:
     content = content.strip()
     if content.startswith("```"):
         lines = content.splitlines()
-        lines = [l for l in lines if not l.strip().startswith("```")]
+        lines = [line for line in lines if not line.strip().startswith("```")]
         content = "\n".join(lines)
     return content
 
@@ -4272,7 +4272,6 @@ def run_llm_with_metadata(
 ) -> LLMRunResult:
     """Run LLM-based PII detection with provider-aware advanced parameters."""
     provider = _infer_provider(model)
-    is_openai_model = _is_openai_model(provider, model)
     supports_reasoning = _supports_reasoning_effort(model, provider)
     supports_thinking = _supports_anthropic_thinking(model, provider)
     supports_custom_temperature = _supports_custom_temperature(model)
