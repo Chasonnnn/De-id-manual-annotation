@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import MethodsLabRunForm from "./MethodsLabRunForm";
-import type { DocumentSummary, FolderSummary } from "../types";
+import type { AgentMethodOption, DocumentSummary, FolderSummary } from "../types";
 
 describe("MethodsLabRunForm", () => {
   afterEach(() => {
@@ -26,6 +26,20 @@ describe("MethodsLabRunForm", () => {
       sample_size: null,
       sample_seed: null,
       created_at: "2026-03-09T12:00:00Z",
+    },
+  ];
+  const localOnlyMethods: AgentMethodOption[] = [
+    {
+      id: "deid_pipeline_cascade_gemma31b",
+      label: "Operational union + Gemma 31B reviewer",
+      description: "Local cascade method",
+      requires_presidio: false,
+      uses_llm: false,
+      supports_verify_override: false,
+      default_verify: false,
+      prompt_templates: [],
+      available: true,
+      unavailable_reason: null,
     },
   ];
 
@@ -409,5 +423,45 @@ describe("MethodsLabRunForm", () => {
       ).toBe(true);
     });
     expect(screen.queryByText("Session 16592")).toBeNull();
+  });
+
+  it("treats local-only methods as one local runtime column", async () => {
+    const onRun = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <MethodsLabRunForm
+        documents={documents}
+        folders={[]}
+        selectedDocumentId="doc-1"
+        methods={localOnlyMethods}
+        onRun={onRun}
+        running={false}
+        concurrencyMax={12}
+      />,
+    );
+
+    await waitFor(() => {
+      expect((screen.getAllByLabelText("doc-1")[0] as HTMLInputElement).checked).toBe(true);
+    });
+
+    expect(screen.getByText(/1 docs × 1 methods × local runtime/i)).toBeTruthy();
+    expect(screen.getByText(/model variants are skipped/i)).toBeTruthy();
+    expect(screen.queryByText("Model Variants")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Run Methods Lab" }));
+
+    await waitFor(() => {
+      expect(onRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          models: [
+            expect.objectContaining({
+              id: "local_runtime",
+              label: "Local runtime",
+              model: "rule",
+            }),
+          ],
+        }),
+      );
+    });
   });
 });

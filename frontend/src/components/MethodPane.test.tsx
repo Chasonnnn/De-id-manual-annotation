@@ -24,6 +24,21 @@ const methodOptions: AgentMethodOption[] = [
   },
 ];
 
+const localMethodOptions: AgentMethodOption[] = [
+  {
+    id: "deid_pipeline_cascade_gemma31b",
+    label: "Operational union + Gemma 31B reviewer",
+    description: "Local cascade method",
+    requires_presidio: false,
+    uses_llm: false,
+    supports_verify_override: false,
+    default_verify: false,
+    prompt_templates: [],
+    available: true,
+    unavailable_reason: null,
+  },
+];
+
 describe("MethodPane", () => {
   beforeEach(() => {
     sessionStorage.clear();
@@ -104,5 +119,34 @@ describe("MethodPane", () => {
 
     expect((screen.getByLabelText("Chunk Mode") as HTMLSelectElement).value).toBe("off");
     expect(screen.queryByLabelText("Label Profile")).toBeNull();
+  });
+
+  it("explains when a method runs locally without LLM setup", async () => {
+    render(
+      <MethodPane
+        text="Example transcript"
+        spans={[]}
+        methods={localMethodOptions}
+        activeMethod="deid_pipeline_cascade_gemma31b"
+        onActiveMethodChange={vi.fn()}
+        onRunMethod={vi.fn()}
+        running={false}
+        onScroll={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(getAgentCredentialStatus).toHaveBeenCalled();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Show Config" }));
+
+    expect(
+      screen.getByText(
+        /This method runs locally without an LLM\. Model, API key, base URL, reasoning, temperature, and chunk settings are not used\./i,
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByLabelText("Model")).toBeNull();
+    expect(screen.queryByLabelText("API Key")).toBeNull();
   });
 });

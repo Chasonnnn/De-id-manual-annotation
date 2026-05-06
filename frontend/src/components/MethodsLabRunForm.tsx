@@ -62,6 +62,14 @@ const FALLBACK_METHOD_IDS = [
   "presidio+llm-split",
 ] as const;
 const MAX_METHOD_VARIANTS = 12;
+const LOCAL_RUNTIME_MODEL: PromptLabModelInput = {
+  id: "local_runtime",
+  label: "Local runtime",
+  model: "rule",
+  reasoning_effort: "none",
+  anthropic_thinking: false,
+  anthropic_thinking_budget_tokens: null,
+};
 
 function makeMethod(index: number, methodOptions: AgentMethodOption[]): MethodsLabMethodInput {
   const selected = methodOptions[0];
@@ -86,6 +94,16 @@ function makeModel(index: number): PromptLabModelInput {
     anthropic_thinking: false,
     anthropic_thinking_budget_tokens: null,
   };
+}
+
+function selectedMethodsRequireLlm(
+  methodVariants: MethodsLabMethodInput[],
+  methodOptions: AgentMethodOption[],
+): boolean {
+  return methodVariants.some((variant) => {
+    const selected = methodOptions.find((item) => item.id === variant.method_id);
+    return selected?.uses_llm ?? true;
+  });
 }
 
 function flattenFolders(
@@ -115,6 +133,7 @@ function MethodsLabRunHeader({
   docCount,
   methodCount,
   modelCount,
+  requiresLlm,
   onToggleCollapsed,
 }: {
   isCollapsed: boolean;
@@ -122,14 +141,15 @@ function MethodsLabRunHeader({
   docCount: number;
   methodCount: number;
   modelCount: number;
+  requiresLlm: boolean;
   onToggleCollapsed: () => void;
 }) {
   return (
     <div className="prompt-lab-run-header">
       <h3>Methods Lab Setup</h3>
       <div className="prompt-lab-estimate">
-        Requests: <strong>{requestEstimate}</strong> ({docCount} docs × {methodCount} methods ×{" "}
-        {modelCount} models)
+        Requests: <strong>{requestEstimate}</strong> ({docCount} docs × {methodCount} methods
+        {requiresLlm ? ` × ${modelCount} models` : " × local runtime"})
       </div>
       <button type="button" className="prompt-lab-toggle-btn" onClick={onToggleCollapsed}>
         {isCollapsed ? "Show Setup" : "Hide Setup"}
@@ -667,10 +687,14 @@ function useMethodsLabRunFormController({
     (sum, folderId) => sum + (folderDocCountById[folderId] ?? 0),
     0,
   );
+  const methodsRequireLlm = useMemo(
+    () => selectedMethodsRequireLlm(formState.methodVariants, methodOptions),
+    [formState.methodVariants, methodOptions],
+  );
   const requestEstimate =
     (formState.selectedDocIds.length + selectedFolderDocCount) *
     formState.methodVariants.length *
-    formState.models.length;
+    (methodsRequireLlm ? formState.models.length : 1);
   const selectedTotalDocs = formState.selectedDocIds.length + selectedFolderDocCount;
   const isCollapsed = collapsed ?? uiState.localCollapsed;
 
@@ -810,7 +834,7 @@ function useMethodsLabRunFormController({
     ) {
       return `Method variants must be 1 to ${MAX_METHOD_VARIANTS}`;
     }
-    if (formState.models.length === 0 || formState.models.length > 6) {
+    if (methodsRequireLlm && (formState.models.length === 0 || formState.models.length > 6)) {
       return "Model variants must be 1 to 6";
     }
     if (runtimeState.concurrency < 1 || runtimeState.concurrency > concurrencyMax) {
@@ -833,9 +857,11 @@ function useMethodsLabRunFormController({
         return "Every method variant needs a built-in method";
       }
     }
-    for (const model of formState.models) {
-      if (!model.label.trim() || !model.model?.trim()) {
-        return "Every model needs a label and model id";
+    if (methodsRequireLlm) {
+      for (const model of formState.models) {
+        if (!model.label.trim() || !model.model?.trim()) {
+          return "Every model needs a label and model id";
+        }
       }
     }
     return null;
@@ -856,7 +882,7 @@ function useMethodsLabRunFormController({
         method_id: item.method_id.trim(),
         method_verify_override: item.method_verify_override ?? null,
       })),
-      models: formState.models.map((item, index) => ({
+      models: (methodsRequireLlm ? formState.models : [LOCAL_RUNTIME_MODEL]).map((item, index) => ({
         id: item.id?.trim() || `model_${index + 1}`,
         label: item.label.trim(),
         model: item.model.trim(),
@@ -897,6 +923,7 @@ function useMethodsLabRunFormController({
     runtimeState,
     uiState,
     methodOptions,
+    methodsRequireLlm,
     requestEstimate,
     selectedTotalDocs,
     isCollapsed,
@@ -925,6 +952,7 @@ export default function MethodsLabRunForm(props: Props) {
     runtimeState,
     uiState,
     methodOptions,
+    methodsRequireLlm,
     requestEstimate,
     selectedTotalDocs,
     isCollapsed,
@@ -953,6 +981,7 @@ export default function MethodsLabRunForm(props: Props) {
         docCount={selectedTotalDocs}
         methodCount={formState.methodVariants.length}
         modelCount={formState.models.length}
+        requiresLlm={methodsRequireLlm}
         onToggleCollapsed={toggleCollapsed}
       />
 
@@ -982,13 +1011,25 @@ export default function MethodsLabRunForm(props: Props) {
             onUpdateMethod={updateMethodVariant}
             onMethodPresetChange={handleMethodPresetChange}
           />
-          <ModelVariantsSection
-            models={formState.models}
-            onAddModel={handleAddModel}
-            onRemoveModel={handleRemoveModel}
-            onUpdateModel={updateModel}
-            onModelPresetChange={handleModelPresetChange}
-          />
+          {methodsRequireLlm ? (
+            <ModelVariantsSection
+              models={formState.models}
+              onAddModel={handleAddModel}
+              onRemoveModel={handleRemoveModel}
+              onUpdateModel={updateModel}
+              onModelPresetChange={handleModelPresetChange}
+            />
+          ) : (
+            <div className="prompt-lab-section">
+              <div className="prompt-lab-section-header">
+                <span>Execution Mode</span>
+              </div>
+              <div className="prompt-lab-config-note">
+                The selected methods run locally without an LLM. Methods Lab will evaluate one
+                local runtime column, so model variants are skipped.
+              </div>
+            </div>
+          )}
 
           {uiState.error && <div className="prompt-lab-error">{uiState.error}</div>}
 

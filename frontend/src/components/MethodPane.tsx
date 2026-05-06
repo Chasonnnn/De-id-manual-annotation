@@ -228,6 +228,12 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
                 {selectedMethod.unavailable_reason}
               </span>
             )}
+            {selectedMethod && !methodUsesLlm && (
+              <span className="config-note">
+                This method runs locally without an LLM. Model, API key, base URL, reasoning,
+                temperature, and chunk settings are not used.
+              </span>
+            )}
           </div>
           {supportsVerifyOverride && (
             <div className="field">
