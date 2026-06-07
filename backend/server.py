@@ -2415,6 +2415,378 @@ def _prf_from_counts(tp: int, fp: int, fn: int) -> dict[str, float | int]:
     }
 
 
+def _build_method_base_run_key(method_id: str, model: str, *, uses_llm: bool) -> str:
+    return f"{method_id}::{model if uses_llm else 'rule'}"
+
+
+def _build_unique_method_run_key(
+    doc_id: str,
+    *,
+    method_id: str,
+    model: str,
+    uses_llm: bool,
+    save_policy: Literal["create", "replace"],
+    session_id: str = "default",
+) -> str:
+    base_key = _build_method_base_run_key(method_id, model, uses_llm=uses_llm)
+    if save_policy == "replace":
+        return base_key
+    existing = _load_span_map_sidecar(doc_id, METHOD_RUNS_SIDECAR_KIND, session_id)
+    if base_key not in existing:
+        return base_key
+    return f"{base_key}::{uuid.uuid4().hex[:8]}"
+
+
+def _format_method_run_display_label(
+    *,
+    run_label: str | None,
+    method_id: str,
+    model: str | None,
+    method_bundle: str,
+) -> str:
+    label = (run_label or "").strip()
+    if label:
+        return label
+    parts = [method_id]
+    if model:
+        parts.append(model)
+    parts.append(method_bundle)
+    return " / ".join(parts)
+
+
+class MetricsCompareBody(BaseModel):
+    reference: str
+    hypotheses: list[str] = Field(default_factory=list)
+    match_mode: Literal["exact", "boundary", "overlap", "substring"] = "overlap"
+    primary_metric: Literal["recall", "f1", "precision"] = "recall"
+
+
+def _candidate_label_for_source(source: str) -> str:
+    if source == "manual":
+        return "Manual annotations"
+    if source == "pre":
+        return "Pre-annotations"
+    if source == "agent":
+        return "Agent combined"
+    if source == "agent.rule":
+        return "Agent rule"
+    if source == "agent.llm":
+        return "Agent LLM latest"
+    if source.startswith("agent.llm_run."):
+        return f"Agent LLM: {source[len('agent.llm_run.') :]}"
+    if source.startswith("agent.method."):
+        return f"Method: {source[len('agent.method.') :]}"
+    return source
+
+
+def _method_candidate_label(
+    key: str,
+    metadata: SavedRunMetadata | None,
+) -> str:
+    if metadata is not None:
+        if metadata.display_label:
+            return metadata.display_label
+        if metadata.run_label:
+            return metadata.run_label
+        method = metadata.method_id or key.split("::", 1)[0]
+        model = metadata.model or ("rule" if "::rule" in key else None)
+        return _format_method_run_display_label(
+            run_label=None,
+            method_id=method,
+            model=model,
+            method_bundle=metadata.method_bundle or "audited",
+        )
+    return _candidate_label_for_source(f"agent.method.{key}")
+
+
+def _methods_lab_candidate_source(run_id: str, cell_id: str) -> str:
+    return f"methods_lab.{run_id}.{cell_id}"
+
+
+def _parse_methods_lab_candidate_source(source: str) -> tuple[str, str] | None:
+    if not source.startswith("methods_lab."):
+        return None
+    remainder = source[len("methods_lab.") :]
+    run_id, separator, cell_id = remainder.partition(".")
+    if not separator or not run_id or not cell_id:
+        return None
+    return run_id, cell_id
+
+
+def _build_metrics_candidates(session_id: str = "default") -> list[dict[str, Any]]:
+    ids = list(_load_session_index(session_id))
+    total_documents = len(ids)
+    candidates: dict[str, dict[str, Any]] = {
+        "manual": {
+            "id": "manual",
+            "source": "manual",
+            "kind": "manual",
+            "label": "Manual annotations",
+            "document_count": total_documents,
+            "method_bundle": "audited",
+        },
+        "pre": {
+            "id": "pre",
+            "source": "pre",
+            "kind": "pre",
+            "label": "Pre-annotations",
+            "document_count": total_documents,
+            "method_bundle": "audited",
+        },
+    }
+
+    method_counts: dict[str, int] = {}
+    method_metadata: dict[str, SavedRunMetadata] = {}
+    method_base_keys: set[str] = set()
+    llm_run_counts: dict[str, int] = {}
+    agent_rule_count = 0
+    agent_llm_count = 0
+    for doc_id in ids:
+        doc = _load_doc(doc_id, session_id)
+        if doc is None:
+            continue
+        enriched = _enrich_doc(doc, session_id)
+        if _load_sidecar(doc_id, "agent.rule", session_id) is not None:
+            agent_rule_count += 1
+        if _load_sidecar(doc_id, "agent.llm", session_id) is not None:
+            agent_llm_count += 1
+        for key in enriched.agent_outputs.llm_runs:
+            llm_run_counts[key] = llm_run_counts.get(key, 0) + 1
+        for key in _load_method_sidecars(doc_id, session_id):
+            method_base_keys.add(key)
+            method_counts[key] = method_counts.get(key, 0) + 1
+        for key in _load_span_map_sidecar(doc_id, METHOD_RUNS_SIDECAR_KIND, session_id):
+            method_counts[key] = method_counts.get(key, 0) + 1
+        for key, metadata in enriched.agent_outputs.method_run_metadata.items():
+            method_metadata[key] = metadata
+
+    if agent_rule_count:
+        candidates["agent.rule"] = {
+            "id": "agent.rule",
+            "source": "agent.rule",
+            "kind": "agent_rule",
+            "label": "Agent rule",
+            "document_count": agent_rule_count,
+            "method_bundle": "audited",
+        }
+    if agent_llm_count:
+        candidates["agent.llm"] = {
+            "id": "agent.llm",
+            "source": "agent.llm",
+            "kind": "agent_llm",
+            "label": "Agent LLM latest",
+            "document_count": agent_llm_count,
+            "method_bundle": "audited",
+        }
+    for key, count in sorted(llm_run_counts.items()):
+        source = f"agent.llm_run.{key}"
+        candidates[source] = {
+            "id": source,
+            "source": source,
+            "kind": "llm_run",
+            "label": f"Agent LLM: {key}",
+            "document_count": count,
+            "method_bundle": "audited",
+        }
+    for key, count in sorted(method_counts.items()):
+        source = f"agent.method.{key}"
+        metadata = method_metadata.get(key)
+        kind = "method_output" if key in method_base_keys and "::" not in key else "method_run"
+        candidates[source] = {
+            "id": source,
+            "source": source,
+            "kind": kind,
+            "label": _method_candidate_label(key, metadata),
+            "document_count": count,
+            "method_bundle": metadata.method_bundle if metadata and metadata.method_bundle else "audited",
+            "method_id": metadata.method_id if metadata else key.split("::", 1)[0],
+            "model": metadata.model if metadata else None,
+            "created_at": metadata.created_at if metadata else None,
+            "updated_at": metadata.updated_at if metadata else None,
+        }
+
+    for run_id in _load_methods_lab_index(session_id):
+        run = _load_methods_lab_run(run_id, session_id)
+        if run is None:
+            continue
+        detail = _build_methods_lab_run_detail(run)
+        runtime = detail.get("runtime", {}) if isinstance(detail.get("runtime"), dict) else {}
+        method_bundle = str(detail.get("method_bundle") or runtime.get("method_bundle") or "audited")
+        run_name = str(detail.get("name") or run_id)
+        matrix = detail.get("matrix", {})
+        cells = matrix.get("cells", []) if isinstance(matrix, dict) else []
+        if not isinstance(cells, list):
+            continue
+        for cell in cells:
+            if not isinstance(cell, dict):
+                continue
+            completed_docs = int(cell.get("completed_docs", 0) or 0)
+            if completed_docs <= 0:
+                continue
+            cell_id = str(cell.get("id") or "")
+            if not cell_id:
+                continue
+            source = _methods_lab_candidate_source(run_id, cell_id)
+            label = f"{run_name}: {cell.get('model_label', 'model')} x {cell.get('method_label', 'method')}"
+            candidates[source] = {
+                "id": source,
+                "source": source,
+                "kind": "methods_lab_cell",
+                "label": label,
+                "document_count": completed_docs,
+                "completed_docs": completed_docs,
+                "failed_docs": int(cell.get("failed_docs", 0) or 0),
+                "pending_docs": int(cell.get("pending_docs", 0) or 0),
+                "method_bundle": method_bundle,
+                "run_id": run_id,
+                "cell_id": cell_id,
+                "run_name": run_name,
+                "model_id": cell.get("model_id"),
+                "method_id": cell.get("method_id"),
+                "updated_at": detail.get("finished_at") or detail.get("created_at"),
+            }
+
+    return list(candidates.values())
+
+
+def _metrics_candidate_map(session_id: str = "default") -> dict[str, dict[str, Any]]:
+    return {item["source"]: item for item in _build_metrics_candidates(session_id)}
+
+
+def _load_methods_lab_cell_document_result(
+    source: str,
+    doc_id: str,
+    session_id: str = "default",
+) -> dict[str, Any] | None:
+    parsed = _parse_methods_lab_candidate_source(source)
+    if parsed is None:
+        return None
+    run_id, cell_id = parsed
+    run = _load_methods_lab_run(run_id, session_id)
+    if run is None:
+        raise HTTPException(status_code=400, detail=f"Unknown metrics candidate: {source}")
+    cells = run.get("cells", {})
+    if not isinstance(cells, dict) or not isinstance(cells.get(cell_id), dict):
+        raise HTTPException(status_code=400, detail=f"Unknown metrics candidate: {source}")
+    cell = cells[cell_id]
+    documents = cell.get("documents", {})
+    if not isinstance(documents, dict):
+        return None
+    result = documents.get(doc_id)
+    return result if isinstance(result, dict) else None
+
+
+def _spans_for_metrics_candidate(
+    doc: CanonicalDocument,
+    source: str,
+    session_id: str = "default",
+) -> tuple[list[CanonicalSpan] | None, str | None]:
+    if _parse_methods_lab_candidate_source(source) is not None:
+        result = _load_methods_lab_cell_document_result(source, doc.id, session_id)
+        if not isinstance(result, dict):
+            return None, "candidate_unavailable"
+        status = str(result.get("status", ""))
+        if status != "completed":
+            return None, status or "candidate_unavailable"
+        spans_raw = result.get("hypothesis_spans", [])
+        if not isinstance(spans_raw, list):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Metrics candidate {source} has invalid hypothesis_spans for document {doc.id}",
+            )
+        try:
+            return [CanonicalSpan.model_validate(item) for item in spans_raw], None
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Metrics candidate {source} has invalid hypothesis_spans for document {doc.id}: {exc}",
+            ) from exc
+
+    if source.startswith("agent.method."):
+        method_id = source[len("agent.method.") :]
+        if method_id not in doc.agent_outputs.methods:
+            return None, "candidate_unavailable"
+    elif source.startswith("agent.llm_run."):
+        run_key = source[len("agent.llm_run.") :]
+        if run_key not in doc.agent_outputs.llm_runs:
+            return None, "candidate_unavailable"
+    elif source == "agent.rule" and _load_sidecar(doc.id, "agent.rule", session_id) is None:
+        return None, "candidate_unavailable"
+    elif source == "agent.llm" and _load_sidecar(doc.id, "agent.llm", session_id) is None:
+        return None, "candidate_unavailable"
+
+    return _spans_from_source(doc, source), None
+
+
+def _method_bundle_for_metrics_candidate(
+    candidate: dict[str, Any] | None,
+) -> str:
+    if not candidate:
+        return "audited"
+    return _normalize_method_bundle(str(candidate.get("method_bundle") or "audited"))
+
+
+def _empty_metric_count_bucket() -> dict[str, Any]:
+    return {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "per_label": {},
+    }
+
+
+def _accumulate_compare_metrics(bucket: dict[str, Any], metrics: dict[str, Any]) -> None:
+    micro = metrics.get("micro", {})
+    if isinstance(micro, dict):
+        bucket["tp"] += int(micro.get("tp", 0))
+        bucket["fp"] += int(micro.get("fp", 0))
+        bucket["fn"] += int(micro.get("fn", 0))
+    per_label = metrics.get("per_label", {})
+    if isinstance(per_label, dict):
+        label_bucket = bucket["per_label"]
+        for label, value in per_label.items():
+            if not isinstance(value, dict):
+                continue
+            aggregate = label_bucket.setdefault(
+                str(label),
+                {"tp": 0, "fp": 0, "fn": 0, "support": 0},
+            )
+            aggregate["tp"] += int(value.get("tp", 0))
+            aggregate["fp"] += int(value.get("fp", 0))
+            aggregate["fn"] += int(value.get("fn", 0))
+            aggregate["support"] += int(value.get("support", 0))
+
+
+def _summarize_compare_bucket(bucket: dict[str, Any]) -> dict[str, Any]:
+    per_label: dict[str, Any] = {}
+    for label, counts in sorted(bucket["per_label"].items()):
+        prf = _prf_from_counts(
+            int(counts["tp"]),
+            int(counts["fp"]),
+            int(counts["fn"]),
+        )
+        per_label[label] = {
+            **prf,
+            "support": int(counts.get("support", counts["tp"] + counts["fn"])),
+        }
+    return {
+        "micro": _prf_from_counts(
+            int(bucket["tp"]),
+            int(bucket["fp"]),
+            int(bucket["fn"]),
+        ),
+        "per_label": per_label,
+    }
+
+
+def _empty_confidence_summary() -> dict[str, Any]:
+    return {
+        "documents_with_confidence": 0,
+        "mean_confidence": None,
+        "band_counts": {"high": 0, "medium": 0, "low": 0, "na": 0},
+    }
+
+
 def _normalize_label_profile(raw: object) -> Literal["simple", "advanced"]:
     del raw
     return "simple"
@@ -4625,6 +4997,11 @@ class AgentRunBody(BaseModel):
     chunk_size_chars: int | None = None
     method_id: str | None = None
     method_verify: bool | None = None
+    method_bundle: Literal[
+        "legacy", "audited", "test", "stable", "v2", "v2+post-process", "deidentify-v2"
+    ] | None = None
+    run_label: str | None = None
+    save_policy: Literal["create", "replace"] = "create"
 
 
 class PromptLabPromptInput(BaseModel):
@@ -5836,6 +6213,7 @@ def run_agent(doc_id: str, body: AgentRunBody):
         method_definition = METHOD_DEFINITION_BY_ID.get(method_id)
         if method_definition is None:
             raise HTTPException(status_code=400, detail=f"Unknown method: {method_id}")
+        method_bundle = _normalize_method_bundle(body.method_bundle or "audited")
 
         llm_runtime = _resolve_llm_runtime_config(body)
         api_key = str(llm_runtime["api_key"])
@@ -5906,6 +6284,7 @@ def run_agent(doc_id: str, body: AgentRunBody):
                     total_chunks=total,
                     session_id=session_id,
                 ),
+                method_bundle=method_bundle,
             )
         except Exception as exc:
             message = str(exc).strip() or exc.__class__.__name__
@@ -5922,8 +6301,22 @@ def run_agent(doc_id: str, body: AgentRunBody):
             )
             raise HTTPException(status_code=status_code, detail=message) from exc
 
+        now = _now_iso()
         _save_sidecar(doc_id, f"agent.method.{method_id}", spans, session_id)
-        method_run_key = f"{method_id}::{model if method_definition['uses_llm'] else 'rule'}"
+        method_run_key = _build_unique_method_run_key(
+            doc_id,
+            method_id=method_id,
+            model=model,
+            uses_llm=bool(method_definition["uses_llm"]),
+            save_policy=body.save_policy,
+            session_id=session_id,
+        )
+        display_label = _format_method_run_display_label(
+            run_label=body.run_label,
+            method_id=method_id,
+            model=model if method_definition["uses_llm"] else None,
+            method_bundle=method_bundle,
+        )
         _upsert_span_map_entry(
             doc_id,
             METHOD_RUNS_SIDECAR_KIND,
@@ -5937,8 +6330,24 @@ def run_agent(doc_id: str, body: AgentRunBody):
             method_run_key,
             SavedRunMetadata(
                 mode="method",
-                updated_at=_now_iso(),
+                created_at=now,
+                updated_at=now,
+                run_label=(body.run_label or "").strip() or None,
+                display_label=display_label,
                 method_id=method_id,
+                method_bundle=method_bundle,
+                save_policy=body.save_policy,
+                runtime={
+                    "temperature": temperature,
+                    "api_base": api_base,
+                    "model": model if method_definition["uses_llm"] else None,
+                    "reasoning_effort": reasoning_effort,
+                    "anthropic_thinking": anthropic_thinking,
+                    "anthropic_thinking_budget_tokens": anthropic_thinking_budget_tokens,
+                    "chunk_mode": chunk_mode,
+                    "chunk_size_chars": chunk_size_chars,
+                    "method_verify": body.method_verify,
+                },
                 model=model if method_definition["uses_llm"] else None,
                 prompt_snapshot=_build_method_prompt_snapshot(
                     method_id=method_id,
@@ -5961,7 +6370,9 @@ def run_agent(doc_id: str, body: AgentRunBody):
                 "run_key": method_run_key,
                 "method_id": method_id,
                 "model": model if method_definition["uses_llm"] else None,
-                "updated_at": _now_iso(),
+                "method_bundle": method_bundle,
+                "display_label": display_label,
+                "updated_at": now,
             },
             session_id,
         )
@@ -6242,11 +6653,18 @@ async def get_metrics(
     eval_ref_spans, eval_hyp_spans = _prepare_experiment_scoring_spans(
         ref_spans,
         hyp_spans,
-        method_bundle="audited",
+        method_bundle=_method_bundle_for_metrics_candidate(
+            _metrics_candidate_map(session_id).get(hypothesis)
+        ),
     )
 
     result = _serialize_metrics_payload(
-        compute_metrics(eval_ref_spans, eval_hyp_spans, normalized_match_mode)
+        compute_metrics(
+            eval_ref_spans,
+            eval_hyp_spans,
+            normalized_match_mode,
+            text_len=len(enriched.raw_text),
+        )
     )
     llm_confidence = _resolve_metrics_llm_confidence(enriched, reference, hypothesis)
     result["llm_confidence"] = (
@@ -6909,6 +7327,243 @@ async def import_session_bundle(
     return _import_session_payload(raw, filename, session_id, conflict_policy=conflict_policy)
 
 
+@app.get("/api/metrics/candidates")
+async def get_metrics_candidates() -> dict[str, Any]:
+    session_id = "default"
+    return {"candidates": _build_metrics_candidates(session_id)}
+
+
+@app.post("/api/metrics/compare")
+async def compare_metrics(body: MetricsCompareBody) -> dict[str, Any]:
+    session_id = "default"
+    ids = _load_session_index(session_id)
+    if not body.hypotheses:
+        raise HTTPException(status_code=400, detail="hypotheses must include at least one candidate")
+
+    normalized_match_mode = _normalize_match_mode(body.match_mode)
+    candidates = _metrics_candidate_map(session_id)
+    if body.reference not in candidates:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown metrics candidate: {body.reference}",
+        )
+    for source in body.hypotheses:
+        if source not in candidates:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown metrics candidate: {source}",
+            )
+
+    response_hypotheses: list[dict[str, Any]] = []
+    for source in body.hypotheses:
+        candidate = candidates[source]
+        method_bundle = _method_bundle_for_metrics_candidate(candidate)
+        compared = 0
+        skipped: list[dict[str, str]] = []
+        documents: list[dict[str, Any]] = []
+        selected_counts = _empty_metric_count_bucket()
+        exact_counts = _empty_metric_count_bucket()
+        overlap_counts = _empty_metric_count_bucket()
+        co_primary_counts: dict[str, dict[str, Any]] = {}
+        sum_micro_p = 0.0
+        sum_micro_r = 0.0
+        sum_micro_f1 = 0.0
+        sum_macro_p = 0.0
+        sum_macro_r = 0.0
+        sum_macro_f1 = 0.0
+        confidence_sum = 0.0
+        confidence_summary = _empty_confidence_summary()
+
+        for doc_id in ids:
+            doc = _load_doc(doc_id, session_id)
+            if doc is None:
+                skipped.append({"doc_id": doc_id, "reason": "document_unavailable"})
+                continue
+            enriched = _enrich_doc(doc, session_id)
+            reference_spans, reference_skip = _spans_for_metrics_candidate(
+                enriched,
+                body.reference,
+                session_id,
+            )
+            if reference_spans is None:
+                skipped.append(
+                    {"doc_id": doc_id, "reason": f"reference_{reference_skip or 'unavailable'}"}
+                )
+                continue
+            hypothesis_spans, hypothesis_skip = _spans_for_metrics_candidate(
+                enriched,
+                source,
+                session_id,
+            )
+            if hypothesis_spans is None:
+                skipped.append(
+                    {"doc_id": doc_id, "reason": hypothesis_skip or "candidate_unavailable"}
+                )
+                continue
+
+            eval_ref_spans, eval_hyp_spans = _prepare_experiment_scoring_spans(
+                reference_spans,
+                hypothesis_spans,
+                method_bundle=method_bundle,
+                reference_label_set={span.label for span in reference_spans},
+            )
+            selected_metrics = _serialize_metrics_payload(
+                compute_metrics(
+                    eval_ref_spans,
+                    eval_hyp_spans,
+                    normalized_match_mode,
+                    text_len=len(enriched.raw_text),
+                )
+            )
+            exact_metrics = _serialize_metrics_payload(
+                compute_metrics(
+                    eval_ref_spans,
+                    eval_hyp_spans,
+                    "exact",
+                    text_len=len(enriched.raw_text),
+                )
+            )
+            overlap_metrics = _serialize_metrics_payload(
+                compute_metrics(
+                    eval_ref_spans,
+                    eval_hyp_spans,
+                    "overlap",
+                    text_len=len(enriched.raw_text),
+                )
+            )
+            _accumulate_compare_metrics(selected_counts, selected_metrics)
+            _accumulate_compare_metrics(exact_counts, exact_metrics)
+            _accumulate_compare_metrics(overlap_counts, overlap_metrics)
+
+            selected_micro = selected_metrics.get("micro", {})
+            selected_macro = selected_metrics.get("macro", {})
+            if isinstance(selected_micro, dict):
+                sum_micro_p += float(selected_micro.get("precision", 0.0))
+                sum_micro_r += float(selected_micro.get("recall", 0.0))
+                sum_micro_f1 += float(selected_micro.get("f1", 0.0))
+            if isinstance(selected_macro, dict):
+                sum_macro_p += float(selected_macro.get("precision", 0.0))
+                sum_macro_r += float(selected_macro.get("recall", 0.0))
+                sum_macro_f1 += float(selected_macro.get("f1", 0.0))
+
+            co_primary = selected_metrics.get("co_primary_metrics", {})
+            if isinstance(co_primary, dict):
+                for metric_name, metric_payload in co_primary.items():
+                    if not isinstance(metric_payload, dict):
+                        continue
+                    bucket = co_primary_counts.setdefault(str(metric_name), _empty_metric_count_bucket())
+                    _accumulate_compare_metrics(bucket, metric_payload)
+
+            llm_confidence = _resolve_metrics_llm_confidence(enriched, body.reference, source)
+            methods_lab_result = _load_methods_lab_cell_document_result(source, doc_id, session_id)
+            if isinstance(methods_lab_result, dict) and isinstance(
+                methods_lab_result.get("llm_confidence"),
+                dict,
+            ):
+                try:
+                    llm_confidence = LLMConfidenceMetric.model_validate(
+                        methods_lab_result.get("llm_confidence")
+                    )
+                except ValidationError:
+                    llm_confidence = None
+            if llm_confidence is not None:
+                confidence_summary["band_counts"][llm_confidence.band] += 1
+                if llm_confidence.available and llm_confidence.confidence is not None:
+                    confidence_sum += float(llm_confidence.confidence)
+                    confidence_summary["documents_with_confidence"] += 1
+            else:
+                confidence_summary["band_counts"]["na"] += 1
+
+            compared += 1
+            documents.append(
+                {
+                    "id": enriched.id,
+                    "filename": enriched.filename,
+                    "reference_count": len(eval_ref_spans),
+                    "hypothesis_count": len(eval_hyp_spans),
+                    "micro": selected_metrics.get("micro", _prf_from_counts(0, 0, 0)),
+                    "macro": selected_metrics.get(
+                        "macro",
+                        {"precision": 0.0, "recall": 0.0, "f1": 0.0},
+                    ),
+                    "exact_micro": exact_metrics.get("micro", _prf_from_counts(0, 0, 0)),
+                    "overlap_micro": overlap_metrics.get("micro", _prf_from_counts(0, 0, 0)),
+                    "cohens_kappa": float(selected_metrics.get("cohens_kappa", 0.0)),
+                    "matched_span_mean_iou": float(selected_metrics.get("mean_iou", 0.0)),
+                    "llm_confidence": (
+                        llm_confidence.model_dump() if llm_confidence is not None else None
+                    ),
+                }
+            )
+
+        selected_summary = _summarize_compare_bucket(selected_counts)
+        exact_summary = _summarize_compare_bucket(exact_counts)
+        overlap_summary = _summarize_compare_bucket(overlap_counts)
+        co_primary_summary = {
+            name: _summarize_compare_bucket(bucket)
+            for name, bucket in sorted(co_primary_counts.items())
+        }
+        if confidence_summary["documents_with_confidence"]:
+            confidence_summary["mean_confidence"] = (
+                confidence_sum / confidence_summary["documents_with_confidence"]
+            )
+
+        per_label = selected_summary["per_label"]
+        missed_label_counts = {
+            label: int(metrics["fn"])
+            for label, metrics in per_label.items()
+            if int(metrics.get("fn", 0)) > 0
+        }
+        documents.sort(
+            key=lambda row: (
+                float(row.get("micro", {}).get("recall", 0.0)),
+                float(row.get("micro", {}).get("f1", 0.0)),
+                str(row.get("filename", "")),
+            )
+        )
+        response_hypotheses.append(
+            {
+                **candidate,
+                "source": source,
+                "match_mode": normalized_match_mode,
+                "micro": selected_summary["micro"],
+                "avg_document_micro": {
+                    "precision": sum_micro_p / compared if compared else 0.0,
+                    "recall": sum_micro_r / compared if compared else 0.0,
+                    "f1": sum_micro_f1 / compared if compared else 0.0,
+                },
+                "avg_document_macro": {
+                    "precision": sum_macro_p / compared if compared else 0.0,
+                    "recall": sum_macro_r / compared if compared else 0.0,
+                    "f1": sum_macro_f1 / compared if compared else 0.0,
+                },
+                "per_label": per_label,
+                "missed_label_counts": missed_label_counts,
+                "co_primary_metrics": co_primary_summary,
+                "exact_micro": exact_summary["micro"],
+                "overlap_micro": overlap_summary["micro"],
+                "exact_overlap_gap_f1": float(overlap_summary["micro"]["f1"])
+                - float(exact_summary["micro"]["f1"]),
+                "coverage": {
+                    "total_documents": len(ids),
+                    "compared_documents": compared,
+                    "skipped_documents": len(skipped),
+                    "skipped": skipped,
+                },
+                "llm_confidence_summary": confidence_summary,
+                "documents": documents,
+            }
+        )
+
+    return {
+        "reference": body.reference,
+        "match_mode": normalized_match_mode,
+        "primary_metric": body.primary_metric,
+        "total_documents": len(ids),
+        "hypotheses": response_hypotheses,
+    }
+
+
 @app.get("/api/metrics/dashboard")
 async def get_dashboard_metrics(
     reference: str = Query(...),
@@ -6932,6 +7587,8 @@ async def get_dashboard_metrics(
     confidence_sum = 0.0
     documents_with_confidence = 0
     band_counts = {"high": 0, "medium": 0, "low": 0, "na": 0}
+    hypothesis_candidate = _metrics_candidate_map(session_id).get(hypothesis)
+    scoring_method_bundle = _method_bundle_for_metrics_candidate(hypothesis_candidate)
 
     for did in ids:
         doc = _load_doc(did, session_id)
@@ -6943,9 +7600,14 @@ async def get_dashboard_metrics(
         eval_ref_spans, eval_hyp_spans = _prepare_experiment_scoring_spans(
             ref_spans,
             hyp_spans,
-            method_bundle="audited",
+            method_bundle=scoring_method_bundle,
         )
-        result = compute_metrics(eval_ref_spans, eval_hyp_spans, normalized_match_mode)
+        result = compute_metrics(
+            eval_ref_spans,
+            eval_hyp_spans,
+            normalized_match_mode,
+            text_len=len(enriched.raw_text),
+        )
         micro = result["micro"]
         macro = result["macro"]
         co_primary = result.get("co_primary_metrics", {})

@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  compareMetrics,
   exportGroundTruth,
+  getMetricsCandidates,
   getHealth,
   getWorkspace,
   listMethodsLabRuns,
@@ -192,6 +194,140 @@ describe("readiness and workspace", () => {
     expect(workspace.folders[0]?.doc_count).toBe(10);
     expect(workspace.folder_details).toEqual({});
     expect(workspace.health.counts.prompt_lab_runs).toBe(2);
+  });
+});
+
+describe("metrics comparison client", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("normalizes comparable metric candidates", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              id: "manual",
+              source: "manual",
+              kind: "manual",
+              label: "Manual annotations",
+              document_count: 3,
+              method_bundle: "audited",
+            },
+            {
+              id: "methods_lab.run-1.model_1__method_1",
+              source: "methods_lab.run-1.model_1__method_1",
+              kind: "methods_lab_cell",
+              label: "Run 1: Codex x Default",
+              document_count: 2,
+              completed_docs: 2,
+              run_id: "run-1",
+              cell_id: "model_1__method_1",
+              method_bundle: "deidentify-v2",
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const candidates = await getMetricsCandidates();
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/metrics/candidates", undefined);
+    expect(candidates[0]?.label).toBe("Manual annotations");
+    expect(candidates[1]?.kind).toBe("methods_lab_cell");
+    expect(candidates[1]?.method_bundle).toBe("deidentify-v2");
+    expect(candidates[1]?.run_id).toBe("run-1");
+  });
+
+  it("posts metric compare requests and normalizes coverage plus recall rows", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          reference: "manual",
+          match_mode: "exact",
+          primary_metric: "recall",
+          total_documents: 2,
+          hypotheses: [
+            {
+              id: "agent.method.default::model",
+              source: "agent.method.default::model",
+              kind: "method_run",
+              label: "Default model",
+              document_count: 1,
+              method_bundle: "audited",
+              micro: { precision: 1, recall: 0.5, f1: 0.667, tp: 1, fp: 0, fn: 1 },
+              avg_document_micro: { precision: 1, recall: 0.5, f1: 0.667 },
+              avg_document_macro: { precision: 1, recall: 0.5, f1: 0.667 },
+              per_label: {
+                NAME: { precision: 1, recall: 0.5, f1: 0.667, tp: 1, fp: 0, fn: 1, support: 2 },
+              },
+              missed_label_counts: { NAME: 1 },
+              exact_micro: { precision: 1, recall: 0.5, f1: 0.667, tp: 1, fp: 0, fn: 1 },
+              overlap_micro: { precision: 1, recall: 1, f1: 1, tp: 2, fp: 0, fn: 0 },
+              exact_overlap_gap_f1: 0.333,
+              coverage: {
+                total_documents: 2,
+                compared_documents: 1,
+                skipped_documents: 1,
+                skipped: [{ doc_id: "doc-2", reason: "candidate_unavailable" }],
+              },
+              llm_confidence_summary: {
+                documents_with_confidence: 1,
+                mean_confidence: 0.91,
+                band_counts: { high: 1, medium: 0, low: 0, na: 0 },
+              },
+              documents: [
+                {
+                  id: "doc-1",
+                  filename: "doc-1.json",
+                  reference_count: 2,
+                  hypothesis_count: 1,
+                  micro: { precision: 1, recall: 0.5, f1: 0.667, tp: 1, fp: 0, fn: 1 },
+                  macro: { precision: 1, recall: 0.5, f1: 0.667 },
+                  exact_micro: { precision: 1, recall: 0.5, f1: 0.667, tp: 1, fp: 0, fn: 1 },
+                  overlap_micro: { precision: 1, recall: 1, f1: 1, tp: 2, fp: 0, fn: 0 },
+                  cohens_kappa: 0.8,
+                  matched_span_mean_iou: 0.75,
+                },
+              ],
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await compareMetrics(
+      "manual",
+      ["agent.method.default::model"],
+      "exact",
+      "recall",
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/metrics/compare", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        reference: "manual",
+        hypotheses: ["agent.method.default::model"],
+        match_mode: "exact",
+        primary_metric: "recall",
+      }),
+    });
+    expect(result.hypotheses[0]?.micro.recall).toBe(0.5);
+    expect(result.hypotheses[0]?.coverage.skipped[0]?.reason).toBe("candidate_unavailable");
+    expect(result.hypotheses[0]?.missed_label_counts.NAME).toBe(1);
+    expect(result.hypotheses[0]?.documents[0]?.matched_span_mean_iou).toBe(0.75);
   });
 });
 

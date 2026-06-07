@@ -318,6 +318,16 @@ class TestCohensKappa:
         kappa = m["cohens_kappa"]
         assert 0.0 < kappa < 1.0
 
+    def test_uses_full_text_length_when_provided(self):
+        gold = [_span(0, 5, "NAME")]
+        pred = [_span(0, 5, "EMAIL")]
+
+        span_only = compute_metrics(gold, pred, mode="exact")
+        full_text = compute_metrics(gold, pred, mode="exact", text_len=100)
+
+        assert full_text["cohens_kappa"] > span_only["cohens_kappa"]
+        assert full_text["cohens_kappa"] < 1.0
+
 
 # ---------------------------------------------------------------------------
 # Mean IoU
@@ -381,3 +391,65 @@ class TestEdgeCases:
         m = compute_metrics(gold, pred, mode="exact")
         assert len(m["false_positives"]) == 1
         assert len(m["false_negatives"]) == 1
+
+
+class TestMetricAuditGoldens:
+    def test_duplicate_predictions_count_one_match_and_one_false_positive(self):
+        gold = [_span(0, 4, "NAME", "Anna")]
+        pred = [
+            _span(0, 4, "NAME", "Anna"),
+            _span(0, 4, "NAME", "Anna"),
+        ]
+
+        m = compute_metrics(gold, pred, mode="exact")
+
+        assert m["micro"]["tp"] == 1
+        assert m["micro"]["fp"] == 1
+        assert m["micro"]["fn"] == 0
+        assert m["micro"]["precision"] == 0.5
+        assert m["micro"]["recall"] == 1.0
+        assert m["micro"]["f1"] == pytest.approx(2 / 3)
+
+    def test_wrong_label_same_offsets_is_false_positive_and_false_negative(self):
+        gold = [_span(0, 4, "NAME", "Anna")]
+        pred = [_span(0, 4, "EMAIL", "Anna")]
+
+        m = compute_metrics(gold, pred, mode="exact")
+
+        assert m["micro"] == {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "tp": 0,
+            "fp": 1,
+            "fn": 1,
+        }
+        assert m["confusion"]["matrix"]["NAME"]["O"] == 1
+        assert m["confusion"]["matrix"]["O"]["EMAIL"] == 1
+
+    def test_overlap_nested_predictions_keep_one_to_one_matching(self):
+        gold = [
+            _span(0, 10, "NAME", "Anna Maria"),
+            _span(20, 30, "NAME", "Liam Stone"),
+        ]
+        pred = [
+            _span(0, 4, "NAME", "Anna"),
+            _span(20, 30, "NAME", "Liam Stone"),
+            _span(21, 29, "NAME", "iam Ston"),
+        ]
+
+        m = compute_metrics(gold, pred, mode="overlap", overlap_threshold=0.3)
+
+        assert m["micro"]["tp"] == 2
+        assert m["micro"]["fp"] == 1
+        assert m["micro"]["fn"] == 0
+
+    def test_empty_reference_with_predictions_has_zero_recall_and_precision(self):
+        m = compute_metrics([], [_span(0, 4, "NAME", "Anna")], mode="exact")
+
+        assert m["micro"]["precision"] == 0.0
+        assert m["micro"]["recall"] == 0.0
+        assert m["micro"]["f1"] == 0.0
+        assert m["micro"]["tp"] == 0
+        assert m["micro"]["fp"] == 1
+        assert m["micro"]["fn"] == 0

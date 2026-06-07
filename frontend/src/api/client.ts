@@ -14,6 +14,10 @@ import type {
   LLMConfidenceBand,
   LLMConfidenceMetric,
   MatchMode,
+  MetricsCandidate,
+  MetricsCandidateSource,
+  MetricsCompareResult,
+  MetricsPrimaryMetric,
   MirrorMethodToManualResult,
   MethodBundle,
   DocumentSummary,
@@ -447,6 +451,203 @@ export async function getMetricsDashboard(
   });
   const raw = await request<Record<string, unknown>>(`/metrics/dashboard?${params}`);
   return normalizeDashboardMetrics(raw, reference, hypothesis, matchMode);
+}
+
+export async function getMetricsCandidates(): Promise<MetricsCandidate[]> {
+  const raw = await request<{ candidates?: Record<string, unknown>[] }>("/metrics/candidates");
+  return Array.isArray(raw.candidates) ? raw.candidates.map(normalizeMetricsCandidate) : [];
+}
+
+export async function compareMetrics(
+  reference: MetricsCandidateSource,
+  hypotheses: MetricsCandidateSource[],
+  matchMode: MatchMode,
+  primaryMetric: MetricsPrimaryMetric = "recall",
+): Promise<MetricsCompareResult> {
+  const raw = await request<Record<string, unknown>>("/metrics/compare", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      reference,
+      hypotheses,
+      match_mode: matchMode,
+      primary_metric: primaryMetric,
+    }),
+  });
+  return normalizeMetricsCompareResult(raw);
+}
+
+function normalizeMetricCounts(raw: unknown): {
+  precision: number;
+  recall: number;
+  f1: number;
+  tp: number;
+  fp: number;
+  fn: number;
+} {
+  const value = isRecord(raw) ? raw : {};
+  return {
+    precision: toNumber(value.precision, 0),
+    recall: toNumber(value.recall, 0),
+    f1: toNumber(value.f1, 0),
+    tp: toNumber(value.tp, 0),
+    fp: toNumber(value.fp, 0),
+    fn: toNumber(value.fn, 0),
+  };
+}
+
+function normalizeMetricTriple(raw: unknown): {
+  precision: number;
+  recall: number;
+  f1: number;
+} {
+  const value = isRecord(raw) ? raw : {};
+  return {
+    precision: toNumber(value.precision, 0),
+    recall: toNumber(value.recall, 0),
+    f1: toNumber(value.f1, 0),
+  };
+}
+
+function normalizePerLabelMetrics(
+  raw: unknown,
+): MetricsCompareResult["hypotheses"][number]["per_label"] {
+  const result: MetricsCompareResult["hypotheses"][number]["per_label"] = {};
+  if (!isRecord(raw)) return result;
+  for (const [label, value] of Object.entries(raw)) {
+    if (!isRecord(value)) continue;
+    result[label] = {
+      ...normalizeMetricCounts(value),
+      support: toNumber(value.support, 0),
+    };
+  }
+  return result;
+}
+
+function normalizeMetricsCandidate(raw: Record<string, unknown>): MetricsCandidate {
+  const kindRaw = typeof raw.kind === "string" ? raw.kind : "method_run";
+  const validKinds = new Set<MetricsCandidate["kind"]>([
+    "manual",
+    "pre",
+    "agent_rule",
+    "agent_llm",
+    "llm_run",
+    "method_output",
+    "method_run",
+    "methods_lab_cell",
+  ]);
+  const source = String(raw.source ?? raw.id ?? "manual") as MetricsCandidateSource;
+  return {
+    id: String(raw.id ?? source),
+    source,
+    kind: validKinds.has(kindRaw as MetricsCandidate["kind"])
+      ? (kindRaw as MetricsCandidate["kind"])
+      : "method_run",
+    label: String(raw.label ?? source),
+    document_count: toNumber(raw.document_count, 0),
+    method_bundle: normalizeMethodBundle(raw.method_bundle),
+    method_id: typeof raw.method_id === "string" ? raw.method_id : null,
+    model: typeof raw.model === "string" ? raw.model : null,
+    run_id: typeof raw.run_id === "string" ? raw.run_id : null,
+    cell_id: typeof raw.cell_id === "string" ? raw.cell_id : null,
+    run_name: typeof raw.run_name === "string" ? raw.run_name : null,
+    completed_docs: typeof raw.completed_docs === "number" ? raw.completed_docs : undefined,
+    failed_docs: typeof raw.failed_docs === "number" ? raw.failed_docs : undefined,
+    pending_docs: typeof raw.pending_docs === "number" ? raw.pending_docs : undefined,
+    created_at: typeof raw.created_at === "string" ? raw.created_at : null,
+    updated_at: typeof raw.updated_at === "string" ? raw.updated_at : null,
+  };
+}
+
+function normalizeCompareDocument(raw: Record<string, unknown>): MetricsCompareResult["hypotheses"][number]["documents"][number] {
+  return {
+    id: String(raw.id ?? ""),
+    filename: String(raw.filename ?? raw.id ?? ""),
+    reference_count: toNumber(raw.reference_count, 0),
+    hypothesis_count: toNumber(raw.hypothesis_count, 0),
+    micro: normalizeMetricCounts(raw.micro),
+    macro: normalizeMetricTriple(raw.macro),
+    exact_micro: normalizeMetricCounts(raw.exact_micro),
+    overlap_micro: normalizeMetricCounts(raw.overlap_micro),
+    cohens_kappa: toNumber(raw.cohens_kappa, 0),
+    matched_span_mean_iou: toNumber(raw.matched_span_mean_iou ?? raw.mean_iou, 0),
+    llm_confidence: normalizeLLMConfidence(raw.llm_confidence),
+  };
+}
+
+function normalizeMetricsCompareResult(raw: Record<string, unknown>): MetricsCompareResult {
+  const hypothesesRaw = Array.isArray(raw.hypotheses) ? raw.hypotheses : [];
+  const matchMode =
+    raw.match_mode === "exact" ||
+    raw.match_mode === "boundary" ||
+    raw.match_mode === "substring"
+      ? raw.match_mode
+      : "overlap";
+  const primaryMetric =
+    raw.primary_metric === "precision" || raw.primary_metric === "f1"
+      ? raw.primary_metric
+      : "recall";
+  return {
+    reference: String(raw.reference ?? "manual") as MetricsCandidateSource,
+    match_mode: matchMode,
+    primary_metric: primaryMetric,
+    total_documents: toNumber(raw.total_documents, 0),
+    hypotheses: hypothesesRaw.filter(isRecord).map((item) => {
+      const candidate = normalizeMetricsCandidate(item);
+      const coverageRaw = isRecord(item.coverage) ? item.coverage : {};
+      const skipped = Array.isArray(coverageRaw.skipped)
+        ? coverageRaw.skipped.filter(isRecord).map((entry) => ({
+            doc_id: String(entry.doc_id ?? ""),
+            reason: String(entry.reason ?? "candidate_unavailable"),
+          }))
+        : [];
+      const confidenceRaw = isRecord(item.llm_confidence_summary)
+        ? item.llm_confidence_summary
+        : {};
+      const bandsRaw = isRecord(confidenceRaw.band_counts)
+        ? confidenceRaw.band_counts
+        : {};
+      const missedRaw = isRecord(item.missed_label_counts)
+        ? item.missed_label_counts
+        : {};
+      return {
+        ...candidate,
+        match_mode: matchMode,
+        micro: normalizeMetricCounts(item.micro),
+        avg_document_micro: normalizeMetricTriple(item.avg_document_micro),
+        avg_document_macro: normalizeMetricTriple(item.avg_document_macro),
+        per_label: normalizePerLabelMetrics(item.per_label),
+        missed_label_counts: Object.fromEntries(
+          Object.entries(missedRaw).map(([label, count]) => [label, toNumber(count, 0)]),
+        ),
+        exact_micro: normalizeMetricCounts(item.exact_micro),
+        overlap_micro: normalizeMetricCounts(item.overlap_micro),
+        exact_overlap_gap_f1: toNumber(item.exact_overlap_gap_f1, 0),
+        coverage: {
+          total_documents: toNumber(coverageRaw.total_documents, 0),
+          compared_documents: toNumber(coverageRaw.compared_documents, 0),
+          skipped_documents: toNumber(coverageRaw.skipped_documents, skipped.length),
+          skipped,
+        },
+        llm_confidence_summary: {
+          documents_with_confidence: toNumber(confidenceRaw.documents_with_confidence, 0),
+          mean_confidence:
+            typeof confidenceRaw.mean_confidence === "number"
+              ? confidenceRaw.mean_confidence
+              : null,
+          band_counts: {
+            high: toNumber(bandsRaw.high, 0),
+            medium: toNumber(bandsRaw.medium, 0),
+            low: toNumber(bandsRaw.low, 0),
+            na: toNumber(bandsRaw.na, 0),
+          },
+        },
+        documents: Array.isArray(item.documents)
+          ? item.documents.filter(isRecord).map(normalizeCompareDocument)
+          : [],
+      };
+    }),
+  };
 }
 
 function normalizeMetrics(raw: Record<string, unknown>): MetricsResult {

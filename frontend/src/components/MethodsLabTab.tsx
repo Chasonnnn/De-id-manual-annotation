@@ -24,6 +24,7 @@ import type {
   MethodsLabRunCreateRequest,
   MethodsLabRunDetail,
   MethodsLabRunSummary,
+  MetricsCandidateSource,
 } from "../types";
 import { formatExperimentModelLabel, getExperimentModelLabelById } from "../modelDisplay";
 import MethodsLabCellDetail from "./MethodsLabCellDetail";
@@ -36,6 +37,8 @@ interface Props {
   selectedDocumentId: string | null;
   onSelectDocument: (docId: string) => void;
   onWorkspaceChanged?: () => void | Promise<void>;
+  onOpenCellInWorkspace?: (source: MetricsCandidateSource, docId: string) => void;
+  onCompareCells?: (sources: MetricsCandidateSource[]) => void;
 }
 
 type MethodsLabToastKind = "success" | "error" | "info";
@@ -57,6 +60,8 @@ function isErrorDocStatus(status: MethodsLabDocResult["status"]): boolean {
 function useMethodsLabTabController(
   onSelectDocument: (docId: string) => void,
   onWorkspaceChanged?: () => void | Promise<void>,
+  onOpenCellInWorkspace?: (source: MetricsCandidateSource, docId: string) => void,
+  onCompareCells?: (sources: MetricsCandidateSource[]) => void,
 ) {
   const [setupCollapsed, setSetupCollapsed] = useState(false);
   const [runs, setRuns] = useState<MethodsLabRunSummary[]>([]);
@@ -523,6 +528,53 @@ function useMethodsLabTabController(
     }
   }, [onWorkspaceChanged, pushToast, runDetail, selectedCell]);
 
+  const selectedCellSource = useMemo<MetricsCandidateSource | null>(() => {
+    if (!runDetail || !selectedCell) return null;
+    return `methods_lab.${runDetail.id}.${selectedCell.id}` as MetricsCandidateSource;
+  }, [runDetail, selectedCell]);
+
+  const handleOpenSelectedCellInWorkspace = useCallback(() => {
+    if (!selectedCellSource || !selectedDocId) {
+      pushToast("info", "Select a completed cell document before opening it in workspace.");
+      return;
+    }
+    onOpenCellInWorkspace?.(selectedCellSource, selectedDocId);
+  }, [onOpenCellInWorkspace, pushToast, selectedCellSource, selectedDocId]);
+
+  const handleCompareSelectedCell = useCallback(() => {
+    if (!selectedCellSource) {
+      pushToast("info", "Select a completed Methods Lab cell before comparing.");
+      return;
+    }
+    onCompareCells?.([selectedCellSource]);
+  }, [onCompareCells, pushToast, selectedCellSource]);
+
+  const handleDuplicateRun = useCallback(async () => {
+    if (!runDetail) return;
+    setCreatingRun(true);
+    try {
+      const created = await createAndSelectRun({
+        name: `${runDetail.name} copy`,
+        doc_ids: runDetail.doc_ids,
+        folder_ids: runDetail.folder_ids,
+        methods: runDetail.methods,
+        models: runDetail.models,
+        runtime: {
+          ...runDetail.runtime,
+          api_base: undefined,
+        },
+        concurrency: runDetail.concurrency,
+      });
+      pushToast("success", `Duplicated Methods Lab setup: ${created.name}.`);
+    } catch (e: unknown) {
+      const message = String(e);
+      setRunError(message);
+      pushToast("error", `Failed to duplicate Methods Lab setup: ${runDetail.name}.`);
+    } finally {
+      setCreatingRun(false);
+    }
+  }, [createAndSelectRun, pushToast, runDetail]);
+
   const handleDeleteRun = useCallback(
     async (run: MethodsLabRunSummary) => {
       const confirmed = window.confirm(`Delete Methods Lab run "${run.name}"?`);
@@ -607,8 +659,11 @@ function useMethodsLabTabController(
     dismissToast,
     refreshRuns,
     handleCreateRun,
+    handleCompareSelectedCell,
     handleDeleteRun,
+    handleDuplicateRun,
     handleMirrorCellToManual,
+    handleOpenSelectedCellInWorkspace,
     handleRerunErrorDocs,
     handleSelectRun,
     handleStopRun,
@@ -624,6 +679,8 @@ export default function MethodsLabTab({
   selectedDocumentId,
   onSelectDocument,
   onWorkspaceChanged,
+  onOpenCellInWorkspace,
+  onCompareCells,
 }: Props) {
   const {
     setupCollapsed,
@@ -649,15 +706,23 @@ export default function MethodsLabTab({
     dismissToast,
     refreshRuns,
     handleCreateRun,
+    handleCompareSelectedCell,
     handleDeleteRun,
+    handleDuplicateRun,
     handleMirrorCellToManual,
+    handleOpenSelectedCellInWorkspace,
     handleRerunErrorDocs,
     handleSelectRun,
     handleStopRun,
     handleToggleSetup,
     setSelectedCellId,
     setSelectedDocId,
-  } = useMethodsLabTabController(onSelectDocument, onWorkspaceChanged);
+  } = useMethodsLabTabController(
+    onSelectDocument,
+    onWorkspaceChanged,
+    onOpenCellInWorkspace,
+    onCompareCells,
+  );
 
   return (
     <div className="prompt-lab-tab">
@@ -725,6 +790,25 @@ export default function MethodsLabTab({
           {runError && <div className="prompt-lab-error">{runError}</div>}
           {runDetail ? (
             <>
+              <div className="methods-lab-run-actions">
+                <button type="button" onClick={() => void handleDuplicateRun()} disabled={creatingRun}>
+                  {creatingRun ? "Duplicating..." : "Duplicate setup"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleOpenSelectedCellInWorkspace}
+                  disabled={!selectedCell || !selectedDocId}
+                >
+                  Open cell in workspace
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCompareSelectedCell}
+                  disabled={!selectedCell}
+                >
+                  Compare selected cell
+                </button>
+              </div>
               {(runDetail.errors ?? []).length > 0 && (
                 <div className="prompt-lab-error">{runDetail.errors.join(" | ")}</div>
               )}

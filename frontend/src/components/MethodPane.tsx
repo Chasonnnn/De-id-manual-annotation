@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useState } from "react";
+import { forwardRef, useEffect, useId, useState } from "react";
 import { getAgentCredentialStatus } from "../api/client";
 import { MODEL_PRESETS, getModelPreset } from "../modelPresets";
 import type {
@@ -49,6 +49,20 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
     },
     ref,
   ) => {
+    const idPrefix = useId().replace(/:/g, "");
+    const viewSelectId = `${idPrefix}-method-view-select`;
+    const methodSelectId = `${idPrefix}-method-select`;
+    const systemPromptId = `${idPrefix}-method-system-prompt`;
+    const modelId = `${idPrefix}-method-model`;
+    const customModelId = `${idPrefix}-method-custom-model`;
+    const reasoningEffortId = `${idPrefix}-method-reasoning-effort`;
+    const anthropicThinkingId = `${idPrefix}-method-anthropic-thinking`;
+    const anthropicThinkingBudgetId = `${idPrefix}-method-anthropic-thinking-budget`;
+    const temperatureId = `${idPrefix}-method-temperature`;
+    const chunkModeId = `${idPrefix}-method-chunk-mode`;
+    const chunkSizeId = `${idPrefix}-method-chunk-size`;
+    const apiKeyId = `${idPrefix}-method-api-key`;
+    const apiBaseId = `${idPrefix}-method-api-base`;
     const [configOpen, setConfigOpen] = useState(false);
     const [systemPrompt, setSystemPrompt] = useState("");
     const [model, setModel] = useState("openai.gpt-5.3-codex");
@@ -183,9 +197,9 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
               </span>
             )}
             <span className="agent-view-control">
-              <label htmlFor="method-view-select">View:</label>
+              <label htmlFor={viewSelectId}>View:</label>
               <select
-                id="method-view-select"
+                id={viewSelectId}
                 name="method_view"
                 value={activeMethod}
                 onChange={(e) => onActiveMethodChange(e.target.value)}
@@ -204,9 +218,9 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
         </div>
         <div className={`agent-config ${configOpen ? "" : "collapsed"}`}>
           <div className="field">
-            <label htmlFor="method-select">Method</label>
+            <label htmlFor={methodSelectId}>Method</label>
             <select
-              id="method-select"
+              id={methodSelectId}
               name="method_select"
               value={activeMethod}
               onChange={(e) => onActiveMethodChange(e.target.value)}
@@ -275,9 +289,9 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
                 </div>
               )}
               <div className="field">
-                <label htmlFor="method-system-prompt">Additional Constraints (optional)</label>
+                <label htmlFor={systemPromptId}>Additional Constraints (optional)</label>
                 <textarea
-                  id="method-system-prompt"
+                  id={systemPromptId}
                   name="method_system_prompt"
                   value={systemPrompt}
                   onChange={(e) => setSystemPrompt(e.target.value)}
@@ -285,9 +299,9 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
                 />
               </div>
               <div className="field">
-                <label htmlFor="method-model">Model</label>
+                <label htmlFor={modelId}>Model</label>
                 <select
-                  id="method-model"
+                  id={modelId}
                   name="method_model"
                   value={model}
                   onChange={(e) => {
@@ -310,7 +324,7 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
                 </select>
                 {model === "__custom__" && (
                   <input
-                    id="method-custom-model"
+                    id={customModelId}
                     name="method_custom_model"
                     type="text"
                     value={customModel}
@@ -321,12 +335,12 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
                 )}
               </div>
               <div className={`field ${supportsReasoningEffort ? "" : "field-disabled"}`}>
-                <label htmlFor="method-reasoning-effort">
+                <label htmlFor={reasoningEffortId}>
                   Reasoning Effort
                   {!supportsReasoningEffort && " (not supported for this model)"}
                 </label>
                 <select
-                  id="method-reasoning-effort"
+                  id={reasoningEffortId}
                   name="method_reasoning_effort"
                   value={reasoningEffort}
                   disabled={!supportsReasoningEffort}
@@ -344,13 +358,13 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
                 </select>
               </div>
               <div className={`field ${supportsAnthropicThinking ? "" : "field-disabled"}`}>
-                <label htmlFor="method-anthropic-thinking">
+                <label htmlFor={anthropicThinkingId}>
                   Anthropic Thinking
                   {!supportsAnthropicThinking && " (not supported for this model)"}
                 </label>
                 <div className="inline-control-row">
                   <input
-                    id="method-anthropic-thinking"
+                    id={anthropicThinkingId}
                     name="method_anthropic_thinking"
                     type="checkbox"
                     checked={anthropicThinking}
@@ -358,7 +372,7 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
                     onChange={(e) => setAnthropicThinking(e.target.checked)}
                   />
                   <input
-                    id="method-anthropic-thinking-budget"
+                    id={anthropicThinkingBudgetId}
                     name="method_anthropic_thinking_budget_tokens"
                     type="number"
                     min={256}
@@ -373,9 +387,9 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
                 </div>
               </div>
               <div className="field">
-                <label htmlFor="method-temperature">Temperature: {temperature}</label>
+                <label htmlFor={temperatureId}>Temperature: {temperature}</label>
                 <input
-                  id="method-temperature"
+                  id={temperatureId}
                   name="method_temperature"
                   type="range"
                   min="0"
@@ -386,9 +400,9 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
                 />
               </div>
               <div className="field">
-                <label htmlFor="method-chunk-mode">Chunk Mode</label>
+                <label htmlFor={chunkModeId}>Chunk Mode</label>
                 <select
-                  id="method-chunk-mode"
+                  id={chunkModeId}
                   name="method_chunk_mode"
                   value={chunkMode}
                   onChange={(e) =>
@@ -402,9 +416,9 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
               </div>
               {chunkMode !== "off" && (
                 <div className="field">
-                  <label htmlFor="method-chunk-size">Chunk Size (chars)</label>
+                  <label htmlFor={chunkSizeId}>Chunk Size (chars)</label>
                   <input
-                    id="method-chunk-size"
+                    id={chunkSizeId}
                     name="method_chunk_size_chars"
                     type="number"
                     min={2000}
@@ -449,9 +463,9 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
                   </>
                 ) : (
                   <>
-                    <label htmlFor="method-api-key">API Key</label>
+                    <label htmlFor={apiKeyId}>API Key</label>
                     <input
-                      id="method-api-key"
+                      id={apiKeyId}
                       name="method_api_key"
                       type="password"
                       value={apiKey}
@@ -496,9 +510,9 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
                   </>
                 ) : (
                   <>
-                    <label htmlFor="method-api-base">LiteLLM Base URL (optional)</label>
+                    <label htmlFor={apiBaseId}>LiteLLM Base URL (optional)</label>
                     <input
-                      id="method-api-base"
+                      id={apiBaseId}
                       name="method_api_base"
                       type="text"
                       value={apiBase}

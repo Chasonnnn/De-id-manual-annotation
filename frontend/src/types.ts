@@ -116,8 +116,14 @@ export interface AgentRunMetrics {
 export interface SavedRunMetadata {
   mode: "manual" | "rule" | "llm" | "method";
   updated_at: string;
+  created_at?: string | null;
+  run_label?: string | null;
+  display_label?: string | null;
   model?: string | null;
   method_id?: string | null;
+  method_bundle?: MethodBundle | string | null;
+  save_policy?: "create" | "replace" | null;
+  runtime?: Record<string, unknown> | null;
   prompt_snapshot?: Record<string, unknown> | null;
   llm_confidence?: LLMConfidenceMetric | null;
   chunk_diagnostics?: AgentChunkDiagnostic[];
@@ -284,6 +290,7 @@ export interface DashboardDocumentMetrics {
   >;
   cohens_kappa: number;
   mean_iou: number;
+  matched_span_mean_iou?: number;
   llm_confidence?: LLMConfidenceMetric | null;
 }
 
@@ -324,6 +331,87 @@ export interface DashboardMetricsResult {
     band_counts: Record<LLMConfidenceBand, number>;
   };
   documents: DashboardDocumentMetrics[];
+}
+
+export type MetricsPrimaryMetric = "recall" | "f1" | "precision";
+
+export interface MetricsCandidate {
+  id: string;
+  source: AnnotationSource | MetricsCandidateSource;
+  kind:
+    | "manual"
+    | "pre"
+    | "agent_rule"
+    | "agent_llm"
+    | "llm_run"
+    | "method_output"
+    | "method_run"
+    | "methods_lab_cell";
+  label: string;
+  document_count: number;
+  method_bundle: MethodBundle | string;
+  method_id?: string | null;
+  model?: string | null;
+  run_id?: string | null;
+  cell_id?: string | null;
+  run_name?: string | null;
+  completed_docs?: number;
+  failed_docs?: number;
+  pending_docs?: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export type MetricsCandidateSource =
+  | AnnotationSource
+  | `methods_lab.${string}.${string}`;
+
+export interface MetricsCompareCoverage {
+  total_documents: number;
+  compared_documents: number;
+  skipped_documents: number;
+  skipped: Array<{ doc_id: string; reason: string }>;
+}
+
+export interface MetricsCompareDocument {
+  id: string;
+  filename: string;
+  reference_count: number;
+  hypothesis_count: number;
+  micro: { precision: number; recall: number; f1: number; tp: number; fp: number; fn: number };
+  macro: { precision: number; recall: number; f1: number };
+  exact_micro: { precision: number; recall: number; f1: number; tp: number; fp: number; fn: number };
+  overlap_micro: { precision: number; recall: number; f1: number; tp: number; fp: number; fn: number };
+  cohens_kappa: number;
+  matched_span_mean_iou: number;
+  llm_confidence?: LLMConfidenceMetric | null;
+}
+
+export interface MetricsCompareHypothesis extends MetricsCandidate {
+  match_mode: MatchMode;
+  micro: { precision: number; recall: number; f1: number; tp: number; fp: number; fn: number };
+  avg_document_micro: { precision: number; recall: number; f1: number };
+  avg_document_macro: { precision: number; recall: number; f1: number };
+  per_label: Record<string, { precision: number; recall: number; f1: number; support: number; tp: number; fp: number; fn: number }>;
+  missed_label_counts: Record<string, number>;
+  exact_micro: { precision: number; recall: number; f1: number; tp: number; fp: number; fn: number };
+  overlap_micro: { precision: number; recall: number; f1: number; tp: number; fp: number; fn: number };
+  exact_overlap_gap_f1: number;
+  coverage: MetricsCompareCoverage;
+  llm_confidence_summary: {
+    documents_with_confidence: number;
+    mean_confidence: number | null;
+    band_counts: Record<LLMConfidenceBand, number>;
+  };
+  documents: MetricsCompareDocument[];
+}
+
+export interface MetricsCompareResult {
+  reference: MetricsCandidateSource;
+  match_mode: MatchMode;
+  primary_metric: MetricsPrimaryMetric;
+  total_documents: number;
+  hypotheses: MetricsCompareHypothesis[];
 }
 
 export interface SessionExportBundle {
@@ -407,6 +495,9 @@ export interface AgentConfig {
   chunk_size_chars?: number;
   method_id?: string;
   method_verify?: boolean;
+  method_bundle?: MethodBundle;
+  run_label?: string;
+  save_policy?: "create" | "replace";
 }
 
 export interface AgentMethodPromptTemplate {
@@ -825,6 +916,12 @@ export interface MethodsLabRunExport {
 }
 
 export type PaneType = "raw" | "pre" | "manual" | "agent" | "methods";
+export interface PaneInstance {
+  id: string;
+  type: PaneType;
+  title: string;
+  source_ref?: MetricsCandidateSource;
+}
 export type MatchMode = "exact" | "boundary" | "overlap" | "substring";
 export type AgentView = "combined" | "rule" | "llm";
 export type MethodView = string;

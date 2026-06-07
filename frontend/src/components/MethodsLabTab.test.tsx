@@ -793,6 +793,101 @@ describe("MethodsLabTab", () => {
     );
   });
 
+  it("duplicates the selected Methods Lab setup without carrying API secrets", async () => {
+    const copySummary = makeRunSummary("copy-run", "methods_lab__codex copy");
+    const copyDetail = {
+      ...makeRunDetail(copySummary, {
+        docId: "doc-1",
+        cellId: "model_1__method_1",
+        modelId: "model_1",
+        modelLabel: "Codex",
+        methodId: "method_1",
+        methodLabel: "Default",
+      }),
+      name: "methods_lab__codex copy",
+    };
+    clientMocks.listMethodsLabRuns
+      .mockResolvedValueOnce([codexSummary])
+      .mockResolvedValueOnce([codexSummary, copySummary]);
+    clientMocks.getMethodsLabRun.mockImplementation(async (runId: string) => {
+      if (runId === codexSummary.id) return cloneValue(codexDetail);
+      if (runId === copySummary.id) return cloneValue(copyDetail);
+      throw new Error(`Unknown run ${runId}`);
+    });
+    clientMocks.getMethodsLabDocResult.mockResolvedValue(
+      makeDocResult(codexDetail, {
+        cellId: codexDetail.matrix.cells[0]!.id,
+        docId: "doc-1",
+      }),
+    );
+    clientMocks.createMethodsLabRun.mockResolvedValue(copyDetail);
+
+    render(
+      <MethodsLabTab
+        documents={documents}
+        folders={[]}
+        selectedDocumentId={null}
+        onSelectDocument={vi.fn()}
+      />,
+    );
+
+    await screen.findByText("5bcf6ed4:model_1__method_1:doc-1");
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate setup" }));
+
+    await waitFor(() => {
+      expect(clientMocks.createMethodsLabRun).toHaveBeenCalledWith({
+        name: "methods_lab__codex copy",
+        doc_ids: codexDetail.doc_ids,
+        folder_ids: codexDetail.folder_ids,
+        methods: codexDetail.methods,
+        models: codexDetail.models,
+        runtime: {
+          ...codexDetail.runtime,
+          api_base: undefined,
+        },
+        concurrency: codexDetail.concurrency,
+      });
+    });
+    expect(clientMocks.listMethodsLabRuns).toHaveBeenCalledTimes(2);
+  });
+
+  it("opens and compares the selected completed Methods Lab cell without copying to manual", async () => {
+    const onOpenCellInWorkspace = vi.fn();
+    const onCompareCells = vi.fn();
+    clientMocks.listMethodsLabRuns.mockResolvedValue([codexSummary]);
+    clientMocks.getMethodsLabRun.mockResolvedValue(codexDetail);
+    clientMocks.getMethodsLabDocResult.mockResolvedValue(
+      makeDocResult(codexDetail, {
+        cellId: codexDetail.matrix.cells[0]!.id,
+        docId: "doc-1",
+      }),
+    );
+
+    render(
+      <MethodsLabTab
+        documents={documents}
+        folders={[]}
+        selectedDocumentId={null}
+        onSelectDocument={vi.fn()}
+        onOpenCellInWorkspace={onOpenCellInWorkspace}
+        onCompareCells={onCompareCells}
+      />,
+    );
+
+    await screen.findByText("5bcf6ed4:model_1__method_1:doc-1");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open cell in workspace" }));
+    expect(onOpenCellInWorkspace).toHaveBeenCalledWith(
+      "methods_lab.5bcf6ed4.model_1__method_1",
+      "doc-1",
+    );
+    expect(clientMocks.mirrorMethodToManual).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Compare selected cell" }));
+    expect(onCompareCells).toHaveBeenCalledWith(["methods_lab.5bcf6ed4.model_1__method_1"]);
+    expect(clientMocks.mirrorMethodToManual).not.toHaveBeenCalled();
+  });
+
   it("copies the selected Methods Lab cell to top-level manual annotations", async () => {
     const onWorkspaceChanged = vi.fn();
     clientMocks.listMethodsLabRuns.mockResolvedValue([codexSummary]);

@@ -3,12 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
 import {
+  compareMetrics,
   deleteFolderDocument,
   getAgentCredentialStatus,
   getAgentMethods,
   getDocument,
   getFolder,
-  getMetricsDashboard,
+  getMetricsCandidates,
+  getMethodsLabDocResult,
   getWorkspace,
 } from "./api/client";
 import type { ReadinessHealth, WorkspaceState } from "./types";
@@ -26,7 +28,9 @@ vi.mock("./api/client", () => ({
   getAgentProgress: vi.fn(),
   getAgentMethods: vi.fn().mockResolvedValue([]),
   getDocument: vi.fn(),
-  getMetricsDashboard: vi.fn(),
+  getMetricsCandidates: vi.fn(),
+  getMethodsLabDocResult: vi.fn(),
+  compareMetrics: vi.fn(),
   getMetrics: vi.fn(),
   getWorkspace: vi.fn(),
   ingestSessionFile: vi.fn(),
@@ -157,6 +161,7 @@ describe("App", () => {
   };
 
   beforeEach(() => {
+    window.localStorage.clear();
     consoleError.mockClear();
     vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace());
     vi.mocked(getAgentCredentialStatus).mockResolvedValue({
@@ -165,7 +170,24 @@ describe("App", () => {
       has_api_base: true,
       api_base_sources: ["LITELLM_API_BASE"],
     });
-    vi.mocked(getMetricsDashboard).mockResolvedValue(null as never);
+    vi.mocked(getMetricsCandidates).mockResolvedValue([
+      {
+        id: "manual",
+        source: "manual",
+        kind: "manual",
+        label: "Manual annotations",
+        document_count: 0,
+        method_bundle: "audited",
+      },
+    ]);
+    vi.mocked(compareMetrics).mockResolvedValue({
+      reference: "manual",
+      match_mode: "overlap",
+      primary_metric: "recall",
+      total_documents: 0,
+      hypotheses: [],
+    } as never);
+    vi.mocked(getMethodsLabDocResult).mockRejectedValue(new Error("not configured"));
     vi.mocked(getDocument).mockRejectedValue(new Error("not configured"));
     vi.mocked(getFolder).mockReset();
     vi.mocked(getAgentMethods).mockResolvedValue([
@@ -232,6 +254,127 @@ describe("App", () => {
     const methodView = screen.getByLabelText("View:") as HTMLSelectElement;
     expect(methodView.value).toBe("presidio-lite+extended-v2::google.gemini-3.1-pro-preview");
     expect(screen.queryByText("No method annotations yet for the selected method.")).toBeNull();
+  });
+
+  it("allows multiple methods panes for the same document", async () => {
+    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace({
+      documents: [
+        {
+          id: methodFixture.id,
+          filename: methodFixture.filename,
+          display_name: methodFixture.id,
+          status: "pending",
+        },
+      ],
+    }));
+    vi.mocked(getDocument).mockResolvedValue(methodFixture as never);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText(methodFixture.id)).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByText(methodFixture.id));
+
+    await waitFor(() => {
+      expect(getDocument).toHaveBeenCalledWith(methodFixture.id);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "+Methods" }));
+    fireEvent.click(screen.getByRole("button", { name: "+Methods" }));
+
+    await waitFor(() => {
+      expect(screen.getAllByLabelText("View:").length).toBe(2);
+    });
+  });
+
+  it("renders the recall-first comparison dashboard and submits selected candidates", async () => {
+    vi.mocked(getMetricsCandidates).mockResolvedValue([
+      {
+        id: "manual",
+        source: "manual",
+        kind: "manual",
+        label: "Manual annotations",
+        document_count: 2,
+        method_bundle: "audited",
+      },
+      {
+        id: "agent.method.default::model-a",
+        source: "agent.method.default::model-a",
+        kind: "method_run",
+        label: "Default / model-a",
+        document_count: 2,
+        method_bundle: "deidentify-v2",
+      },
+    ]);
+    vi.mocked(compareMetrics).mockResolvedValue({
+      reference: "manual",
+      match_mode: "overlap",
+      primary_metric: "recall",
+      total_documents: 2,
+      hypotheses: [
+        {
+          id: "agent.method.default::model-a",
+          source: "agent.method.default::model-a",
+          kind: "method_run",
+          label: "Default / model-a",
+          document_count: 2,
+          method_bundle: "deidentify-v2",
+          match_mode: "overlap",
+          micro: { precision: 0.8, recall: 0.6, f1: 0.686, tp: 6, fp: 2, fn: 4 },
+          avg_document_micro: { precision: 0.8, recall: 0.6, f1: 0.686 },
+          avg_document_macro: { precision: 0.8, recall: 0.6, f1: 0.686 },
+          per_label: {},
+          missed_label_counts: { NAME: 4 },
+          exact_micro: { precision: 0.5, recall: 0.4, f1: 0.444, tp: 4, fp: 4, fn: 6 },
+          overlap_micro: { precision: 0.8, recall: 0.6, f1: 0.686, tp: 6, fp: 2, fn: 4 },
+          exact_overlap_gap_f1: 0.242,
+          coverage: { total_documents: 2, compared_documents: 2, skipped_documents: 0, skipped: [] },
+          llm_confidence_summary: {
+            documents_with_confidence: 0,
+            mean_confidence: null,
+            band_counts: { high: 0, medium: 0, low: 0, na: 0 },
+          },
+          documents: [
+            {
+              id: "doc-a",
+              filename: "doc-a.json",
+              reference_count: 10,
+              hypothesis_count: 8,
+              micro: { precision: 0.8, recall: 0.6, f1: 0.686, tp: 6, fp: 2, fn: 4 },
+              macro: { precision: 0.8, recall: 0.6, f1: 0.686 },
+              exact_micro: { precision: 0.5, recall: 0.4, f1: 0.444, tp: 4, fp: 4, fn: 6 },
+              overlap_micro: { precision: 0.8, recall: 0.6, f1: 0.686, tp: 6, fp: 2, fn: 4 },
+              cohens_kappa: 0.7,
+              matched_span_mean_iou: 0.75,
+            },
+          ],
+        },
+      ],
+    } as never);
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Dashboard" }));
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Default / model-a").length).toBeGreaterThan(0);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Comparison" }));
+
+    await waitFor(() => {
+      expect(compareMetrics).toHaveBeenCalledWith(
+        "manual",
+        ["agent.method.default::model-a"],
+        "overlap",
+        "recall",
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getAllByText("60.0%").length).toBeGreaterThan(0);
+    });
+    expect(screen.getByText(/Missed labels NAME:4/)).toBeTruthy();
   });
 
   it("defaults the agent pane to the latest saved llm run when one exists", async () => {

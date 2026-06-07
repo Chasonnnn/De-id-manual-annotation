@@ -53,8 +53,14 @@ class AgentChunkDiagnostic(BaseModel):
 class SavedRunMetadata(BaseModel):
     mode: Literal["manual", "rule", "llm", "method"]
     updated_at: str
+    created_at: str | None = None
+    run_label: str | None = None
+    display_label: str | None = None
     model: str | None = None
     method_id: str | None = None
+    method_bundle: str | None = None
+    save_policy: Literal["create", "replace"] | None = None
+    runtime: dict[str, Any] | None = None
     prompt_snapshot: dict[str, Any] | None = None
     llm_confidence: "LLMConfidenceMetric | None" = None
     chunk_diagnostics: list[AgentChunkDiagnostic] = Field(default_factory=list)

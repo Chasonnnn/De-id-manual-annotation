@@ -2216,6 +2216,103 @@ def test_agent_rule(client):
     assert progress["progress"] == 1.0
 
 
+def test_repeated_method_runs_create_distinct_saved_outputs_by_default(
+    client, monkeypatch
+):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    calls = {"count": 0}
+
+    def fake_run_method_with_metadata(**kwargs):
+        calls["count"] += 1
+        target = "Anna" if calls["count"] == 1 else "Sue"
+        text = str(kwargs["text"])
+        start = text.index(target)
+        return SimpleNamespace(
+            spans=[
+                CanonicalSpan(
+                    start=start,
+                    end=start + len(target),
+                    label="NAME",
+                    text=target,
+                )
+            ],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(),
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    upload_resp = _upload(
+        client,
+        data=_make_hips_v1_custom(
+            "Hello Anna, call Sue please.",
+            [{"start": 6, "end": 10, "text": "Anna", "pii_type": "NAME"}],
+        ),
+    )
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    first = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "method",
+            "method_id": "default",
+            "model": "openai.gpt-5.3-codex",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com/v1",
+            "run_label": "candidate A",
+        },
+    )
+    second = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "method",
+            "method_id": "default",
+            "model": "openai.gpt-5.3-codex",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com/v1",
+            "run_label": "candidate B",
+        },
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+    saved = second.json()["agent_outputs"]["methods"]
+    saved_keys = [
+        key for key in saved if key.startswith("default::openai.gpt-5.3-codex")
+    ]
+    assert len(saved_keys) == 2
+    assert saved[saved_keys[0]] != saved[saved_keys[1]]
+
+    candidates = client.get("/api/metrics/candidates").json()["candidates"]
+    labels = [item["label"] for item in candidates if item["kind"] == "method_run"]
+    assert any("candidate A" in label for label in labels)
+    assert any("candidate B" in label for label in labels)
+
+    replace = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "method",
+            "method_id": "default",
+            "model": "openai.gpt-5.3-codex",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com/v1",
+            "save_policy": "replace",
+        },
+    )
+    assert replace.status_code == 200
+    replaced_keys = [
+        key
+        for key in replace.json()["agent_outputs"]["methods"]
+        if key == "default::openai.gpt-5.3-codex"
+    ]
+    assert replaced_keys == ["default::openai.gpt-5.3-codex"]
+
+
 def test_agent_combined_excludes_method_outputs(client):
     resp = _upload(client)
     doc_id = resp.json()["id"]
@@ -3131,6 +3228,221 @@ def test_metrics_dashboard(client):
     assert "cohens_kappa" in first_doc
     assert "mean_iou" in first_doc
     assert "llm_confidence" in first_doc
+
+
+def test_metrics_dashboard_exact_mode_keeps_exact_as_primary(client):
+    resp = _upload(
+        client,
+        data=_make_hips_v1_custom(
+            "Hello Anna.",
+            [{"start": 6, "end": 10, "text": "Anna", "pii_type": "NAME"}],
+        ),
+    )
+    assert resp.status_code == 200
+    doc_id = resp.json()["id"]
+
+    manual_resp = client.put(
+        f"/api/documents/{doc_id}/manual-annotations",
+        json=[{"start": 6, "end": 11, "label": "NAME", "text": "Anna."}],
+    )
+    assert manual_resp.status_code == 200
+
+    dashboard_resp = client.get(
+        "/api/metrics/dashboard",
+        params={"reference": "pre", "hypothesis": "manual", "match_mode": "exact"},
+    )
+    assert dashboard_resp.status_code == 200
+    payload = dashboard_resp.json()
+    assert payload["match_mode"] == "exact"
+    assert payload["micro"]["f1"] == pytest.approx(0.0)
+    assert payload["co_primary_metrics"]["overlap"]["micro"]["f1"] == pytest.approx(1.0)
+
+
+def test_metrics_candidates_include_saved_method_outputs_and_methods_lab_cells(
+    client, monkeypatch
+):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    def fake_run_method_with_metadata(**kwargs):
+        text = str(kwargs["text"])
+        start = text.index("Anna")
+        return SimpleNamespace(
+            spans=[CanonicalSpan(start=start, end=start + 4, label="NAME", text="Anna")],
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(),
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
+
+    single_resp = client.post(
+        f"/api/documents/{doc_id}/agent",
+        json={
+            "mode": "method",
+            "method_id": "default",
+            "model": "openai.gpt-5.3-codex",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com/v1",
+            "run_label": "single doc default",
+        },
+    )
+    assert single_resp.status_code == 200
+
+    create_resp = client.post(
+        "/api/methods-lab/runs",
+        json={
+            "name": "candidate-methods-run",
+            "doc_ids": [doc_id],
+            "methods": [{"id": "method_1", "label": "Default", "method_id": "default"}],
+            "models": [
+                {
+                    "id": "model_1",
+                    "label": "Codex",
+                    "model": "openai.gpt-5.3-codex",
+                    "reasoning_effort": "none",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "request-key",
+                "api_base": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+                "match_mode": "exact",
+            },
+            "concurrency": 1,
+        },
+    )
+    assert create_resp.status_code == 200
+    run_id = create_resp.json()["id"]
+    final = _wait_for_methods_lab_terminal(client, run_id)
+    cell_id = final["matrix"]["cells"][0]["id"]
+
+    candidates_resp = client.get("/api/metrics/candidates")
+    assert candidates_resp.status_code == 200
+    payload = candidates_resp.json()
+    ids = {item["id"] for item in payload["candidates"]}
+    assert "manual" in ids
+    assert "pre" in ids
+    assert any(item.startswith("agent.method.") for item in ids)
+    assert f"methods_lab.{run_id}.{cell_id}" in ids
+
+    method_candidate = next(
+        item for item in payload["candidates"] if item["kind"] == "method_run"
+    )
+    assert method_candidate["document_count"] == 1
+    assert method_candidate["method_bundle"] == "audited"
+    assert "single doc default" in method_candidate["label"]
+
+    cell_candidate = next(
+        item for item in payload["candidates"] if item["kind"] == "methods_lab_cell"
+    )
+    assert cell_candidate["run_id"] == run_id
+    assert cell_candidate["cell_id"] == cell_id
+    assert cell_candidate["completed_docs"] == 1
+
+
+def test_metrics_compare_sorts_by_recall_and_tracks_coverage(client, monkeypatch):
+    monkeypatch.setattr(
+        "server._fetch_gateway_model_ids",
+        lambda api_base, api_key: ["openai.gpt-5.3-codex"],
+    )
+
+    texts = ["Hello Anna.", "Email joe@example.com."]
+    occurrences = [
+        [{"start": 6, "end": 10, "text": "Anna", "pii_type": "NAME"}],
+        [{"start": 6, "end": 21, "text": "joe@example.com", "pii_type": "EMAIL"}],
+    ]
+    doc_ids: list[str] = []
+    for index, text in enumerate(texts):
+        upload = _upload(
+            client,
+            data=_make_hips_v1_custom(text, occurrences[index]),
+            filename=f"compare-{index}.json",
+        )
+        assert upload.status_code == 200
+        doc_ids.append(upload.json()["id"])
+
+    def fake_run_method_with_metadata(**kwargs):
+        text = str(kwargs["text"])
+        if "Anna" in text:
+            start = text.index("Anna")
+            spans = [CanonicalSpan(start=start, end=start + 4, label="NAME", text="Anna")]
+        else:
+            spans = []
+        return SimpleNamespace(
+            spans=spans,
+            warnings=[],
+            llm_confidence=_mock_confidence_metric(),
+        )
+
+    monkeypatch.setattr("server.run_method_with_metadata", fake_run_method_with_metadata)
+
+    run_resp = client.post(
+        f"/api/documents/{doc_ids[0]}/agent",
+        json={
+            "mode": "method",
+            "method_id": "default",
+            "model": "openai.gpt-5.3-codex",
+            "api_key": "request-key",
+            "api_base": "https://proxy.example.com/v1",
+            "run_label": "partial saved output",
+        },
+    )
+    assert run_resp.status_code == 200
+    method_key = next(
+        key
+        for key in run_resp.json()["agent_outputs"]["methods"].keys()
+        if key.startswith("default::")
+    )
+
+    compare_resp = client.post(
+        "/api/metrics/compare",
+        json={
+            "reference": "pre",
+            "hypotheses": ["manual", f"agent.method.{method_key}"],
+            "match_mode": "exact",
+            "primary_metric": "recall",
+        },
+    )
+    assert compare_resp.status_code == 200
+    payload = compare_resp.json()
+    assert payload["primary_metric"] == "recall"
+    assert [item["source"] for item in payload["hypotheses"]] == [
+        "manual",
+        f"agent.method.{method_key}",
+    ]
+    manual = payload["hypotheses"][0]
+    method = payload["hypotheses"][1]
+    assert manual["micro"]["recall"] == pytest.approx(0.0)
+    assert method["micro"]["recall"] == pytest.approx(1.0)
+    assert method["coverage"]["compared_documents"] == 1
+    assert method["coverage"]["skipped_documents"] == 1
+    assert method["coverage"]["skipped"][0]["reason"] == "candidate_unavailable"
+    assert method["documents"][0]["micro"]["recall"] == pytest.approx(1.0)
+
+
+def test_metrics_compare_unknown_candidate_returns_actionable_error(client):
+    _upload(client)
+
+    resp = client.post(
+        "/api/metrics/compare",
+        json={
+            "reference": "pre",
+            "hypotheses": ["agent.method.missing"],
+            "match_mode": "overlap",
+            "primary_metric": "recall",
+        },
+    )
+
+    assert resp.status_code == 400
+    assert "Unknown metrics candidate" in resp.json()["detail"]
 
 
 def test_metrics_dashboard_aggregates_llm_confidence(client, monkeypatch):

@@ -183,6 +183,7 @@ def _compute_metrics_base(
     pred: list[CanonicalSpan],
     mode: str = "exact",
     overlap_threshold: float = 0.5,
+    text_len: int | None = None,
 ) -> dict:
     matched, unmatched_gold, unmatched_pred = match_spans(
         gold, pred, mode, overlap_threshold
@@ -223,7 +224,9 @@ def _compute_metrics_base(
     kappa = _cohens_kappa_spans(
         gold,
         pred,
-        max(
+        text_len
+        if text_len is not None
+        else max(
             max((s.end for s in gold), default=0),
             max((s.end for s in pred), default=0),
         ),
@@ -254,8 +257,9 @@ def compute_metrics(
     pred: list[CanonicalSpan],
     mode: str = "exact",
     overlap_threshold: float = 0.5,
+    text_len: int | None = None,
 ) -> dict:
-    result = _compute_metrics_base(gold, pred, mode, overlap_threshold)
+    result = _compute_metrics_base(gold, pred, mode, overlap_threshold, text_len)
     if mode == "exact":
         result["co_primary_metrics"] = {
             EXACT_COMPANION_METRIC_KEY: _compute_metrics_base(
@@ -263,6 +267,7 @@ def compute_metrics(
                 pred,
                 "overlap",
                 overlap_threshold,
+                text_len,
             )
         }
     return result

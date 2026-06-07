@@ -9,15 +9,18 @@ import type {
   AgentView,
   CanonicalDocument,
   CanonicalSpan,
-  DashboardMetricsResult,
   DocumentSummary,
   FolderDetail,
   FolderSummary,
   GroundTruthExportScope,
   ImportConflictPolicy,
   MatchMode,
+  MetricsCandidate,
+  MetricsCandidateSource,
+  MetricsCompareResult,
   MethodView,
   MetricsResult,
+  PaneInstance,
   PaneType,
   ReadinessHealth,
   WorkspaceState,
@@ -34,9 +37,11 @@ import {
   getAgentProgress,
   getAgentMethods,
   getDocument,
-  getMetricsDashboard,
+  getMethodsLabDocResult,
+  getMetricsCandidates,
   getMetrics,
   getWorkspace,
+  compareMetrics,
   ingestSessionFile,
   mirrorPreToManual,
   pruneEmptyFolderDocs,
@@ -52,7 +57,7 @@ import ManualAnnotationPane from "./components/ManualAnnotationPane";
 import AgentPane from "./components/AgentPane";
 import MethodPane from "./components/MethodPane";
 import MetricsPanel from "./components/MetricsPanel";
-import DashboardPanel from "./components/DashboardPanel";
+import MetricsCompareDashboard from "./components/MetricsCompareDashboard";
 import { computeDiff } from "./components/DiffOverlay";
 import PromptLabTab from "./components/PromptLabTab";
 import MethodsLabTab from "./components/MethodsLabTab";
@@ -149,9 +154,71 @@ interface PendingConfirm {
 
 const CANONICAL_PANE_ORDER: PaneType[] = ["raw", "pre", "manual", "agent", "methods"];
 
-function normalizePaneOrder(panes: PaneType[]): PaneType[] {
-  const visible = new Set(panes);
-  return CANONICAL_PANE_ORDER.filter((pane) => visible.has(pane));
+function makePaneInstance(type: PaneType, sourceRef?: MetricsCandidateSource): PaneInstance {
+  const singletonId = type === "methods" ? `methods-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` : type;
+  return {
+    id: singletonId,
+    type,
+    title:
+      type === "raw"
+        ? "Raw"
+        : type === "pre"
+          ? "Pre-annotations"
+          : type === "manual"
+            ? "Manual"
+            : type === "agent"
+              ? "Agent"
+              : "Methods",
+    source_ref: sourceRef,
+  };
+}
+
+function normalizePaneInstances(panes: PaneInstance[]): PaneInstance[] {
+  const seenSingletons = new Set<PaneType>();
+  return [...panes]
+    .filter((pane) => {
+      if (pane.type === "methods") return true;
+      if (seenSingletons.has(pane.type)) return false;
+      seenSingletons.add(pane.type);
+      return true;
+    })
+    .sort((a, b) => {
+      const order = CANONICAL_PANE_ORDER.indexOf(a.type) - CANONICAL_PANE_ORDER.indexOf(b.type);
+      return order === 0 ? a.id.localeCompare(b.id) : order;
+    });
+}
+
+function loadInitialPaneInstances(): PaneInstance[] {
+  try {
+    const raw = window.localStorage.getItem("annotation_tool_pane_instances_v1");
+    if (raw) {
+      const parsed = JSON.parse(raw) as PaneInstance[];
+      if (Array.isArray(parsed)) {
+        const normalized = normalizePaneInstances(
+          parsed.filter((item) => item && typeof item.id === "string" && typeof item.type === "string"),
+        );
+        if (normalized.length > 0) return normalized;
+      }
+    }
+  } catch {
+    // localStorage unavailable or stale payload
+  }
+  return [makePaneInstance("raw"), makePaneInstance("pre")];
+}
+
+function sourceToMethodView(source: MetricsCandidateSource | undefined): MethodView | null {
+  if (!source || !String(source).startsWith("agent.method.")) return null;
+  return String(source).slice("agent.method.".length);
+}
+
+function parseMethodsLabSource(
+  source: MetricsCandidateSource | undefined,
+): { runId: string; cellId: string } | null {
+  if (!source || !String(source).startsWith("methods_lab.")) return null;
+  const rest = String(source).slice("methods_lab.".length);
+  const [runId, ...cellParts] = rest.split(".");
+  const cellId = cellParts.join(".");
+  return runId && cellId ? { runId, cellId } : null;
 }
 
 function isChunkWarning(message: string): boolean {
@@ -366,9 +433,7 @@ function useAppContentController() {
   const [exporting, setExporting] = useState(false);
   const [mirroringPreToManual, setMirroringPreToManual] = useState(false);
 
-  const [visiblePanes, setVisiblePanes] = useState<PaneType[]>(() =>
-    normalizePaneOrder(["raw", "pre"]),
-  );
+  const [paneInstances, setPaneInstances] = useState<PaneInstance[]>(loadInitialPaneInstances);
   const [diffMode, setDiffMode] = useState(false);
   const [reference, setReference] = useState<AnnotationSource>("pre");
   const [hypothesis, setHypothesis] = useState<AnnotationSource>("manual");
@@ -377,6 +442,8 @@ function useAppContentController() {
   const [agentLlmRun, setAgentLlmRun] = useState<string>("__latest__");
   const [agentMethods, setAgentMethods] = useState<AgentMethodOption[]>([]);
   const [methodView, setMethodView] = useState<MethodView>("default");
+  const [methodsLabPaneSpans, setMethodsLabPaneSpans] = useState<Record<string, CanonicalSpan[]>>({});
+  const [methodsLabPaneLoading, setMethodsLabPaneLoading] = useState<Record<string, boolean>>({});
 
   const [agentRunning, setAgentRunning] = useState(false);
   const [methodRunning, setMethodRunning] = useState(false);
@@ -384,13 +451,16 @@ function useAppContentController() {
   const [methodChunked, setMethodChunked] = useState(false);
   const [metrics, setMetrics] = useState<MetricsResult | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(false);
-  const [dashboard, setDashboard] = useState<DashboardMetricsResult | null>(null);
-  const [dashboardLoading, setDashboardLoading] = useState(false);
+  const [metricsCandidates, setMetricsCandidates] = useState<MetricsCandidate[]>([]);
+  const [compareReference, setCompareReference] = useState<MetricsCandidateSource>("manual");
+  const [compareHypotheses, setCompareHypotheses] = useState<MetricsCandidateSource[]>([]);
+  const [compareResult, setCompareResult] = useState<MetricsCompareResult | null>(null);
+  const [compareLoading, setCompareLoading] = useState(false);
 
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle"); // 4.1
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(null);
   const savedTimer = useRef<ReturnType<typeof setTimeout>>(null);
-  const dashboardRefreshTimer = useRef<ReturnType<typeof setTimeout>>(null);
+  const compareRefreshTimer = useRef<ReturnType<typeof setTimeout>>(null);
   const agentViewRef = useRef<AgentView>("combined");
   const agentLlmRunRef = useRef<string>("__latest__");
   const methodViewRef = useRef<MethodView>("default");
@@ -907,18 +977,37 @@ function useAppContentController() {
     }
   }, []);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        "annotation_tool_pane_instances_v1",
+        JSON.stringify(paneInstances),
+      );
+    } catch {
+      // localStorage unavailable
+    }
+  }, [paneInstances]);
+
   const handleTogglePane = useCallback((pane: PaneType) => {
-    setVisiblePanes((prev) => {
-      const next = prev.includes(pane)
-        ? prev.filter((p) => p !== pane)
-        : [...prev, pane];
-      return normalizePaneOrder(next);
+    setPaneInstances((prev) => {
+      if (pane === "methods") {
+        return normalizePaneInstances([...prev, makePaneInstance("methods")]);
+      }
+      const exists = prev.some((item) => item.type === pane);
+      if (exists) {
+        return normalizePaneInstances(prev.filter((item) => item.type !== pane));
+      }
+      return normalizePaneInstances([...prev, makePaneInstance(pane)]);
     });
   }, []);
 
+  const orderedPaneInstances = useMemo(
+    () => normalizePaneInstances(paneInstances),
+    [paneInstances],
+  );
   const orderedVisiblePanes = useMemo(
-    () => normalizePaneOrder(visiblePanes),
-    [visiblePanes],
+    () => orderedPaneInstances.map((pane) => pane.type),
+    [orderedPaneInstances],
   );
 
   const methodOutputIds = useMemo(
@@ -1079,10 +1168,39 @@ function useAppContentController() {
     return doc.agent_run_metrics?.chunk_diagnostics ?? [];
   }, [agentLlmRun, agentView, doc]);
 
-  const methodChunkDiagnostics = useMemo<AgentChunkDiagnostic[]>(
-    () => resolveMethodChunkDiagnostics(doc, methodView),
-    [doc, methodView],
-  );
+  useEffect(() => {
+    const activeDocId = selectedId;
+    if (!activeDocId) {
+      setMethodsLabPaneSpans({});
+      setMethodsLabPaneLoading({});
+      return;
+    }
+    for (const pane of orderedPaneInstances) {
+      if (pane.type !== "methods") continue;
+      const parsed = parseMethodsLabSource(pane.source_ref);
+      if (!parsed) continue;
+      const cacheKey = `${pane.id}:${activeDocId}:${pane.source_ref}`;
+      setMethodsLabPaneLoading((prev) => ({ ...prev, [pane.id]: true }));
+      getMethodsLabDocResult(parsed.runId, parsed.cellId, activeDocId)
+        .then((detail) => {
+          setMethodsLabPaneSpans((prev) => ({
+            ...prev,
+            [cacheKey]: detail.hypothesis_spans,
+          }));
+        })
+        .catch((err: unknown) => {
+          setError(String(err));
+          setMethodsLabPaneSpans((prev) => ({ ...prev, [cacheKey]: [] }));
+        })
+        .finally(() => {
+          setMethodsLabPaneLoading((prev) => {
+            const next = { ...prev };
+            delete next[pane.id];
+            return next;
+          });
+        });
+    }
+  }, [orderedPaneInstances, selectedId]);
 
   useEffect(() => {
     if (agentLlmRun === "__latest__") return;
@@ -1109,6 +1227,130 @@ function useAppContentController() {
     setMethodView(latestMethodView);
   }, [doc, methodOutputSignature]);
 
+  const refreshMetricCandidates = useCallback(async () => {
+    const candidates = await getMetricsCandidates();
+    setMetricsCandidates(candidates);
+    const nextReference = candidates.some((candidate) => candidate.source === compareReference)
+      ? compareReference
+      : candidates.find((candidate) => candidate.source === "manual")?.source ??
+        candidates[0]?.source ??
+        "manual";
+    if (nextReference !== compareReference) {
+      setCompareReference(nextReference);
+    }
+    setCompareHypotheses((prev) => {
+      const available = new Set(candidates.map((candidate) => candidate.source));
+      const retained = prev.filter((source) => available.has(source) && source !== nextReference);
+      if (retained.length > 0) return retained;
+      return candidates
+        .filter(
+          (candidate) =>
+            candidate.source !== nextReference &&
+            (candidate.kind === "method_run" || candidate.kind === "methods_lab_cell"),
+        )
+        .map((candidate) => candidate.source);
+    });
+    return candidates;
+  }, [compareReference]);
+
+  useEffect(() => {
+    if (mainTab !== "dashboard") return;
+    refreshMetricCandidates().catch((err: unknown) => setError(String(err)));
+  }, [mainTab, refreshMetricCandidates]);
+
+  const handleCompareRefresh = useCallback(async () => {
+    setCompareLoading(true);
+    try {
+      const candidates = metricsCandidates.length > 0 ? metricsCandidates : await refreshMetricCandidates();
+      const available = new Set(candidates.map((candidate) => candidate.source));
+      const hypotheses = compareHypotheses.filter(
+        (source) => available.has(source) && source !== compareReference,
+      );
+      if (hypotheses.length === 0) {
+        setCompareResult(null);
+        setWarning("Select at least one saved output to compare.");
+        return;
+      }
+      const result = await compareMetrics(compareReference, hypotheses, matchMode, "recall");
+      setCompareResult(result);
+    } catch (err: unknown) {
+      setError(String(err));
+    } finally {
+      setCompareLoading(false);
+    }
+  }, [compareHypotheses, compareReference, matchMode, metricsCandidates, refreshMetricCandidates]);
+
+  const addMethodPaneForSource = useCallback((source: MetricsCandidateSource) => {
+    setPaneInstances((prev) =>
+      normalizePaneInstances([...prev, makePaneInstance("methods", source)]),
+    );
+    const methodId = sourceToMethodView(source);
+    if (methodId) {
+      setMethodView(methodId);
+    }
+  }, []);
+
+  const handleOpenCompareDocument = useCallback(
+    (source: MetricsCandidateSource, docId: string) => {
+      setSelectedId(docId);
+      if (String(source).startsWith("agent.method.") || String(source).startsWith("methods_lab.")) {
+        addMethodPaneForSource(source);
+      }
+      setMainTab("workspace");
+    },
+    [addMethodPaneForSource],
+  );
+
+  const handleCompareExportCsv = useCallback(() => {
+    if (!compareResult) return;
+    const rows = [
+      [
+        "candidate",
+        "document",
+        "recall",
+        "f1",
+        "precision",
+        "tp",
+        "fp",
+        "fn",
+        "exact_f1",
+        "overlap_f1",
+        "coverage_compared",
+        "coverage_total",
+      ],
+    ];
+    for (const hypothesisItem of compareResult.hypotheses) {
+      for (const row of hypothesisItem.documents) {
+        rows.push([
+          hypothesisItem.label,
+          row.filename,
+          String(row.micro.recall),
+          String(row.micro.f1),
+          String(row.micro.precision),
+          String(row.micro.tp),
+          String(row.micro.fp),
+          String(row.micro.fn),
+          String(row.exact_micro.f1),
+          String(row.overlap_micro.f1),
+          String(hypothesisItem.coverage.compared_documents),
+          String(hypothesisItem.coverage.total_documents),
+        ]);
+      }
+    }
+    const csv = rows
+      .map((row) => row.map((cell) => `"${cell.replace(/"/g, '""')}"`).join(","))
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `metrics-comparison-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, [compareResult]);
+
   useEffect(() => {
     if (sourceOptions.length === 0) return;
     const values = sourceOptions.map((option) => option.value);
@@ -1124,47 +1366,24 @@ function useAppContentController() {
     }
   }, [hypothesis, reference, sourceOptions]);
 
-  const handleDashboardRefresh = useCallback(async () => {
-    if (documents.length === 0) {
-      setDashboard(null);
-      return;
-    }
-    setDashboardLoading(true);
-    try {
-      const result = await getMetricsDashboard(
-        reference,
-        hypothesis,
-        matchMode,
-      );
-      setDashboard(result);
-    } catch (e: unknown) {
-      setError(String(e));
-    } finally {
-      setDashboardLoading(false);
-    }
-  }, [documents.length, reference, hypothesis, matchMode]);
-
-  useEffect(() => {
-    void handleDashboardRefresh();
-  }, [handleDashboardRefresh]);
-
-  const scheduleDashboardRefresh = useCallback(
+  const scheduleCompareRefresh = useCallback(
     (delayMs = 1500) => {
-      if (dashboardRefreshTimer.current) {
-        clearTimeout(dashboardRefreshTimer.current);
+      if (!compareResult) return;
+      if (compareRefreshTimer.current) {
+        clearTimeout(compareRefreshTimer.current);
       }
-      dashboardRefreshTimer.current = setTimeout(() => {
-        dashboardRefreshTimer.current = null;
-        void handleDashboardRefresh();
+      compareRefreshTimer.current = setTimeout(() => {
+        compareRefreshTimer.current = null;
+        void handleCompareRefresh();
       }, delayMs);
     },
-    [handleDashboardRefresh],
+    [compareResult, handleCompareRefresh],
   );
 
   useEffect(() => () => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     if (savedTimer.current) clearTimeout(savedTimer.current);
-    if (dashboardRefreshTimer.current) clearTimeout(dashboardRefreshTimer.current);
+    if (compareRefreshTimer.current) clearTimeout(compareRefreshTimer.current);
   }, []);
 
   // 4.1: Save status in debounced auto-save
@@ -1186,7 +1405,7 @@ function useAppContentController() {
       // Debounced auto-save
       if (saveTimer.current) clearTimeout(saveTimer.current);
       if (savedTimer.current) clearTimeout(savedTimer.current);
-      if (dashboardRefreshTimer.current) clearTimeout(dashboardRefreshTimer.current);
+      if (compareRefreshTimer.current) clearTimeout(compareRefreshTimer.current);
       setSaveStatus("saving");
       const docId = doc.id;
       saveTimer.current = setTimeout(() => {
@@ -1195,7 +1414,7 @@ function useAppContentController() {
             setDoc((current) => (current?.id === savedDoc.id ? savedDoc : current));
             setSaveStatus("saved");
             savedTimer.current = setTimeout(() => setSaveStatus("idle"), 2000);
-            scheduleDashboardRefresh();
+            scheduleCompareRefresh();
           })
           .catch((e: unknown) => {
             setSaveStatus("idle");
@@ -1203,7 +1422,7 @@ function useAppContentController() {
           });
       }, 1000);
     },
-    [doc, scheduleDashboardRefresh],
+    [doc, scheduleCompareRefresh],
   );
 
   const handleRunAgent = useCallback(
@@ -1238,7 +1457,7 @@ function useAppContentController() {
               : `Agent run completed for ${fileLabel} with ${spanCount} span(s).`,
           );
         }
-        void handleDashboardRefresh();
+        void handleCompareRefresh();
       } catch (e: unknown) {
         setError(String(e));
         pushRunToast("error", `Agent run failed for ${fileLabel}.`);
@@ -1246,7 +1465,7 @@ function useAppContentController() {
         setAgentRunning(false);
       }
     },
-    [doc, handleDashboardRefresh, pushRunToast],
+    [doc, handleCompareRefresh, pushRunToast],
   );
 
   const handleRunMethod = useCallback(
@@ -1262,8 +1481,13 @@ function useAppContentController() {
         const nonChunkWarning = nonChunkWarningMessage(warnings);
         setWarning(nonChunkWarning);
         const methodKey = config.method_id?.trim() ?? "";
-        const spanCount = methodKey
-          ? updated.agent_outputs?.methods?.[methodKey]?.length ?? 0
+        const methodRunKeys = Object.keys(updated.agent_outputs?.methods ?? {}).filter(
+          (key) => methodKey && key.startsWith(`${methodKey}::`),
+        );
+        const latestMethodKey =
+          methodRunKeys.length > 0 ? methodRunKeys[methodRunKeys.length - 1] : methodKey;
+        const spanCount = latestMethodKey
+          ? updated.agent_outputs?.methods?.[latestMethodKey]?.length ?? 0
           : 0;
         const methodLabel = config.method_id?.trim();
         const modelLabel = config.model?.trim();
@@ -1283,7 +1507,7 @@ function useAppContentController() {
               : `Method run completed for ${fileLabel} with ${spanCount} span(s).`,
           );
         }
-        void handleDashboardRefresh();
+        void handleCompareRefresh();
       } catch (e: unknown) {
         setError(String(e));
         pushRunToast("error", `Method run failed for ${fileLabel}.`);
@@ -1291,7 +1515,7 @@ function useAppContentController() {
         setMethodRunning(false);
       }
     },
-    [doc, handleDashboardRefresh, pushRunToast],
+    [doc, handleCompareRefresh, pushRunToast],
   );
 
   const handleMetricsRefresh = useCallback(async () => {
@@ -1313,7 +1537,7 @@ function useAppContentController() {
   }, [doc, reference, hypothesis, matchMode]);
 
   // Compute diffs if diff mode is on
-  const getSpansForSource = (source: AnnotationSource): CanonicalSpan[] => {
+  const getSpansForSource = (source: MetricsCandidateSource): CanonicalSpan[] => {
     if (!doc) return [];
     switch (source) {
       case "pre":
@@ -1351,15 +1575,21 @@ function useAppContentController() {
     return doc.agent_annotations;
   };
 
-  const getMethodSpans = (): CanonicalSpan[] => {
-    if (!doc || !methodView) return [];
-    return doc.agent_outputs?.methods?.[methodView] ?? [];
+  const getMethodSpans = (sourceRef?: MetricsCandidateSource, paneId?: string): CanonicalSpan[] => {
+    if (!doc) return [];
+    const methodsLabSource = parseMethodsLabSource(sourceRef);
+    if (methodsLabSource && paneId && selectedId) {
+      return methodsLabPaneSpans[`${paneId}:${selectedId}:${sourceRef}`] ?? [];
+    }
+    const methodId = sourceToMethodView(sourceRef) ?? methodView;
+    if (!methodId) return [];
+    return doc.agent_outputs?.methods?.[methodId] ?? [];
   };
 
-  const getPaneSource = (paneType: PaneType): AnnotationSource | null => {
-    if (paneType === "pre") return "pre";
-    if (paneType === "manual") return "manual";
-    if (paneType === "agent") {
+  const getPaneSource = (pane: PaneInstance): MetricsCandidateSource | null => {
+    if (pane.type === "pre") return "pre";
+    if (pane.type === "manual") return "manual";
+    if (pane.type === "agent") {
       if (agentView === "rule") return "agent.rule";
       if (agentView === "llm") {
         return agentLlmRun === "__latest__"
@@ -1368,7 +1598,8 @@ function useAppContentController() {
       }
       return "agent";
     }
-    if (paneType === "methods") {
+    if (pane.type === "methods") {
+      if (pane.source_ref) return pane.source_ref;
       return methodView ? (`agent.method.${methodView}` as AnnotationSource) : null;
     }
     return null;
@@ -1389,15 +1620,12 @@ function useAppContentController() {
     return out;
   };
 
-  const getGlobalDiffForSource = (source: AnnotationSource) => {
+  const getGlobalDiffForSource = (source: MetricsCandidateSource) => {
     if (!doc || !diffMode) return [];
-    const methodSource = methodView
-      ? (`agent.method.${methodView}` as AnnotationSource)
-      : null;
+    if (!String(source).startsWith("agent.") && source !== "pre" && source !== "manual") return [];
     const visibleSources = getDisplayedSources(
-      orderedVisiblePanes,
+      orderedPaneInstances,
       agentView,
-      methodSource,
     ).filter((item) => item !== source);
     if (visibleSources.length === 0) return [];
 
@@ -1408,23 +1636,19 @@ function useAppContentController() {
     return dedupeDiffs(allDiffs);
   };
 
-  const getDiffSpans = (paneType: PaneType) => {
+  const getDiffSpans = (pane: PaneInstance) => {
     if (!doc || !diffMode) return [];
-    if (paneType === "raw") {
-      const methodSource = methodView
-        ? (`agent.method.${methodView}` as AnnotationSource)
-        : null;
+    if (pane.type === "raw") {
       const visibleSources = getDisplayedSources(
-        orderedVisiblePanes,
+        orderedPaneInstances,
         agentView,
-        methodSource,
       );
       return dedupeDiffs(
         visibleSources.flatMap((source) => getGlobalDiffForSource(source)),
       );
     }
-    const source = getPaneSource(paneType);
-    if (!source) return [];
+    const source = getPaneSource(pane);
+    if (!source || !String(source).startsWith("agent.")) return [];
     return getGlobalDiffForSource(source);
   };
 
@@ -1455,6 +1679,8 @@ function useAppContentController() {
     folderBusyId,
     exporting,
     mirroringPreToManual,
+    orderedPaneInstances,
+    setPaneInstances,
     orderedVisiblePanes,
     diffMode,
     setDiffMode,
@@ -1477,15 +1703,20 @@ function useAppContentController() {
     methodChunked,
     metrics,
     metricsLoading,
-    dashboard,
-    dashboardLoading,
+    metricsCandidates,
+    compareReference,
+    setCompareReference,
+    compareHypotheses,
+    setCompareHypotheses,
+    compareResult,
+    compareLoading,
     saveStatus,
     registerPane,
     handleScroll,
     sourceOptions,
     llmRunOptions,
     agentChunkDiagnostics,
-    methodChunkDiagnostics,
+    methodsLabPaneLoading,
     handleIngestFiles,
     handleDeleteDocument,
     handleDeleteFolderDocument,
@@ -1495,7 +1726,9 @@ function useAppContentController() {
     handlePruneFolder,
     handleMirrorPreToManual,
     handleExportSession,
-    handleDashboardRefresh,
+    handleCompareRefresh,
+    handleCompareExportCsv,
+    handleOpenCompareDocument,
     handleTogglePane,
     handleManualChange,
     handleRunAgent,
@@ -1539,6 +1772,8 @@ function renderAppContent(controller: AppContentController) {
     folderBusyId,
     exporting,
     mirroringPreToManual,
+    orderedPaneInstances,
+    setPaneInstances,
     orderedVisiblePanes,
     diffMode,
     setDiffMode,
@@ -1561,15 +1796,20 @@ function renderAppContent(controller: AppContentController) {
     methodChunked,
     metrics,
     metricsLoading,
-    dashboard,
-    dashboardLoading,
+    metricsCandidates,
+    compareReference,
+    setCompareReference,
+    compareHypotheses,
+    setCompareHypotheses,
+    compareResult,
+    compareLoading,
     saveStatus,
     registerPane,
     handleScroll,
     sourceOptions,
     llmRunOptions,
     agentChunkDiagnostics,
-    methodChunkDiagnostics,
+    methodsLabPaneLoading,
     handleIngestFiles,
     handleDeleteDocument,
     handleDeleteFolderDocument,
@@ -1579,7 +1819,9 @@ function renderAppContent(controller: AppContentController) {
     handlePruneFolder,
     handleMirrorPreToManual,
     handleExportSession,
-    handleDashboardRefresh,
+    handleCompareRefresh,
+    handleCompareExportCsv,
+    handleOpenCompareDocument,
     handleTogglePane,
     handleManualChange,
     handleRunAgent,
@@ -1592,7 +1834,7 @@ function renderAppContent(controller: AppContentController) {
     handleWorkspaceChanged,
   } = controller;
 
-  const allPanes: PaneType[] = orderedVisiblePanes;
+  const allPanes: PaneInstance[] = orderedPaneInstances;
   let paneIndex = 0;
 
   return (
@@ -1682,72 +1924,29 @@ function renderAppContent(controller: AppContentController) {
             selectedDocumentId={selectedId}
             onSelectDocument={setSelectedId}
             onWorkspaceChanged={handleWorkspaceChanged}
+            onOpenCellInWorkspace={handleOpenCompareDocument}
+            onCompareCells={(sources) => {
+              setCompareReference("manual");
+              setCompareHypotheses(sources);
+              setMainTab("dashboard");
+            }}
           />
         ) : mainTab === "dashboard" ? (
           <section className="dashboard-tab">
-            <div className="dashboard-tab-toolbar">
-              <div className="dashboard-tab-controls">
-                <label>
-                  Reference
-                  <select
-                    value={reference}
-                    onChange={(e) => setReference(e.target.value as AnnotationSource)}
-                  >
-                    {sourceOptions.map((option) => (
-                      <option key={`dash-ref-${option.value}`} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Hypothesis
-                  <select
-                    value={hypothesis}
-                    onChange={(e) => setHypothesis(e.target.value as AnnotationSource)}
-                  >
-                    {sourceOptions.map((option) => (
-                      <option key={`dash-hyp-${option.value}`} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Match
-                  <select
-                    value={matchMode}
-                    onChange={(e) => setMatchMode(e.target.value as MatchMode)}
-                  >
-                    <option value="exact">Exact</option>
-                    <option value="boundary">Trim Space/Punct</option>
-                    <option value="overlap">Overlap</option>
-                  </select>
-                </label>
-              </div>
-              <button
-                type="button"
-                className="dashboard-tab-refresh"
-                onClick={() => void handleDashboardRefresh()}
-              >
-                Refresh Dashboard
-              </button>
-            </div>
-            <DashboardPanel
-              dashboard={dashboard}
-              loading={dashboardLoading}
-              onRefresh={handleDashboardRefresh}
-              selectedId={selectedId}
-              onSelectDocument={(docId) => {
-                setSelectedId(docId);
-                setMainTab("workspace");
-              }}
+            <MetricsCompareDashboard
+              candidates={metricsCandidates}
+              reference={compareReference}
+              selectedHypotheses={compareHypotheses}
+              matchMode={matchMode}
+              loading={compareLoading}
+              result={compareResult}
+              onReferenceChange={setCompareReference}
+              onHypothesesChange={setCompareHypotheses}
+              onMatchModeChange={setMatchMode}
+              onRefresh={() => void handleCompareRefresh()}
+              onExportCsv={handleCompareExportCsv}
+              onOpenDocument={handleOpenCompareDocument}
             />
-            {!dashboard && !dashboardLoading && (
-              <div className="dashboard-tab-empty">
-                No dashboard metrics yet. Click <strong>Refresh Dashboard</strong>.
-              </div>
-            )}
           </section>
         ) : (
           <>
@@ -1778,39 +1977,39 @@ function renderAppContent(controller: AppContentController) {
                   saveStatus={saveStatus}
                 />
                 <PaneContainer>
-                  {allPanes.map((paneType) => {
+                  {allPanes.map((pane) => {
                     const idx = paneIndex++;
-                    switch (paneType) {
+                    switch (pane.type) {
                       case "raw":
                         return (
                           <RawPane
-                            key="raw"
+                            key={pane.id}
                             ref={registerPane(idx)}
                             text={doc.raw_text}
-                            diffSpans={getDiffSpans("raw")}
+                            diffSpans={getDiffSpans(pane)}
                             onScroll={handleScroll(idx)}
                           />
                         );
                       case "pre":
                         return (
                           <PreAnnotationPane
-                            key="pre"
+                            key={pane.id}
                             ref={registerPane(idx)}
                             text={doc.raw_text}
                             spans={doc.pre_annotations}
-                            diffSpans={getDiffSpans("pre")}
+                            diffSpans={getDiffSpans(pane)}
                             onScroll={handleScroll(idx)}
                           />
                         );
                       case "manual":
                         return (
                           <ManualAnnotationPane
-                            key="manual"
+                            key={pane.id}
                             ref={registerPane(idx)}
                             text={doc.raw_text}
                             labels={PII_LABELS}
                             spans={doc.manual_annotations}
-                            diffSpans={getDiffSpans("manual")}
+                            diffSpans={getDiffSpans(pane)}
                             onSpansChange={handleManualChange}
                             onScroll={handleScroll(idx)}
                           />
@@ -1818,7 +2017,7 @@ function renderAppContent(controller: AppContentController) {
                       case "agent":
                         return (
                           <AgentPane
-                            key="agent"
+                            key={pane.id}
                             ref={registerPane(idx)}
                             text={doc.raw_text}
                             spans={getAgentSpans()}
@@ -1832,33 +2031,57 @@ function renderAppContent(controller: AppContentController) {
                             llmRunOptions={llmRunOptions}
                             activeLlmRunKey={agentLlmRun}
                             onActiveLlmRunKeyChange={setAgentLlmRun}
-                            diffSpans={getDiffSpans("agent")}
+                            diffSpans={getDiffSpans(pane)}
                             onRunAgent={handleRunAgent}
                             running={agentRunning}
                             onScroll={handleScroll(idx)}
                           />
                         );
                       case "methods":
-                        return (
-                          <MethodPane
-                            key="methods"
-                            ref={registerPane(idx)}
-                            text={doc.raw_text}
-                            spans={getMethodSpans()}
-                            runProgress={methodRunning ? agentRunProgress : null}
-                            methods={methodCatalog}
-                            processedWithChunking={
-                              methodChunked || getChunkDiagnosticsCount(methodChunkDiagnostics) > 0
-                            }
-                            chunkDiagnostics={methodChunkDiagnostics}
-                            activeMethod={methodView}
-                            onActiveMethodChange={setMethodView}
-                            diffSpans={getDiffSpans("methods")}
-                            onRunMethod={handleRunMethod}
-                            running={methodRunning}
-                            onScroll={handleScroll(idx)}
-                          />
-                        );
+                        {
+                          const activeMethod = sourceToMethodView(pane.source_ref) ?? methodView;
+                          const methodSource =
+                            pane.source_ref ??
+                            (activeMethod
+                              ? (`agent.method.${activeMethod}` as MetricsCandidateSource)
+                              : undefined);
+                          const isMethodsLabPane = Boolean(parseMethodsLabSource(methodSource));
+                          return (
+                            <MethodPane
+                              key={pane.id}
+                              ref={registerPane(idx)}
+                              text={doc.raw_text}
+                              spans={getMethodSpans(methodSource, pane.id)}
+                              runProgress={methodRunning && !isMethodsLabPane ? agentRunProgress : null}
+                              methods={methodCatalog}
+                              processedWithChunking={
+                                !isMethodsLabPane &&
+                                (methodChunked || getChunkDiagnosticsCount(resolveMethodChunkDiagnostics(doc, activeMethod)) > 0)
+                              }
+                              chunkDiagnostics={isMethodsLabPane ? [] : resolveMethodChunkDiagnostics(doc, activeMethod)}
+                              activeMethod={activeMethod}
+                              onActiveMethodChange={(nextMethod) => {
+                                setPaneInstances((prev) =>
+                                  normalizePaneInstances(
+                                    prev.map((item) =>
+                                      item.id === pane.id
+                                        ? {
+                                            ...item,
+                                            source_ref: `agent.method.${nextMethod}` as MetricsCandidateSource,
+                                          }
+                                        : item,
+                                    ),
+                                  ),
+                                );
+                                setMethodView(nextMethod);
+                              }}
+                              diffSpans={getDiffSpans(pane)}
+                              onRunMethod={handleRunMethod}
+                              running={methodRunning || Boolean(methodsLabPaneLoading[pane.id])}
+                              onScroll={handleScroll(idx)}
+                            />
+                          );
+                        }
                     }
                   })}
                 </PaneContainer>
@@ -1922,21 +2145,22 @@ function AppContent() {
 }
 
 function getDisplayedSources(
-  visiblePanes: PaneType[],
+  panes: PaneInstance[],
   agentView: AgentView,
-  methodSource: AnnotationSource | null,
-): AnnotationSource[] {
-  const orderedPanes = normalizePaneOrder(visiblePanes);
-  const sources: AnnotationSource[] = [];
-  if (orderedPanes.includes("pre")) sources.push("pre");
-  if (orderedPanes.includes("manual")) sources.push("manual");
-  if (orderedPanes.includes("agent")) {
+): MetricsCandidateSource[] {
+  const sources: MetricsCandidateSource[] = [];
+  if (panes.some((pane) => pane.type === "pre")) sources.push("pre");
+  if (panes.some((pane) => pane.type === "manual")) sources.push("manual");
+  if (panes.some((pane) => pane.type === "agent")) {
     if (agentView === "rule") sources.push("agent.rule");
     else if (agentView === "llm") sources.push("agent.llm");
     else sources.push("agent");
   }
-  if (orderedPanes.includes("methods") && methodSource) {
-    sources.push(methodSource);
+  for (const pane of panes) {
+    if (pane.type !== "methods") continue;
+    if (pane.source_ref) {
+      sources.push(pane.source_ref);
+    }
   }
   return sources;
 }
