@@ -23,7 +23,7 @@ import httpx
 from dotenv import dotenv_values
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from models import (
     AgentChunkDiagnostic,
@@ -62,9 +62,35 @@ from taxonomy import canonicalize_label, canonicalize_span
 
 app = FastAPI(title="Annotation Tool")
 
+DEFAULT_CORS_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
+    "http://localhost:4173",
+    "http://127.0.0.1:4173",
+]
+
+
+def _build_cors_origins() -> list[str]:
+    origins = list(DEFAULT_CORS_ORIGINS)
+    frontend_port = os.environ.get("FRONTEND_PORT", "").strip()
+    if frontend_port:
+        origins.extend(
+            [
+                f"http://localhost:{frontend_port}",
+                f"http://127.0.0.1:{frontend_port}",
+            ]
+        )
+    extra_origins = os.environ.get("ANNOTATION_TOOL_CORS_ORIGINS", "").strip()
+    if extra_origins:
+        origins.extend(origin.strip() for origin in extra_origins.split(",") if origin.strip())
+    return list(dict.fromkeys(origins))
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_build_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -386,6 +412,28 @@ def _folders_dir(session_id: str = "default") -> Path:
     return _session_dir(session_id) / "folders"
 
 
+def _write_json_atomic(path: Path, payload: object, *, indent: int | None = 2) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        temp.write_text(json.dumps(payload, indent=indent))
+        temp.replace(path)
+    finally:
+        if temp.exists():
+            temp.unlink()
+
+
+def _write_text_atomic(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        temp.write_text(value)
+        temp.replace(path)
+    finally:
+        if temp.exists():
+            temp.unlink()
+
+
 def _load_folder_index(session_id: str = "default") -> list[str]:
     idx_path = _folders_dir(session_id) / "_index.json"
     if not idx_path.exists():
@@ -399,7 +447,7 @@ def _load_folder_index(session_id: str = "default") -> list[str]:
 def _save_folder_index(folder_ids: list[str], session_id: str = "default") -> None:
     folder_dir = _folders_dir(session_id)
     folder_dir.mkdir(parents=True, exist_ok=True)
-    (folder_dir / "_index.json").write_text(json.dumps(folder_ids, indent=2))
+    _write_json_atomic(folder_dir / "_index.json", folder_ids)
 
 
 def _load_folder(folder_id: str, session_id: str = "default") -> FolderRecord | None:
@@ -412,7 +460,7 @@ def _load_folder(folder_id: str, session_id: str = "default") -> FolderRecord | 
 def _save_folder(folder: FolderRecord, session_id: str = "default") -> None:
     folder_dir = _folders_dir(session_id)
     folder_dir.mkdir(parents=True, exist_ok=True)
-    (folder_dir / f"{folder.id}.json").write_text(folder.model_dump_json(indent=2))
+    _write_text_atomic(folder_dir / f"{folder.id}.json", folder.model_dump_json(indent=2))
 
 
 def _delete_folder_file(folder_id: str, session_id: str = "default") -> bool:
@@ -493,6 +541,71 @@ def _folder_to_detail(folder: FolderRecord, session_id: str = "default") -> dict
         "child_folder_ids": [item["id"] for item in child_folders],
         "documents": documents,
         "child_folders": child_folders,
+    }
+
+
+def _credential_status_payload() -> dict[str, object]:
+    api_key_sources = _present_env_vars(ENV_API_KEY_VARS)
+    api_base_sources = _present_env_vars(ENV_API_BASE_VARS)
+    return {
+        "has_api_key": bool(api_key_sources),
+        "api_key_sources": api_key_sources,
+        "has_api_base": bool(api_base_sources),
+        "api_base_sources": api_base_sources,
+    }
+
+
+def _method_availability_warnings(method_bundle: str = "audited") -> list[dict[str, str]]:
+    warnings: list[dict[str, str]] = []
+    for method in list_agent_methods(method_bundle=method_bundle):
+        if method.get("available", True):
+            continue
+        warnings.append(
+            {
+                "id": str(method.get("id", "")),
+                "label": str(method.get("label", method.get("id", ""))),
+                "reason": str(method.get("unavailable_reason") or "Method is unavailable"),
+            }
+        )
+    return warnings
+
+
+def _config_warnings(credentials: dict[str, object]) -> list[str]:
+    warnings: list[str] = []
+    if not credentials["has_api_key"]:
+        warnings.append(
+            "No LiteLLM or provider API key is configured; LLM-backed runs require a UI key or environment key."
+        )
+    return warnings
+
+
+def _readiness_counts(session_id: str = "default") -> dict[str, int]:
+    return {
+        "documents": len(_load_session_index(session_id)),
+        "folders": len(_load_folder_index(session_id)),
+        "prompt_lab_runs": len(_load_prompt_lab_index(session_id)),
+        "methods_lab_runs": len(_load_methods_lab_index(session_id)),
+    }
+
+
+def _health_payload(session_id: str = "default") -> dict[str, object]:
+    credentials = _credential_status_payload()
+    config_warnings = _config_warnings(credentials)
+    method_warnings = _method_availability_warnings()
+    status = "warning" if config_warnings or method_warnings else "ok"
+    return {
+        "status": status,
+        "tool_version": TOOL_VERSION,
+        "storage": {
+            "root": str(BASE_DIR),
+            "session_dir": str(_session_dir(session_id)),
+            "exists": BASE_DIR.exists(),
+        },
+        "counts": _readiness_counts(session_id),
+        "credentials": credentials,
+        "method_availability_warnings": method_warnings,
+        "config_warnings": config_warnings,
+        "dependency_warnings": [],
     }
 
 
@@ -644,7 +757,7 @@ def _save_hidden_doc(doc: CanonicalDocument, session_id: str = "default") -> Non
 def _save_doc(doc: CanonicalDocument, session_id: str = "default"):
     d = _session_dir(session_id)
     d.mkdir(parents=True, exist_ok=True)
-    (d / f"{doc.id}.source.json").write_text(doc.model_dump_json(indent=2))
+    _write_text_atomic(d / f"{doc.id}.source.json", doc.model_dump_json(indent=2))
 
 
 def _load_doc(doc_id: str, session_id: str = "default") -> CanonicalDocument | None:
@@ -659,9 +772,7 @@ def _save_sidecar(
 ):
     d = _session_dir(session_id)
     d.mkdir(parents=True, exist_ok=True)
-    (d / f"{doc_id}.{kind}.json").write_text(
-        json.dumps([s.model_dump() for s in spans], indent=2)
-    )
+    _write_json_atomic(d / f"{doc_id}.{kind}.json", [s.model_dump() for s in spans])
 
 
 def _load_sidecar(
@@ -741,14 +852,7 @@ def _save_json_sidecar(
 ):
     d = _session_dir(session_id)
     d.mkdir(parents=True, exist_ok=True)
-    target = d / f"{doc_id}.{kind}.json"
-    temp = d / f".{doc_id}.{kind}.{uuid.uuid4().hex}.tmp"
-    try:
-        temp.write_text(json.dumps(payload, indent=2))
-        temp.replace(target)
-    finally:
-        if temp.exists():
-            temp.unlink()
+    _write_json_atomic(d / f"{doc_id}.{kind}.json", payload)
 
 
 def _load_json_sidecar(
@@ -903,7 +1007,7 @@ def _load_session_index(session_id: str = "default") -> list[str]:
 def _save_session_index(session_id: str = "default"):
     d = _session_dir(session_id)
     d.mkdir(parents=True, exist_ok=True)
-    (d / "_index.json").write_text(json.dumps(_session_docs.get(session_id, [])))
+    _write_json_atomic(d / "_index.json", _session_docs.get(session_id, []), indent=None)
 
 
 ImportConflictPolicy = Literal["replace", "add_new", "keep_current"]
@@ -1443,7 +1547,7 @@ def _load_prompt_lab_index(session_id: str = "default") -> list[str]:
 def _save_prompt_lab_index(session_id: str = "default"):
     d = _prompt_lab_dir(session_id)
     d.mkdir(parents=True, exist_ok=True)
-    (d / "_index.json").write_text(json.dumps(_prompt_lab_runs.get(session_id, []), indent=2))
+    _write_json_atomic(d / "_index.json", _prompt_lab_runs.get(session_id, []))
 
 
 def _load_prompt_lab_run(run_id: str, session_id: str = "default") -> dict | None:
@@ -1462,7 +1566,7 @@ def _save_prompt_lab_run(run: dict, session_id: str = "default"):
         raise ValueError("Prompt Lab run payload missing id")
     d = _prompt_lab_dir(session_id)
     d.mkdir(parents=True, exist_ok=True)
-    _prompt_lab_run_path(run_id, session_id).write_text(json.dumps(run, indent=2))
+    _write_json_atomic(_prompt_lab_run_path(run_id, session_id), run)
 
 
 def _delete_prompt_lab_run(run_id: str, session_id: str = "default") -> bool:
@@ -1531,7 +1635,7 @@ def _load_methods_lab_index(session_id: str = "default") -> list[str]:
 def _save_methods_lab_index(session_id: str = "default"):
     d = _methods_lab_dir(session_id)
     d.mkdir(parents=True, exist_ok=True)
-    (d / "_index.json").write_text(json.dumps(_methods_lab_runs.get(session_id, []), indent=2))
+    _write_json_atomic(d / "_index.json", _methods_lab_runs.get(session_id, []))
 
 
 def _load_methods_lab_run(run_id: str, session_id: str = "default") -> dict | None:
@@ -1550,7 +1654,7 @@ def _save_methods_lab_run(run: dict, session_id: str = "default"):
         raise ValueError("Methods Lab run payload missing id")
     d = _methods_lab_dir(session_id)
     d.mkdir(parents=True, exist_ok=True)
-    _methods_lab_run_path(run_id, session_id).write_text(json.dumps(run, indent=2))
+    _write_json_atomic(_methods_lab_run_path(run_id, session_id), run)
 
 
 def _delete_methods_lab_run(run_id: str, session_id: str = "default") -> bool:
@@ -2781,7 +2885,7 @@ def _load_config() -> dict:
 
 def _save_config(cfg: dict):
     _ensure_dirs()
-    CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+    _write_json_atomic(CONFIG_PATH, cfg)
 
 
 def _normalize_experiment_concurrency_cap(
@@ -4063,6 +4167,28 @@ class FolderCreateBody(BaseModel):
     parent_folder_id: str | None = None
 
 
+@app.get("/api/health")
+async def get_health():
+    return _health_payload("default")
+
+
+@app.get("/api/workspace")
+async def get_workspace():
+    session_id = "default"
+    ids = _load_session_index(session_id)
+    documents = []
+    for did in ids:
+        doc = _load_doc(did, session_id)
+        if doc:
+            documents.append(_build_document_summary(did, session_id))
+    return {
+        "documents": documents,
+        "folders": [_folder_to_summary(folder, session_id) for folder in _load_all_folders(session_id)],
+        "folder_details": {},
+        "health": _health_payload(session_id),
+    }
+
+
 @app.get("/api/documents")
 async def list_documents():
     session_id = "default"
@@ -4395,6 +4521,93 @@ async def mirror_pre_to_manual(
         "copied_count": copied_count,
         "cleared_count": cleared_count,
         "doc_ids": processed_doc_ids,
+    }
+
+
+@app.post("/api/session/mirror-method-to-manual")
+async def mirror_method_to_manual(
+    scope: Annotated[Literal["top_level", "folder"], Query()] = "top_level",
+    folder_id: Annotated[str | None, Query()] = None,
+    run_id: Annotated[str | None, Query()] = None,
+    cell_id: Annotated[str | None, Query()] = None,
+):
+    session_id = "default"
+    normalized_run_id = run_id.strip() if run_id else ""
+    if not normalized_run_id:
+        raise HTTPException(status_code=400, detail="run_id is required")
+    normalized_cell_id = cell_id.strip() if cell_id else ""
+    if not normalized_cell_id:
+        raise HTTPException(status_code=400, detail="cell_id is required")
+
+    with _methods_lab_lock:
+        run = _load_methods_lab_run(normalized_run_id, session_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Methods Lab run not found")
+
+    cells = run.get("cells")
+    if not isinstance(cells, dict):
+        raise HTTPException(status_code=400, detail="Methods Lab run cells payload is invalid")
+    cell = cells.get(normalized_cell_id)
+    if not isinstance(cell, dict):
+        raise HTTPException(status_code=404, detail="Methods Lab cell not found")
+    cell_documents = cell.get("documents")
+    if not isinstance(cell_documents, dict):
+        raise HTTPException(status_code=400, detail="Methods Lab cell documents payload is invalid")
+
+    doc_ids = _resolve_ground_truth_export_doc_ids(scope, folder_id, session_id)
+    updated_at = _now_iso()
+    processed_doc_ids: list[str] = []
+    skipped_doc_ids: list[str] = []
+    copied_count = 0
+    cleared_count = 0
+
+    for doc_id in doc_ids:
+        doc = _load_doc(doc_id, session_id)
+        if doc is None:
+            skipped_doc_ids.append(doc_id)
+            continue
+        result = cell_documents.get(doc_id)
+        if not isinstance(result, dict) or str(result.get("status", "")) != "completed":
+            skipped_doc_ids.append(doc_id)
+            continue
+        spans_raw = result.get("hypothesis_spans", [])
+        if not isinstance(spans_raw, list):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Methods Lab result for document {doc_id} has invalid hypothesis_spans",
+            )
+        try:
+            spans = [CanonicalSpan.model_validate(item) for item in spans_raw]
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Methods Lab result for document {doc_id} has invalid hypothesis_spans: {exc}",
+            ) from exc
+        mirrored = _normalize_and_validate_spans(spans, doc.raw_text)
+        _persist_manual_annotations(
+            doc_id,
+            mirrored,
+            session_id,
+            updated_at=updated_at,
+        )
+        processed_doc_ids.append(doc_id)
+        if mirrored:
+            copied_count += 1
+        else:
+            cleared_count += 1
+
+    return {
+        "source": "method",
+        "scope": scope,
+        "folder_id": folder_id if scope == "folder" else None,
+        "run_id": normalized_run_id,
+        "cell_id": normalized_cell_id,
+        "processed_count": len(processed_doc_ids),
+        "copied_count": copied_count,
+        "cleared_count": cleared_count,
+        "skipped_count": len(skipped_doc_ids),
+        "doc_ids": processed_doc_ids,
+        "skipped_doc_ids": skipped_doc_ids,
     }
 
 
@@ -6129,6 +6342,10 @@ async def export_session_bundle():
             export_item["agent_metrics"] = metrics_payload
         documents.append(export_item)
 
+    prompt_lab_runs = _export_prompt_lab_runs(session_id)
+    methods_lab_runs = _export_methods_lab_runs(session_id)
+    exported_at = datetime.now(timezone.utc).isoformat()
+
     return {
         "format": BUNDLE_FORMAT,
         "version": BUNDLE_VERSION,
@@ -6136,11 +6353,19 @@ async def export_session_bundle():
             "tool_version": TOOL_VERSION,
             "import_supported_versions": sorted(SUPPORTED_BUNDLE_VERSIONS),
         },
-        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "exported_at": exported_at,
+        "summary": {
+            "bundle_version": BUNDLE_VERSION,
+            "exported_at": exported_at,
+            "document_count": len(documents),
+            "folder_count": len(folder_records),
+            "prompt_lab_run_count": len(prompt_lab_runs),
+            "methods_lab_run_count": len(methods_lab_runs),
+        },
         "documents": documents,
         "folders": [folder.model_dump() for folder in folder_records],
-        "prompt_lab_runs": _export_prompt_lab_runs(session_id),
-        "methods_lab_runs": _export_methods_lab_runs(session_id),
+        "prompt_lab_runs": prompt_lab_runs,
+        "methods_lab_runs": methods_lab_runs,
         "config": _load_config(),
     }
 
@@ -6915,11 +7140,4 @@ async def list_agent_method_catalog(method_bundle: str = Query("audited")):
 
 @app.get("/api/agent/credentials/status")
 async def get_agent_credentials_status():
-    api_key_sources = _present_env_vars(ENV_API_KEY_VARS)
-    api_base_sources = _present_env_vars(ENV_API_BASE_VARS)
-    return {
-        "has_api_key": bool(api_key_sources),
-        "api_key_sources": api_key_sources,
-        "has_api_base": bool(api_base_sources),
-        "api_base_sources": api_base_sources,
-    }
+    return _credential_status_payload()

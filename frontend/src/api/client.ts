@@ -14,6 +14,7 @@ import type {
   LLMConfidenceBand,
   LLMConfidenceMetric,
   MatchMode,
+  MirrorMethodToManualResult,
   MethodBundle,
   DocumentSummary,
   ExperimentDiagnostics,
@@ -35,6 +36,8 @@ import type {
   PromptLabRunCreateRequest,
   PromptLabRunDetail,
   PromptLabRunSummary,
+  ReadinessHealth,
+  WorkspaceState,
 } from "../types";
 
 const BASE = "/api";
@@ -68,6 +71,16 @@ export async function listDocuments(): Promise<DocumentSummary[]> {
 export async function listFolders(): Promise<FolderSummary[]> {
   const raw = await request<Record<string, unknown>[]>("/folders");
   return raw.map(normalizeFolderSummary);
+}
+
+export async function getHealth(): Promise<ReadinessHealth> {
+  const raw = await request<Record<string, unknown>>("/health");
+  return normalizeReadinessHealth(raw);
+}
+
+export async function getWorkspace(): Promise<WorkspaceState> {
+  const raw = await request<Record<string, unknown>>("/workspace");
+  return normalizeWorkspaceState(raw);
 }
 
 export async function getFolder(folderId: string): Promise<FolderDetail> {
@@ -127,6 +140,19 @@ export async function mirrorPreToManual(
     params.set("folder_id", exportScope.folderId);
   }
   return request(`/session/mirror-pre-to-manual?${params.toString()}`, { method: "POST" });
+}
+
+export async function mirrorMethodToManual(
+  exportScope: GroundTruthExportScope,
+  methodSource: { runId: string; cellId: string },
+): Promise<MirrorMethodToManualResult> {
+  const params = new URLSearchParams({ scope: exportScope.kind });
+  if (exportScope.kind === "folder") {
+    params.set("folder_id", exportScope.folderId);
+  }
+  params.set("run_id", methodSource.runId);
+  params.set("cell_id", methodSource.cellId);
+  return request(`/session/mirror-method-to-manual?${params.toString()}`, { method: "POST" });
 }
 
 export async function getDocument(id: string): Promise<CanonicalDocument> {
@@ -1261,6 +1287,71 @@ function normalizeDocumentSummary(raw: Record<string, unknown>): DocumentSummary
         ? raw.display_name
         : String(raw.filename ?? ""),
     status: (raw.status as DocumentSummary["status"] | undefined) ?? "pending",
+  };
+}
+
+function normalizeReadinessHealth(raw: Record<string, unknown>): ReadinessHealth {
+  const rawStorage = isRecord(raw.storage) ? raw.storage : {};
+  const rawCounts = isRecord(raw.counts) ? raw.counts : {};
+  const rawCredentials = isRecord(raw.credentials) ? raw.credentials : {};
+  return {
+    status: raw.status === "ok" ? "ok" : "warning",
+    tool_version: String(raw.tool_version ?? ""),
+    storage: {
+      root: String(rawStorage.root ?? ""),
+      session_dir: String(rawStorage.session_dir ?? ""),
+      exists: Boolean(rawStorage.exists),
+    },
+    counts: {
+      documents: toNumber(rawCounts.documents, 0),
+      folders: toNumber(rawCounts.folders, 0),
+      prompt_lab_runs: toNumber(rawCounts.prompt_lab_runs, 0),
+      methods_lab_runs: toNumber(rawCounts.methods_lab_runs, 0),
+    },
+    credentials: {
+      has_api_key: Boolean(rawCredentials.has_api_key),
+      api_key_sources: Array.isArray(rawCredentials.api_key_sources)
+        ? rawCredentials.api_key_sources.map((value) => String(value))
+        : [],
+      has_api_base: Boolean(rawCredentials.has_api_base),
+      api_base_sources: Array.isArray(rawCredentials.api_base_sources)
+        ? rawCredentials.api_base_sources.map((value) => String(value))
+        : [],
+    },
+    method_availability_warnings: Array.isArray(raw.method_availability_warnings)
+      ? raw.method_availability_warnings.filter(isRecord).map((warning) => ({
+          id: String(warning.id ?? ""),
+          label: String(warning.label ?? warning.id ?? ""),
+          reason: String(warning.reason ?? ""),
+        }))
+      : [],
+    config_warnings: Array.isArray(raw.config_warnings)
+      ? raw.config_warnings.map((value) => String(value))
+      : [],
+    dependency_warnings: Array.isArray(raw.dependency_warnings)
+      ? raw.dependency_warnings.map((value) => String(value))
+      : [],
+  };
+}
+
+function normalizeWorkspaceState(raw: Record<string, unknown>): WorkspaceState {
+  const folderDetails: Record<string, FolderDetail> = {};
+  if (isRecord(raw.folder_details)) {
+    for (const [folderId, detail] of Object.entries(raw.folder_details)) {
+      if (isRecord(detail)) {
+        folderDetails[folderId] = normalizeFolderDetail(detail);
+      }
+    }
+  }
+  return {
+    documents: Array.isArray(raw.documents)
+      ? raw.documents.filter(isRecord).map(normalizeDocumentSummary)
+      : [],
+    folders: Array.isArray(raw.folders)
+      ? raw.folders.filter(isRecord).map(normalizeFolderSummary)
+      : [],
+    folder_details: folderDetails,
+    health: normalizeReadinessHealth(isRecord(raw.health) ? raw.health : {}),
   };
 }
 

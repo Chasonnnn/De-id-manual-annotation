@@ -127,6 +127,33 @@ textarea:focus-visible {
   cursor: default;
 }
 
+.sidebar-loading-row {
+  padding: 6px 16px;
+  color: #a6adc8;
+  font-size: 12px;
+  cursor: default;
+}
+
+.sidebar-show-more-row {
+  padding: 7px 16px;
+  cursor: default;
+}
+
+.sidebar-show-more-row button {
+  border: 1px solid #585b70;
+  background: #252538;
+  color: #cdd6f4;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.sidebar-show-more-row button:hover {
+  border-color: #89b4fa;
+  color: #89b4fa;
+}
+
 .sidebar-folder-row,
 .sidebar-child-doc {
   display: flex;
@@ -136,6 +163,7 @@ textarea:focus-visible {
 
 .sidebar-folder-row {
   cursor: default;
+  position: relative;
 }
 
 .sidebar-folder-toggle {
@@ -151,6 +179,7 @@ textarea:focus-visible {
 
 .sidebar-folder-name {
   min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -160,14 +189,33 @@ textarea:focus-visible {
 .sidebar-folder-meta {
   color: #a6adc8;
   font-size: 11px;
-  margin-left: auto;
+  margin-left: 4px;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .sidebar-folder-actions {
   display: inline-flex;
   gap: 6px;
-  margin-left: 6px;
+  margin-left: 0;
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  z-index: 2;
+  padding: 2px;
+  border: 1px solid #45475a;
+  border-radius: 4px;
+  background: #1e1e2e;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity 120ms ease;
+}
+
+.sidebar-folder-row:hover .sidebar-folder-actions,
+.sidebar-folder-row:focus-within .sidebar-folder-actions {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .status-badge {
@@ -194,6 +242,22 @@ textarea:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.doc-label {
+  min-width: 0;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.doc-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #a6adc8;
+  font-size: 10px;
+  line-height: 1.1;
 }
 
 .doc-row-main {
@@ -298,6 +362,13 @@ textarea:focus-visible {
   min-height: 54px;
 }
 
+.bundle-help {
+  margin: 0;
+  color: #bac2de;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .sidebar-action-btn {
   border: 1px solid #585b70;
   background: #313244;
@@ -329,10 +400,60 @@ textarea:focus-visible {
 .empty-state {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 10px;
   color: #888;
   font-size: 16px;
+  text-align: center;
+  padding: 48px;
+}
+
+.empty-state h2 {
+  margin: 0;
+  color: #313244;
+  font-size: 22px;
+}
+
+.empty-state p {
+  margin: 0;
+  max-width: 620px;
+  color: #6c7086;
+  line-height: 1.5;
+}
+
+.readiness-banner {
+  border-bottom: 1px solid #f4c95d;
+  background: #fff8dc;
+  color: #3f3320;
+  padding: 10px 16px;
+  font-size: 13px;
+}
+
+.readiness-banner > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.readiness-banner strong {
+  font-size: 13px;
+}
+
+.readiness-banner span {
+  color: #6f5c35;
+  font-size: 12px;
+}
+
+.readiness-banner ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.readiness-banner li {
+  margin: 2px 0;
 }
 
 /* Toolbar */

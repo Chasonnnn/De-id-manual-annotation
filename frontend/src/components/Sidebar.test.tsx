@@ -127,6 +127,7 @@ describe("Sidebar", () => {
         onCreateFolderSample={vi.fn()}
         onDeleteFolder={vi.fn()}
         onPruneFolder={vi.fn()}
+        onEnsureFolderDetail={vi.fn()}
         onMirrorPreToManual={vi.fn()}
         onExportSession={vi.fn()}
         exportSourceOptions={[{ value: "manual", label: "Manual annotations" }]}
@@ -143,6 +144,7 @@ describe("Sidebar", () => {
       screen.getByText("Drop transcript/session bundle/ground truth here or click to add"),
     ).toBeTruthy();
     expect(screen.getAllByText("Top-Level Documents").length).toBeGreaterThan(0);
+    expect(screen.getByText("batch.jsonl")).toBeTruthy();
     expect(screen.getByText("doc-merged")).toBeTruthy();
     expect(screen.getByText("Folders")).toBeTruthy();
     expect(screen.getByText("batch")).toBeTruthy();
@@ -154,8 +156,9 @@ describe("Sidebar", () => {
     const expandButtons = screen.getAllByRole("button", { name: "Expand folder" });
     fireEvent.click(expandButtons[0]!);
 
-    expect(await screen.findByText("doc-child-1")).toBeTruthy();
-    expect(screen.getByText("doc-child-2")).toBeTruthy();
+    expect(await screen.findByText("Session alpha")).toBeTruthy();
+    expect(screen.getByText("doc-child-1")).toBeTruthy();
+    expect(screen.getByText("Session beta")).toBeTruthy();
 
     fireEvent.click(screen.getByText("doc-child-1"));
 
@@ -206,6 +209,73 @@ describe("Sidebar", () => {
     });
 
     expect(onIngestFiles).toHaveBeenCalledWith([file], "keep_current");
+  });
+
+  it("explains import conflict choices for colleague session sharing", () => {
+    renderSidebar();
+
+    expect(screen.getByText(/Replace Current updates matching imported documents/i)).toBeTruthy();
+  });
+
+  it("renders folders before details are loaded and asks for detail when expanded", () => {
+    const onEnsureFolderDetail = vi.fn();
+    renderSidebar({
+      folderDetailsById: {},
+      onEnsureFolderDetail,
+    });
+
+    expect(screen.getByText("batch")).toBeTruthy();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Expand folder" })[0]!);
+
+    expect(onEnsureFolderDetail).toHaveBeenCalledWith("folder-import");
+    expect(screen.getByText("Loading folder...")).toBeTruthy();
+  });
+
+  it("searches unloaded folders using folder summary fields", () => {
+    renderSidebar({ folderDetailsById: {} });
+
+    fireEvent.change(screen.getByLabelText("Search documents"), {
+      target: { value: "batch" },
+    });
+
+    expect(screen.getByText("batch")).toBeTruthy();
+    expect(screen.queryByText("Manual Set")).toBeNull();
+  });
+
+  it("bounds large expanded folder rendering until Show all is requested", async () => {
+    const largeFolder = { ...importFolder, doc_count: 260 };
+    const largeDocuments = Array.from({ length: 260 }, (_, index) => {
+      const number = index + 1;
+      return {
+        id: `large-doc-${number}`,
+        filename: `large-doc-${number}.json`,
+        display_name: `Session ${number}`,
+        status: "pending" as const,
+      };
+    });
+
+    renderSidebar({
+      folders: [largeFolder],
+      folderDetailsById: {
+        [largeFolder.id]: {
+          ...largeFolder,
+          doc_ids: largeDocuments.map((document) => document.id),
+          child_folder_ids: [],
+          documents: largeDocuments,
+          child_folders: [],
+        },
+      },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand folder" }));
+
+    expect(await screen.findByText("Session 250")).toBeTruthy();
+    expect(screen.queryByText("Session 251")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show all 260 documents" }));
+
+    expect(await screen.findByText("Session 251")).toBeTruthy();
   });
 
   it("accepts txt transcripts in the ingest picker", () => {
@@ -285,14 +355,14 @@ describe("Sidebar", () => {
     });
   });
 
-  it("shows internal document ids in the workspace tree even when display names differ", async () => {
+  it("shows display labels with internal document ids as secondary metadata", async () => {
     renderSidebar();
 
     fireEvent.click(screen.getAllByRole("button", { name: "Expand folder" })[0]!);
 
     expect(await screen.findByText("doc-child-1")).toBeTruthy();
     expect(screen.getByText("doc-child-2")).toBeTruthy();
-    expect(screen.queryByText("Session alpha")).toBeNull();
-    expect(screen.queryByText("Session beta")).toBeNull();
+    expect(screen.getByText("Session alpha")).toBeTruthy();
+    expect(screen.getByText("Session beta")).toBeTruthy();
   });
 });

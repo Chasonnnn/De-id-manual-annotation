@@ -18,6 +18,7 @@ const clientMocks = vi.hoisted(() => ({
   getMethodsLabDocResult: vi.fn(),
   getMethodsLabRun: vi.fn(),
   listMethodsLabRuns: vi.fn(),
+  mirrorMethodToManual: vi.fn(),
   stopMethodsLabRun: vi.fn(),
 }));
 
@@ -54,6 +55,9 @@ vi.mock("./MethodsLabCellDetail", () => ({
     loading,
     onRerunErrorDocs,
     rerunningErrorDocs,
+    onMirrorCellToManual,
+    mirroringCellToManual,
+    canMirrorCellToManual,
   }: {
     cell: { error_count: number } | null;
     detail: MethodsLabDocResult | null;
@@ -61,6 +65,9 @@ vi.mock("./MethodsLabCellDetail", () => ({
     loading: boolean;
     onRerunErrorDocs?: () => void | Promise<void>;
     rerunningErrorDocs?: boolean;
+    onMirrorCellToManual?: () => void | Promise<void>;
+    mirroringCellToManual?: boolean;
+    canMirrorCellToManual?: boolean;
   }) => (
     <div data-testid="methods-lab-cell-detail">
       {loading ? "loading" : detail ? `${detail.run_id}:${detail.cell_id}:${detail.doc_id}` : "no-detail"}
@@ -74,6 +81,15 @@ vi.mock("./MethodsLabCellDetail", () => ({
           onClick={() => void onRerunErrorDocs?.()}
         >
           Re-run error docs
+        </button>
+      ) : null}
+      {cell ? (
+        <button
+          type="button"
+          disabled={!canMirrorCellToManual || mirroringCellToManual}
+          onClick={() => void onMirrorCellToManual?.()}
+        >
+          Copy Cell to Manual
         </button>
       ) : null}
     </div>
@@ -270,6 +286,7 @@ describe("MethodsLabTab", () => {
     clientMocks.getMethodsLabDocResult.mockReset();
     clientMocks.getMethodsLabRun.mockReset();
     clientMocks.listMethodsLabRuns.mockReset();
+    clientMocks.mirrorMethodToManual.mockReset();
     clientMocks.stopMethodsLabRun.mockReset();
     clientMocks.getAgentMethods.mockResolvedValue([]);
     clientMocks.getExperimentDiagnostics.mockResolvedValue({
@@ -774,5 +791,105 @@ describe("MethodsLabTab", () => {
     expect(screen.getByTestId("methods-lab-doc-options").textContent).toContain(
       "476838c9_line0:476838c9_line0",
     );
+  });
+
+  it("copies the selected Methods Lab cell to top-level manual annotations", async () => {
+    const onWorkspaceChanged = vi.fn();
+    clientMocks.listMethodsLabRuns.mockResolvedValue([codexSummary]);
+    clientMocks.getMethodsLabRun.mockResolvedValue(codexDetail);
+    clientMocks.getMethodsLabDocResult.mockResolvedValue(
+      makeDocResult(codexDetail, {
+        cellId: codexDetail.matrix.cells[0]!.id,
+        docId: "doc-1",
+      }),
+    );
+    clientMocks.mirrorMethodToManual.mockResolvedValue({
+      source: "method",
+      scope: "top_level",
+      folder_id: null,
+      run_id: codexDetail.id,
+      cell_id: codexDetail.matrix.cells[0]!.id,
+      processed_count: 1,
+      copied_count: 1,
+      cleared_count: 0,
+      skipped_count: 0,
+      doc_ids: ["doc-1"],
+      skipped_doc_ids: [],
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(
+      <MethodsLabTab
+        documents={documents}
+        folders={[]}
+        selectedDocumentId={null}
+        onSelectDocument={vi.fn()}
+        onWorkspaceChanged={onWorkspaceChanged}
+      />,
+    );
+
+    await screen.findByText("5bcf6ed4:model_1__method_1:doc-1");
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy Cell to Manual" }));
+
+    await waitFor(() => {
+      expect(clientMocks.mirrorMethodToManual).toHaveBeenCalledWith(
+        { kind: "top_level" },
+        { runId: codexDetail.id, cellId: "model_1__method_1" },
+      );
+    });
+    expect(onWorkspaceChanged).toHaveBeenCalledTimes(1);
+    expect(
+      await screen.findByText(/Copied Methods Lab cell to manual for 1 document/i),
+    ).toBeTruthy();
+  });
+
+  it("copies a folder-backed Methods Lab cell to the matching folder scope", async () => {
+    const folderDetail: MethodsLabRunDetail = {
+      ...codexDetail,
+      folder_ids: ["folder-1"],
+    };
+    clientMocks.listMethodsLabRuns.mockResolvedValue([codexSummary]);
+    clientMocks.getMethodsLabRun.mockResolvedValue(folderDetail);
+    clientMocks.getMethodsLabDocResult.mockResolvedValue(
+      makeDocResult(folderDetail, {
+        cellId: folderDetail.matrix.cells[0]!.id,
+        docId: "doc-1",
+      }),
+    );
+    clientMocks.mirrorMethodToManual.mockResolvedValue({
+      source: "method",
+      scope: "folder",
+      folder_id: "folder-1",
+      run_id: folderDetail.id,
+      cell_id: folderDetail.matrix.cells[0]!.id,
+      processed_count: 1,
+      copied_count: 1,
+      cleared_count: 0,
+      skipped_count: 0,
+      doc_ids: ["doc-1"],
+      skipped_doc_ids: [],
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(
+      <MethodsLabTab
+        documents={documents}
+        folders={[]}
+        selectedDocumentId={null}
+        onSelectDocument={vi.fn()}
+      />,
+    );
+
+    await screen.findByText("5bcf6ed4:model_1__method_1:doc-1");
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy Cell to Manual" }));
+
+    await waitFor(() => {
+      expect(clientMocks.mirrorMethodToManual).toHaveBeenCalledWith(
+        { kind: "folder", folderId: "folder-1" },
+        { runId: folderDetail.id, cellId: "model_1__method_1" },
+      );
+    });
   });
 });

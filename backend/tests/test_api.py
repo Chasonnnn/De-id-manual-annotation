@@ -16,6 +16,7 @@ from server import (
     app,
     _enrich_doc,
     _ensure_dirs,
+    _load_folder_index,
     _load_repo_env_file,
     _resolve_env_api_base,
     _resolve_env_api_key,
@@ -32,6 +33,14 @@ from server import (
     _session_docs,
     _methods_lab_run_path,
     _normalize_and_validate_spans,
+    _save_folder,
+    _save_folder_index,
+    _save_sidecar,
+    _save_session_index,
+    _save_prompt_lab_run,
+    _save_prompt_lab_index,
+    _save_methods_lab_run,
+    _save_methods_lab_index,
     ROOT_ENV_PATH,
 )
 from models import (
@@ -63,6 +72,185 @@ def clean_sessions(tmp_path, monkeypatch):
 @pytest.fixture
 def client():
     return TestClient(app)
+
+
+def test_cors_rejects_unlisted_origin_and_allows_local_vite_origin(client):
+    allowed = client.options(
+        "/api/documents",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert allowed.status_code == 200
+    assert allowed.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+    rejected = client.options(
+        "/api/documents",
+        headers={
+            "Origin": "https://example.com",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert rejected.status_code == 400
+    assert "access-control-allow-origin" not in rejected.headers
+
+
+def test_health_endpoint_reports_readiness_counts_and_warnings(client, monkeypatch):
+    monkeypatch.setenv("LITELLM_API_KEY", "litellm-key")
+    monkeypatch.setenv("LITELLM_BASE_URL", "https://proxy.example.com")
+    monkeypatch.setattr(
+        "server.list_agent_methods",
+        lambda method_bundle="audited": [
+            {
+                "id": "default",
+                "label": "Default",
+                "available": True,
+                "unavailable_reason": None,
+            },
+            {
+                "id": "pipeline",
+                "label": "Local Pipeline",
+                "available": False,
+                "unavailable_reason": "DEID_PIPELINE_REPO_ROOT is not configured",
+            },
+        ],
+    )
+
+    upload_resp = _upload(client)
+    assert upload_resp.status_code == 200
+
+    folder = FolderRecord(
+        id="folder-1",
+        name="Review Queue",
+        kind="manual",
+        parent_folder_id=None,
+        doc_ids=[],
+        child_folder_ids=[],
+        created_at="2026-03-17T00:00:00Z",
+    )
+    _save_folder(folder)
+    _save_folder_index([folder.id])
+
+    _prompt_lab_runs["default"] = ["prompt-run"]
+    _save_prompt_lab_run({"id": "prompt-run", "status": "completed"})
+    _save_prompt_lab_index()
+    _methods_lab_runs["default"] = ["methods-run"]
+    _save_methods_lab_run({"id": "methods-run", "status": "completed"})
+    _save_methods_lab_index()
+
+    resp = client.get("/api/health")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["status"] == "warning"
+    assert payload["tool_version"] == "2026.03.03"
+    assert payload["storage"]["root"].endswith(str(payload["storage"]["root"]).split("/")[-1])
+    assert payload["counts"] == {
+        "documents": 1,
+        "folders": 1,
+        "prompt_lab_runs": 1,
+        "methods_lab_runs": 1,
+    }
+    assert payload["credentials"]["has_api_key"] is True
+    assert payload["credentials"]["has_api_base"] is True
+    assert payload["method_availability_warnings"] == [
+        {
+            "id": "pipeline",
+            "label": "Local Pipeline",
+            "reason": "DEID_PIPELINE_REPO_ROOT is not configured",
+        }
+    ]
+    assert payload["config_warnings"] == []
+
+
+def test_workspace_endpoint_returns_sidebar_data_without_folder_details(client):
+    upload_resp = _upload(client, data=_make_multi_record_jsonl(), filename="sessions.jsonl")
+    assert upload_resp.status_code == 200
+    top_level_doc_id = upload_resp.json()["id"]
+
+    resp = client.get("/api/workspace")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["documents"] == [
+        {
+            "id": top_level_doc_id,
+            "filename": "sessions.jsonl",
+            "display_name": "sessions.jsonl",
+            "status": "pending",
+        }
+    ]
+    assert len(payload["folders"]) == 1
+    assert payload["folders"][0]["name"] == "sessions"
+    assert payload["folder_details"] == {}
+    assert payload["health"]["counts"]["documents"] == 1
+    assert payload["health"]["counts"]["folders"] == 1
+
+
+def test_session_export_includes_summary_counts_and_export_timestamp(client):
+    upload_resp = _upload(client, data=_make_multi_record_jsonl(), filename="sessions.jsonl")
+    assert upload_resp.status_code == 200
+
+    _prompt_lab_runs["default"] = ["prompt-run"]
+    _save_prompt_lab_run({"id": "prompt-run", "status": "completed"})
+    _save_prompt_lab_index()
+    _methods_lab_runs["default"] = ["methods-run"]
+    _save_methods_lab_run({"id": "methods-run", "status": "completed"})
+    _save_methods_lab_index()
+
+    resp = client.get("/api/session/export")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["version"] == 5
+    assert payload["summary"]["bundle_version"] == 5
+    assert payload["summary"]["document_count"] == len(payload["documents"])
+    assert payload["summary"]["folder_count"] == len(payload["folders"])
+    assert payload["summary"]["prompt_lab_run_count"] == 1
+    assert payload["summary"]["methods_lab_run_count"] == 1
+    assert payload["summary"]["exported_at"] == payload["exported_at"]
+
+
+def test_runtime_json_writes_are_atomic_and_leave_no_temp_files(client):
+    resp = _upload(client)
+    doc_id = resp.json()["id"]
+    _save_sidecar(doc_id, "manual", [CanonicalSpan(start=6, end=10, label="NAME", text="Anna")])
+    _session_docs["default"] = [doc_id]
+    _save_session_index()
+    folder = FolderRecord(
+        id="folder-1",
+        name="Review Queue",
+        kind="manual",
+        parent_folder_id=None,
+        doc_ids=[doc_id],
+        child_folder_ids=[],
+        created_at="2026-03-17T00:00:00Z",
+    )
+    _save_folder(folder)
+    _save_folder_index([folder.id])
+    _prompt_lab_runs["default"] = ["prompt-run"]
+    _save_prompt_lab_run({"id": "prompt-run", "status": "completed"})
+    _save_prompt_lab_index()
+    _methods_lab_runs["default"] = ["methods-run"]
+    _save_methods_lab_run({"id": "methods-run", "status": "completed"})
+    _save_methods_lab_index()
+
+    paths = [
+        _session_dir() / f"{doc_id}.manual.json",
+        _session_dir() / "_index.json",
+        _session_dir() / "folders" / "folder-1.json",
+        _session_dir() / "folders" / "_index.json",
+        _prompt_lab_run_path("prompt-run"),
+        _prompt_lab_run_path("prompt-run").parent / "_index.json",
+        _methods_lab_run_path("methods-run"),
+        _methods_lab_run_path("methods-run").parent / "_index.json",
+    ]
+    for path in paths:
+        assert path.exists(), path
+        assert json.loads(path.read_text()) is not None
+    assert list(_session_dir().glob("*.tmp")) == []
+    assert list((_session_dir() / "folders").glob("*.tmp")) == []
 
 
 def test_list_prompt_lab_runs_reloads_index_from_disk_when_cache_is_stale(client):
@@ -6992,6 +7180,201 @@ def test_mirror_pre_to_manual_requires_folder_id_for_folder_scope(client):
 
     assert mirror_resp.status_code == 400
     assert mirror_resp.json() == {"detail": "folder_id is required when scope=folder"}
+
+
+def test_mirror_method_to_manual_can_scope_to_recursive_folder_docs_and_overwrite_manual(client):
+    top_level_resp = _upload(
+        client,
+        _make_hips_v1_custom(
+            "Top level Anna",
+            pii_occurrences=[{"start": 10, "end": 14, "text": "Anna", "pii_type": "NAME"}],
+        ),
+        filename="top.json",
+    )
+    assert top_level_resp.status_code == 200
+    top_level_id = top_level_resp.json()["id"]
+
+    parent_resp = _upload(
+        client,
+        _make_hips_v1_custom("Parent Liam", pii_occurrences=[]),
+        filename="parent.json",
+    )
+    assert parent_resp.status_code == 200
+    parent_doc_id = parent_resp.json()["id"]
+
+    child_resp = _upload(
+        client,
+        _make_hips_v1_custom("Child clean", pii_occurrences=[]),
+        filename="child.json",
+    )
+    assert child_resp.status_code == 200
+    child_doc_id = child_resp.json()["id"]
+
+    parent_manual_resp = client.put(
+        f"/api/documents/{parent_doc_id}/manual-annotations",
+        json=[{"start": 0, "end": 6, "label": "NAME", "text": "Parent"}],
+    )
+    assert parent_manual_resp.status_code == 200
+    child_manual_resp = client.put(
+        f"/api/documents/{child_doc_id}/manual-annotations",
+        json=[{"start": 0, "end": 5, "label": "NAME", "text": "Child"}],
+    )
+    assert child_manual_resp.status_code == 200
+
+    folder_dir = _session_dir() / "folders"
+    folder_dir.mkdir(parents=True, exist_ok=True)
+    parent_folder = FolderRecord(
+        id="folder-parent",
+        name="EEDI top 50",
+        kind="manual",
+        parent_folder_id=None,
+        doc_ids=[parent_doc_id],
+        child_folder_ids=["folder-child"],
+        created_at="2026-03-17T00:00:00Z",
+        doc_display_names={parent_doc_id: "Parent transcript"},
+    )
+    child_folder = FolderRecord(
+        id="folder-child",
+        name="Nested",
+        kind="manual",
+        parent_folder_id="folder-parent",
+        doc_ids=[child_doc_id],
+        child_folder_ids=[],
+        created_at="2026-03-17T00:00:01Z",
+        doc_display_names={child_doc_id: "Child transcript"},
+    )
+    (folder_dir / "_index.json").write_text(json.dumps([parent_folder.id, child_folder.id]))
+    (folder_dir / f"{parent_folder.id}.json").write_text(parent_folder.model_dump_json(indent=2))
+    (folder_dir / f"{child_folder.id}.json").write_text(child_folder.model_dump_json(indent=2))
+
+    run_id = "method-run-1"
+    cell_id = "local_pipeline__method_1"
+    run_path = _methods_lab_run_path(run_id)
+    run_path.parent.mkdir(parents=True, exist_ok=True)
+    run_path.write_text(
+        json.dumps(
+            {
+                "id": run_id,
+                "name": "Operational union + reviewer",
+                "status": "completed",
+                "created_at": "2026-03-17T00:00:00Z",
+                "started_at": "2026-03-17T00:00:00Z",
+                "finished_at": "2026-03-17T00:01:00Z",
+                "doc_ids": [parent_doc_id, child_doc_id],
+                "folder_ids": [parent_folder.id],
+                "methods": [{"id": "method_1", "label": "Method 1"}],
+                "models": [{"id": "local_pipeline", "label": "Local pipeline"}],
+                "runtime": {},
+                "concurrency": 1,
+                "warnings": [],
+                "errors": [],
+                "cells": {
+                    cell_id: {
+                        "id": cell_id,
+                        "model_id": "local_pipeline",
+                        "model_label": "Local pipeline",
+                        "method_id": "method_1",
+                        "method_label": "Method 1",
+                        "documents": {
+                            parent_doc_id: {
+                                "status": "completed",
+                                "hypothesis_spans": [
+                                    {"start": 7, "end": 11, "label": "NAME", "text": "Liam"}
+                                ],
+                            },
+                            child_doc_id: {
+                                "status": "completed",
+                                "hypothesis_spans": [],
+                            },
+                        },
+                    }
+                },
+                "session_id": "default",
+            }
+        )
+    )
+
+    mirror_resp = client.post(
+        "/api/session/mirror-method-to-manual",
+        params={
+            "scope": "folder",
+            "folder_id": parent_folder.id,
+            "run_id": run_id,
+            "cell_id": cell_id,
+        },
+    )
+
+    assert mirror_resp.status_code == 200
+    assert mirror_resp.json() == {
+        "source": "method",
+        "scope": "folder",
+        "folder_id": parent_folder.id,
+        "run_id": run_id,
+        "cell_id": cell_id,
+        "processed_count": 2,
+        "copied_count": 1,
+        "cleared_count": 1,
+        "skipped_count": 0,
+        "doc_ids": [parent_doc_id, child_doc_id],
+        "skipped_doc_ids": [],
+    }
+
+    parent_doc = client.get(f"/api/documents/{parent_doc_id}").json()
+    assert parent_doc["manual_annotations"] == [
+        {"start": 7, "end": 11, "label": "NAME", "text": "Liam"}
+    ]
+
+    child_doc = client.get(f"/api/documents/{child_doc_id}").json()
+    assert child_doc["manual_annotations"] == []
+
+    top_level_doc = client.get(f"/api/documents/{top_level_id}").json()
+    assert top_level_doc["manual_annotations"] == []
+
+
+def test_mirror_method_to_manual_requires_explicit_run_and_cell(client):
+    run_resp = client.post(
+        "/api/session/mirror-method-to-manual",
+        params={"scope": "top_level", "cell_id": "cell-a"},
+    )
+    assert run_resp.status_code == 400
+    assert run_resp.json() == {"detail": "run_id is required"}
+
+    cell_resp = client.post(
+        "/api/session/mirror-method-to-manual",
+        params={"scope": "top_level", "run_id": "run-a"},
+    )
+    assert cell_resp.status_code == 400
+    assert cell_resp.json() == {"detail": "cell_id is required"}
+
+
+def test_mirror_method_to_manual_returns_404_for_unknown_run_or_cell(client):
+    missing_run_resp = client.post(
+        "/api/session/mirror-method-to-manual",
+        params={"scope": "top_level", "run_id": "missing-run", "cell_id": "cell-a"},
+    )
+    assert missing_run_resp.status_code == 404
+    assert missing_run_resp.json() == {"detail": "Methods Lab run not found"}
+
+    run_id = "method-run-1"
+    run_path = _methods_lab_run_path(run_id)
+    run_path.parent.mkdir(parents=True, exist_ok=True)
+    run_path.write_text(
+        json.dumps(
+            {
+                "id": run_id,
+                "status": "completed",
+                "doc_ids": [],
+                "folder_ids": [],
+                "cells": {},
+            }
+        )
+    )
+    missing_cell_resp = client.post(
+        "/api/session/mirror-method-to-manual",
+        params={"scope": "top_level", "run_id": run_id, "cell_id": "missing-cell"},
+    )
+    assert missing_cell_resp.status_code == 404
+    assert missing_cell_resp.json() == {"detail": "Methods Lab cell not found"}
 
 
 def test_session_import_accepts_ground_truth_zip_without_existing_source(client):

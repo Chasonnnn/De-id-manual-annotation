@@ -8,6 +8,7 @@ import {
   getMethodsLabDocResult,
   getMethodsLabRun,
   listMethodsLabRuns,
+  mirrorMethodToManual,
   stopMethodsLabRun,
 } from "../api/client";
 import { formatMethodBundleLabel } from "../experimentDisplay";
@@ -18,6 +19,7 @@ import type {
   ExperimentDiagnostics,
   ExperimentLimits,
   FolderSummary,
+  GroundTruthExportScope,
   MethodsLabDocResult,
   MethodsLabRunCreateRequest,
   MethodsLabRunDetail,
@@ -33,6 +35,7 @@ interface Props {
   folders: FolderSummary[];
   selectedDocumentId: string | null;
   onSelectDocument: (docId: string) => void;
+  onWorkspaceChanged?: () => void | Promise<void>;
 }
 
 type MethodsLabToastKind = "success" | "error" | "info";
@@ -51,7 +54,10 @@ function isErrorDocStatus(status: MethodsLabDocResult["status"]): boolean {
   return status === "failed" || status === "unavailable";
 }
 
-function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
+function useMethodsLabTabController(
+  onSelectDocument: (docId: string) => void,
+  onWorkspaceChanged?: () => void | Promise<void>,
+) {
   const [setupCollapsed, setSetupCollapsed] = useState(false);
   const [runs, setRuns] = useState<MethodsLabRunSummary[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
@@ -62,6 +68,7 @@ function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
   const [runError, setRunError] = useState<string | null>(null);
   const [creatingRun, setCreatingRun] = useState(false);
   const [rerunningErrorCellId, setRerunningErrorCellId] = useState<string | null>(null);
+  const [mirroringCellToManualId, setMirroringCellToManualId] = useState<string | null>(null);
 
   const [selectedCellId, setSelectedCellId] = useState<string | null>(null);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
@@ -473,6 +480,49 @@ function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
     }
   }, [createAndSelectRun, pushToast, runDetail, selectedCell]);
 
+  const handleMirrorCellToManual = useCallback(async () => {
+    if (!runDetail || !selectedCell || isActiveStatus(runDetail.status)) {
+      return;
+    }
+    const modelLabel = getExperimentModelLabelById(
+      runDetail.models,
+      selectedCell.model_id,
+      selectedCell.model_label,
+    );
+    const scope: GroundTruthExportScope =
+      runDetail.folder_ids.length === 1
+        ? { kind: "folder", folderId: runDetail.folder_ids[0]! }
+        : { kind: "top_level" };
+    const scopeLabel = scope.kind === "folder" ? `folder ${scope.folderId}` : "top-level documents";
+    const confirmed = window.confirm(
+      `Copy ${modelLabel} x ${selectedCell.method_label} into manual annotations for ${scopeLabel}? Existing manual annotations in that scope will be replaced for documents with completed cell results.`,
+    );
+    if (!confirmed) return;
+
+    setMirroringCellToManualId(selectedCell.id);
+    try {
+      const result = await mirrorMethodToManual(scope, {
+        runId: runDetail.id,
+        cellId: selectedCell.id,
+      });
+      await onWorkspaceChanged?.();
+      setRunError(null);
+      pushToast(
+        "success",
+        `Copied Methods Lab cell to manual for ${result.processed_count} document(s): ${result.copied_count} copied, ${result.cleared_count} empty, ${result.skipped_count} skipped.`,
+      );
+    } catch (e: unknown) {
+      const message = String(e);
+      setRunError(message);
+      pushToast(
+        "error",
+        `Failed to copy Methods Lab cell to manual for ${modelLabel} x ${selectedCell.method_label}.`,
+      );
+    } finally {
+      setMirroringCellToManualId(null);
+    }
+  }, [onWorkspaceChanged, pushToast, runDetail, selectedCell]);
+
   const handleDeleteRun = useCallback(
     async (run: MethodsLabRunSummary) => {
       const confirmed = window.confirm(`Delete Methods Lab run "${run.name}"?`);
@@ -544,6 +594,7 @@ function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
     runError,
     creatingRun,
     rerunningErrorCellId,
+    mirroringCellToManualId,
     selectedCellId,
     selectedDocId,
     docDetail,
@@ -557,6 +608,7 @@ function useMethodsLabTabController(onSelectDocument: (docId: string) => void) {
     refreshRuns,
     handleCreateRun,
     handleDeleteRun,
+    handleMirrorCellToManual,
     handleRerunErrorDocs,
     handleSelectRun,
     handleStopRun,
@@ -571,6 +623,7 @@ export default function MethodsLabTab({
   folders,
   selectedDocumentId,
   onSelectDocument,
+  onWorkspaceChanged,
 }: Props) {
   const {
     setupCollapsed,
@@ -583,6 +636,7 @@ export default function MethodsLabTab({
     runError,
     creatingRun,
     rerunningErrorCellId,
+    mirroringCellToManualId,
     selectedCellId,
     selectedDocId,
     docDetail,
@@ -596,13 +650,14 @@ export default function MethodsLabTab({
     refreshRuns,
     handleCreateRun,
     handleDeleteRun,
+    handleMirrorCellToManual,
     handleRerunErrorDocs,
     handleSelectRun,
     handleStopRun,
     handleToggleSetup,
     setSelectedCellId,
     setSelectedDocId,
-  } = useMethodsLabTabController(onSelectDocument);
+  } = useMethodsLabTabController(onSelectDocument, onWorkspaceChanged);
 
   return (
     <div className="prompt-lab-tab">
@@ -693,6 +748,9 @@ export default function MethodsLabTab({
                 canRerunErrorDocs={!isActiveStatus(runDetail.status)}
                 rerunningErrorDocs={rerunningErrorCellId === selectedCell?.id}
                 onRerunErrorDocs={handleRerunErrorDocs}
+                canMirrorCellToManual={!isActiveStatus(runDetail.status)}
+                mirroringCellToManual={mirroringCellToManualId === selectedCell?.id}
+                onMirrorCellToManual={handleMirrorCellToManual}
               />
             </>
           ) : (

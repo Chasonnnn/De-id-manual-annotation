@@ -9,9 +9,9 @@ import {
   getDocument,
   getFolder,
   getMetricsDashboard,
-  listFolders,
-  listDocuments,
+  getWorkspace,
 } from "./api/client";
+import type { ReadinessHealth, WorkspaceState } from "./types";
 
 vi.mock("./api/client", () => ({
   createFolder: vi.fn(),
@@ -28,9 +28,8 @@ vi.mock("./api/client", () => ({
   getDocument: vi.fn(),
   getMetricsDashboard: vi.fn(),
   getMetrics: vi.fn(),
+  getWorkspace: vi.fn(),
   ingestSessionFile: vi.fn(),
-  listFolders: vi.fn().mockResolvedValue([]),
-  listDocuments: vi.fn().mockResolvedValue([]),
   pruneEmptyFolderDocs: vi.fn(),
   runAgent: vi.fn(),
   updateManualAnnotations: vi.fn(),
@@ -38,6 +37,40 @@ vi.mock("./api/client", () => ({
 
 describe("App", () => {
   const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  const defaultHealth: ReadinessHealth = {
+    status: "ok",
+    tool_version: "0.1.0",
+    storage: {
+      root: "/tmp/annotation-tool",
+      session_dir: "/tmp/annotation-tool/sessions/default",
+      exists: true,
+    },
+    counts: {
+      documents: 0,
+      folders: 0,
+      prompt_lab_runs: 0,
+      methods_lab_runs: 0,
+    },
+    credentials: {
+      has_api_key: true,
+      api_key_sources: ["LITELLM_API_KEY"],
+      has_api_base: true,
+      api_base_sources: ["LITELLM_API_BASE"],
+    },
+    method_availability_warnings: [],
+    config_warnings: [],
+    dependency_warnings: [],
+  };
+
+  function makeWorkspace(overrides: Partial<WorkspaceState> = {}): WorkspaceState {
+    return {
+      documents: [],
+      folders: [],
+      folder_details: {},
+      health: defaultHealth,
+      ...overrides,
+    };
+  }
 
   const methodFixture = {
     id: "doc-method",
@@ -125,15 +158,16 @@ describe("App", () => {
 
   beforeEach(() => {
     consoleError.mockClear();
-    vi.mocked(listDocuments).mockResolvedValue([]);
+    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace());
     vi.mocked(getAgentCredentialStatus).mockResolvedValue({
-      has_api_key: false,
-      api_key_sources: [],
-      has_api_base: false,
-      api_base_sources: [],
+      has_api_key: true,
+      api_key_sources: ["LITELLM_API_KEY"],
+      has_api_base: true,
+      api_base_sources: ["LITELLM_API_BASE"],
     });
     vi.mocked(getMetricsDashboard).mockResolvedValue(null as never);
     vi.mocked(getDocument).mockRejectedValue(new Error("not configured"));
+    vi.mocked(getFolder).mockReset();
     vi.mocked(getAgentMethods).mockResolvedValue([
       {
         id: "default",
@@ -161,18 +195,20 @@ describe("App", () => {
     });
 
     expect(screen.queryByText("Something went wrong")).toBeNull();
-    expect(screen.getByText("Select a document or upload a file to begin")).toBeTruthy();
+    expect(screen.getByText("Start with a transcript or session bundle")).toBeTruthy();
   });
 
   it("defaults the method pane to the latest saved method output when one exists", async () => {
-    vi.mocked(listDocuments).mockResolvedValue([
-      {
-        id: methodFixture.id,
-        filename: methodFixture.filename,
-        display_name: methodFixture.id,
-        status: "pending",
-      },
-    ]);
+    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace({
+      documents: [
+        {
+          id: methodFixture.id,
+          filename: methodFixture.filename,
+          display_name: methodFixture.id,
+          status: "pending",
+        },
+      ],
+    }));
     vi.mocked(getDocument).mockResolvedValue(methodFixture as never);
 
     render(<App />);
@@ -199,14 +235,16 @@ describe("App", () => {
   });
 
   it("defaults the agent pane to the latest saved llm run when one exists", async () => {
-    vi.mocked(listDocuments).mockResolvedValue([
-      {
-        id: agentFixture.id,
-        filename: agentFixture.filename,
-        display_name: agentFixture.id,
-        status: "pending",
-      },
-    ]);
+    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace({
+      documents: [
+        {
+          id: agentFixture.id,
+          filename: agentFixture.filename,
+          display_name: agentFixture.id,
+          status: "pending",
+        },
+      ],
+    }));
     vi.mocked(getDocument).mockResolvedValue(agentFixture as never);
 
     render(<App />);
@@ -234,23 +272,24 @@ describe("App", () => {
   });
 
   it("deletes a folder transcript through the dedicated folder-doc flow", async () => {
-    vi.mocked(listDocuments).mockResolvedValue([]);
-    vi.mocked(listFolders).mockResolvedValue([
-      {
-        id: "folder-1",
-        name: "Folder 1",
-        kind: "manual",
-        parent_folder_id: null,
-        merged_doc_id: null,
-        doc_count: 1,
-        child_folder_count: 0,
-        source_filename: null,
-        source_folder_id: null,
-        sample_size: null,
-        sample_seed: null,
-        created_at: "2026-04-08T00:00:00Z",
-      },
-    ]);
+    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace({
+      folders: [
+        {
+          id: "folder-1",
+          name: "Folder 1",
+          kind: "manual",
+          parent_folder_id: null,
+          merged_doc_id: null,
+          doc_count: 1,
+          child_folder_count: 0,
+          source_filename: null,
+          source_folder_id: null,
+          sample_size: null,
+          sample_seed: null,
+          created_at: "2026-04-08T00:00:00Z",
+        },
+      ],
+    }));
     vi.mocked(getFolder).mockResolvedValue({
       id: "folder-1",
       name: "Folder 1",
@@ -306,5 +345,80 @@ describe("App", () => {
     await waitFor(() => {
       expect(deleteFolderDocument).toHaveBeenCalledWith("folder-1", "child-1");
     });
+  });
+
+  it("does not load folder details until a folder is expanded", async () => {
+    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace({
+      folders: [
+        {
+          id: "folder-1",
+          name: "Folder 1",
+          kind: "manual",
+          parent_folder_id: null,
+          merged_doc_id: null,
+          doc_count: 1,
+          child_folder_count: 0,
+          source_filename: null,
+          source_folder_id: null,
+          sample_size: null,
+          sample_seed: null,
+          created_at: "2026-04-08T00:00:00Z",
+        },
+      ],
+    }));
+    vi.mocked(getFolder).mockResolvedValue({
+      id: "folder-1",
+      name: "Folder 1",
+      kind: "manual",
+      parent_folder_id: null,
+      merged_doc_id: null,
+      doc_count: 1,
+      child_folder_count: 0,
+      source_filename: null,
+      source_folder_id: null,
+      sample_size: null,
+      sample_seed: null,
+      created_at: "2026-04-08T00:00:00Z",
+      doc_ids: [],
+      child_folder_ids: [],
+      documents: [],
+      child_folders: [],
+    } as never);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Folder 1")).toBeTruthy();
+    });
+    expect(getFolder).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand folder" }));
+
+    await waitFor(() => {
+      expect(getFolder).toHaveBeenCalledWith("folder-1");
+    });
+  });
+
+  it("surfaces readiness warnings before labs run", async () => {
+    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace({
+      health: {
+        ...defaultHealth,
+        status: "warning",
+        config_warnings: ["No LiteLLM or provider API key is configured."],
+        method_availability_warnings: [
+          {
+            id: "presidio",
+            label: "Presidio",
+            reason: "Presidio package is not installed.",
+          },
+        ],
+      },
+    }));
+
+    render(<App />);
+
+    expect(await screen.findByText("Readiness warnings")).toBeTruthy();
+    expect(screen.getByText("No LiteLLM or provider API key is configured.")).toBeTruthy();
+    expect(screen.getByText("Presidio: Presidio package is not installed.")).toBeTruthy();
   });
 });

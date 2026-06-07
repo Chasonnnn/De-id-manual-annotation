@@ -21,6 +21,9 @@ interface Props {
   canRerunErrorDocs: boolean;
   rerunningErrorDocs: boolean;
   onRerunErrorDocs: () => void | Promise<void>;
+  canMirrorCellToManual: boolean;
+  mirroringCellToManual: boolean;
+  onMirrorCellToManual: () => void | Promise<void>;
 }
 
 function fmtPct(value: number): string {
@@ -43,6 +46,9 @@ export default function MethodsLabCellDetail({
   canRerunErrorDocs,
   rerunningErrorDocs,
   onRerunErrorDocs,
+  canMirrorCellToManual,
+  mirroringCellToManual,
+  onMirrorCellToManual,
 }: Props) {
   const { registerPane, handleScroll } = useSyncScroll();
 
@@ -93,6 +99,10 @@ export default function MethodsLabCellDetail({
       : !canRerunErrorDocs
         ? "Wait for the run to finish before rerunning error docs."
         : undefined;
+  const mirrorCellToManualTitle =
+    canMirrorCellToManual
+      ? "Copy this Methods Lab cell's completed annotations into manual annotations."
+      : "Wait for the run to finish before copying a Methods Lab cell to manual annotations.";
   const modelLabel = getExperimentModelLabelById(run.models, cell.model_id, cell.model_label);
 
   return (
@@ -110,6 +120,15 @@ export default function MethodsLabCellDetail({
           </div>
         </div>
         <div className="prompt-lab-detail-actions">
+          <button
+            type="button"
+            className="prompt-lab-detail-action-btn"
+            disabled={!canMirrorCellToManual || mirroringCellToManual}
+            onClick={() => void onMirrorCellToManual()}
+            title={mirrorCellToManualTitle}
+          >
+            {mirroringCellToManual ? "Copying..." : "Copy Cell to Manual"}
+          </button>
           <button
             type="button"
             className="prompt-lab-detail-action-btn"

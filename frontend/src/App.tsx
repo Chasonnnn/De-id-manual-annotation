@@ -19,6 +19,8 @@ import type {
   MethodView,
   MetricsResult,
   PaneType,
+  ReadinessHealth,
+  WorkspaceState,
 } from "./types";
 import {
   createFolder,
@@ -34,9 +36,8 @@ import {
   getDocument,
   getMetricsDashboard,
   getMetrics,
+  getWorkspace,
   ingestSessionFile,
-  listFolders,
-  listDocuments,
   mirrorPreToManual,
   pruneEmptyFolderDocs,
   runAgent,
@@ -132,6 +133,12 @@ interface RunToast {
   message: string;
 }
 
+interface WorkspaceRefreshResult {
+  documents: DocumentSummary[];
+  allDocIds: Set<string>;
+  firstAvailableId: string | null;
+}
+
 interface PendingConfirm {
   title: string;
   message: string;
@@ -184,6 +191,34 @@ function getChunkDiagnosticsCount(
   diagnostics: AgentChunkDiagnostic[] | null | undefined,
 ): number {
   return diagnostics?.length ?? 0;
+}
+
+function buildWorkspaceRefreshResult(
+  documents: DocumentSummary[],
+  folderDetailsById: Record<string, FolderDetail>,
+): WorkspaceRefreshResult {
+  const folderDocIds = Object.values(folderDetailsById).flatMap((detail) =>
+    detail.documents.map((item) => item.id),
+  );
+  return {
+    documents,
+    allDocIds: new Set([
+      ...documents.map((item) => item.id),
+      ...folderDocIds,
+    ]),
+    firstAvailableId: documents[0]?.id ?? folderDocIds[0] ?? null,
+  };
+}
+
+function getReadinessWarnings(health: ReadinessHealth | null): string[] {
+  if (!health) return [];
+  return [
+    ...health.config_warnings,
+    ...health.dependency_warnings,
+    ...health.method_availability_warnings.map(
+      (item) => `${item.label}: ${item.reason}`,
+    ),
+  ];
 }
 
 function resolveMethodChunkDiagnostics(
@@ -315,6 +350,8 @@ function useAppContentController() {
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   const [folders, setFolders] = useState<FolderSummary[]>([]);
   const [folderDetailsById, setFolderDetailsById] = useState<Record<string, FolderDetail>>({});
+  const [folderDetailLoadingById, setFolderDetailLoadingById] = useState<Record<string, boolean>>({});
+  const [health, setHealth] = useState<ReadinessHealth | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [doc, setDoc] = useState<CanonicalDocument | null>(null);
   const [loading, setLoading] = useState(false);
@@ -357,6 +394,8 @@ function useAppContentController() {
   const agentViewRef = useRef<AgentView>("combined");
   const agentLlmRunRef = useRef<string>("__latest__");
   const methodViewRef = useRef<MethodView>("default");
+  const folderDetailsRef = useRef<Record<string, FolderDetail>>({});
+  const folderDetailLoadingRef = useRef<Set<string>>(new Set());
 
   const { registerPane, handleScroll } = useSyncScroll();
 
@@ -372,28 +411,77 @@ function useAppContentController() {
     setRunToasts((prev) => prev.filter((item) => item.id !== id));
   }, []);
 
-  const refreshDocuments = useCallback(async () => {
-    const docs = await listDocuments();
-    const nextFolders = await listFolders();
-    const folderDetails = await Promise.all(
-      nextFolders.map(async (folder) => getFolder(folder.id)),
-    );
-    const detailMap = Object.fromEntries(
-      folderDetails.map((detail) => [detail.id, detail]),
-    ) as Record<string, FolderDetail>;
-    setDocuments(docs);
-    setFolders(nextFolders);
-    setFolderDetailsById(detailMap);
-    const firstFolderDocId = folderDetails.flatMap((detail) => detail.documents.map((item) => item.id))[0] ?? null;
-    return {
-      documents: docs,
-      allDocIds: new Set([
-        ...docs.map((item) => item.id),
-        ...folderDetails.flatMap((detail) => detail.documents.map((item) => item.id)),
-      ]),
-      firstAvailableId: docs[0]?.id ?? firstFolderDocId,
-    };
-  }, []);
+  const applyWorkspaceState = useCallback(
+    (
+      workspace: WorkspaceState,
+      options: { preserveFolderDetails?: boolean } = {},
+    ): WorkspaceRefreshResult => {
+      const preserveFolderDetails = options.preserveFolderDetails ?? true;
+      const activeFolderIds = new Set(workspace.folders.map((folder) => folder.id));
+      const nextDetails: Record<string, FolderDetail> = {};
+
+      if (preserveFolderDetails) {
+        for (const [folderId, detail] of Object.entries(folderDetailsRef.current)) {
+          if (activeFolderIds.has(folderId)) {
+            nextDetails[folderId] = detail;
+          }
+        }
+      }
+      for (const [folderId, detail] of Object.entries(workspace.folder_details)) {
+        if (activeFolderIds.has(folderId)) {
+          nextDetails[folderId] = detail;
+        }
+      }
+
+      folderDetailsRef.current = nextDetails;
+      setDocuments(workspace.documents);
+      setFolders(workspace.folders);
+      setFolderDetailsById(nextDetails);
+      setHealth(workspace.health);
+      return buildWorkspaceRefreshResult(workspace.documents, nextDetails);
+    },
+    [],
+  );
+
+  const refreshDocuments = useCallback(
+    async (
+      options: { preserveFolderDetails?: boolean } = {},
+    ): Promise<WorkspaceRefreshResult> => {
+      const workspace = await getWorkspace();
+      return applyWorkspaceState(workspace, options);
+    },
+    [applyWorkspaceState],
+  );
+
+  const ensureFolderDetail = useCallback(
+    async (folderId: string) => {
+      if (folderDetailsRef.current[folderId] || folderDetailLoadingRef.current.has(folderId)) {
+        return;
+      }
+      folderDetailLoadingRef.current.add(folderId);
+      setFolderDetailLoadingById((prev) => ({ ...prev, [folderId]: true }));
+      try {
+        const detail = await getFolder(folderId);
+        const nextDetails = {
+          ...folderDetailsRef.current,
+          [detail.id]: detail,
+        };
+        folderDetailsRef.current = nextDetails;
+        setFolderDetailsById(nextDetails);
+      } catch (e: unknown) {
+        setError(String(e));
+      } finally {
+        folderDetailLoadingRef.current.delete(folderId);
+        setFolderDetailLoadingById((prev) => {
+          if (!prev[folderId]) return prev;
+          const next = { ...prev };
+          delete next[folderId];
+          return next;
+        });
+      }
+    },
+    [],
+  );
 
   // Load document list
   useEffect(() => {
@@ -483,7 +571,7 @@ function useAppContentController() {
       try {
         const result = await ingestFiles(files, (file) => ingestSessionFile(file, conflictPolicy));
         if (result.created_ids.length > 0 || result.imported_file_count > 0) {
-          const refreshed = await refreshDocuments();
+          const refreshed = await refreshDocuments({ preserveFolderDetails: false });
           const firstCreatedId = result.created_ids[0] ?? null;
           const selectedStillExists =
             selectedId !== null && refreshed.allDocIds.has(selectedId);
@@ -548,7 +636,7 @@ function useAppContentController() {
       setDeletingId(docId);
       try {
         await deleteDocument(docId);
-        const refreshed = await refreshDocuments();
+        const refreshed = await refreshDocuments({ preserveFolderDetails: false });
         if (selectedId === docId || !refreshed.allDocIds.has(selectedId ?? "")) {
           const nextId = refreshed.firstAvailableId;
           setSelectedId(nextId);
@@ -571,7 +659,7 @@ function useAppContentController() {
       setDeletingId(docId);
       try {
         await deleteFolderDocument(folderId, docId);
-        const refreshed = await refreshDocuments();
+        const refreshed = await refreshDocuments({ preserveFolderDetails: false });
         if (selectedId === docId || !refreshed.allDocIds.has(selectedId ?? "")) {
           const nextId = refreshed.firstAvailableId;
           setSelectedId(nextId);
@@ -627,7 +715,7 @@ function useAppContentController() {
       setFolderBusyId(folderId);
       try {
         await createFolderSample(folderId, count);
-        await refreshDocuments();
+        await refreshDocuments({ preserveFolderDetails: false });
       } catch (e: unknown) {
         setError(String(e));
       } finally {
@@ -642,7 +730,7 @@ function useAppContentController() {
       setFolderBusyId(parentFolderId ?? "__new__");
       try {
         await createFolder(name, parentFolderId);
-        await refreshDocuments();
+        await refreshDocuments({ preserveFolderDetails: false });
       } catch (e: unknown) {
         setError(String(e));
       } finally {
@@ -657,7 +745,7 @@ function useAppContentController() {
       setFolderBusyId(folderId);
       try {
         await deleteFolder(folderId);
-        const refreshed = await refreshDocuments();
+        const refreshed = await refreshDocuments({ preserveFolderDetails: false });
         if (selectedId && !refreshed.allDocIds.has(selectedId)) {
           const nextId = refreshed.firstAvailableId;
           setSelectedId(nextId);
@@ -696,7 +784,7 @@ function useAppContentController() {
       setFolderBusyId(folderId);
       try {
         const result = await pruneEmptyFolderDocs(folderId);
-        const refreshed = await refreshDocuments();
+        const refreshed = await refreshDocuments({ preserveFolderDetails: false });
         if (selectedId && !refreshed.allDocIds.has(selectedId)) {
           const nextId = refreshed.firstAvailableId;
           setSelectedId(nextId);
@@ -741,7 +829,7 @@ function useAppContentController() {
       setMirroringPreToManual(true);
       try {
         const result = await mirrorPreToManual(scope);
-        const refreshed = await refreshDocuments();
+        const refreshed = await refreshDocuments({ preserveFolderDetails: false });
         if (selectedId && refreshed.allDocIds.has(selectedId)) {
           await loadSelectedDocument(selectedId);
         }
@@ -756,6 +844,13 @@ function useAppContentController() {
     },
     [loadSelectedDocument, refreshDocuments, selectedId],
   );
+
+  const handleWorkspaceChanged = useCallback(async () => {
+    const refreshed = await refreshDocuments({ preserveFolderDetails: false });
+    if (selectedId && refreshed.allDocIds.has(selectedId)) {
+      await loadSelectedDocument(selectedId);
+    }
+  }, [loadSelectedDocument, refreshDocuments, selectedId]);
 
   const handleMirrorPreToManual = useCallback(
     (scope: GroundTruthExportScope) => {
@@ -960,6 +1055,8 @@ function useAppContentController() {
       methodTimestamps: methodIds.map((id) => methodMeta[id]?.updated_at ?? null),
     });
   }, [doc]);
+
+  const readinessWarnings = useMemo(() => getReadinessWarnings(health), [health]);
 
   useEffect(() => {
     agentViewRef.current = agentView;
@@ -1337,6 +1434,9 @@ function useAppContentController() {
     documents,
     folders,
     folderDetailsById,
+    folderDetailLoadingById,
+    health,
+    readinessWarnings,
     selectedId,
     setSelectedId,
     doc,
@@ -1404,6 +1504,8 @@ function useAppContentController() {
     getDiffSpans,
     getAgentSpans,
     getMethodSpans,
+    ensureFolderDetail,
+    handleWorkspaceChanged,
   };
 }
 
@@ -1416,6 +1518,9 @@ function renderAppContent(controller: AppContentController) {
     documents,
     folders,
     folderDetailsById,
+    folderDetailLoadingById,
+    health,
+    readinessWarnings,
     selectedId,
     setSelectedId,
     doc,
@@ -1483,6 +1588,8 @@ function renderAppContent(controller: AppContentController) {
     getDiffSpans,
     getAgentSpans,
     getMethodSpans,
+    ensureFolderDetail,
+    handleWorkspaceChanged,
   } = controller;
 
   const allPanes: PaneType[] = orderedVisiblePanes;
@@ -1504,11 +1611,13 @@ function renderAppContent(controller: AppContentController) {
         onDeleteFolder={handleDeleteFolder}
         onPruneFolder={handlePruneFolder}
         onMirrorPreToManual={handleMirrorPreToManual}
+        onEnsureFolderDetail={ensureFolderDetail}
         onExportSession={handleExportSession}
         exportSourceOptions={sourceOptions}
         ingesting={ingesting}
         deletingId={deletingId}
         folderBusyId={folderBusyId}
+        folderDetailLoadingById={folderDetailLoadingById}
         exporting={exporting}
         mirroringPreToManual={mirroringPreToManual}
       />
@@ -1543,6 +1652,22 @@ function renderAppContent(controller: AppContentController) {
             Dashboard
           </button>
         </div>
+        {readinessWarnings.length > 0 && (
+          <div className="readiness-banner" role="status">
+            <div>
+              <strong>Readiness warnings</strong>
+              <span>
+                {health?.counts.documents ?? 0} docs, {health?.counts.folders ?? 0} folders,
+                storage {health?.storage.exists ? "ready" : "missing"}
+              </span>
+            </div>
+            <ul>
+              {readinessWarnings.slice(0, 4).map((message) => (
+                <li key={message}>{message}</li>
+              ))}
+            </ul>
+          </div>
+        )}
         {mainTab === "prompt_lab" ? (
           <PromptLabTab
             documents={documents}
@@ -1556,6 +1681,7 @@ function renderAppContent(controller: AppContentController) {
             folders={folders}
             selectedDocumentId={selectedId}
             onSelectDocument={setSelectedId}
+            onWorkspaceChanged={handleWorkspaceChanged}
           />
         ) : mainTab === "dashboard" ? (
           <section className="dashboard-tab">
@@ -1626,7 +1752,13 @@ function renderAppContent(controller: AppContentController) {
         ) : (
           <>
             {!doc && !loading && (
-              <div className="empty-state">Select a document or upload a file to begin</div>
+              <div className="empty-state">
+                <h2>Start with a transcript or session bundle</h2>
+                <p>
+                  Drop a JSON, JSONL, TXT, ZIP, or exported full-session bundle in the
+                  sidebar. Imported folders load their transcript lists only when expanded.
+                </p>
+              </div>
             )}
             {loading && <div className="loading">Loading document...</div>}
             {doc && (

@@ -55,6 +55,11 @@ Important files:
 
 So right now persistence is local JSON sidecars per document/session.
 
+For colleague sharing through GitHub, export a full session bundle and commit
+that intentional bundle file to the private repo. Do not share
+`backend/.annotation_tool/` directly. See
+[docs/session-sharing.md](docs/session-sharing.md).
+
 Prompt Lab and Methods Lab runs are also session-backed sidecars:
 - `backend/.annotation_tool/sessions/default/prompt_lab/_index.json`
 - `backend/.annotation_tool/sessions/default/prompt_lab/<run_id>.json`

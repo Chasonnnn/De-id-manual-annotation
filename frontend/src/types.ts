@@ -201,6 +201,14 @@ export interface MirrorPreToManualResult {
   doc_ids: string[];
 }
 
+export interface MirrorMethodToManualResult extends MirrorPreToManualResult {
+  source: "method";
+  run_id: string;
+  cell_id: string;
+  skipped_count: number;
+  skipped_doc_ids: string[];
+}
+
 export interface MetricsResult {
   micro: { precision: number; recall: number; f1: number };
   macro: { precision: number; recall: number; f1: number };
@@ -326,6 +334,14 @@ export interface SessionExportBundle {
     import_supported_versions?: number[];
   };
   exported_at: string;
+  summary?: {
+    bundle_version: number;
+    exported_at: string;
+    document_count: number;
+    folder_count: number;
+    prompt_lab_run_count: number;
+    methods_lab_run_count: number;
+  };
   prompt_lab_runs?: PromptLabRunExport[];
   methods_lab_runs?: MethodsLabRunExport[];
   folders?: Array<Record<string, unknown>>;
@@ -418,6 +434,37 @@ export interface AgentCredentialStatus {
   api_key_sources: string[];
   has_api_base: boolean;
   api_base_sources: string[];
+}
+
+export interface ReadinessHealth {
+  status: "ok" | "warning";
+  tool_version: string;
+  storage: {
+    root: string;
+    session_dir: string;
+    exists: boolean;
+  };
+  counts: {
+    documents: number;
+    folders: number;
+    prompt_lab_runs: number;
+    methods_lab_runs: number;
+  };
+  credentials: AgentCredentialStatus;
+  method_availability_warnings: Array<{
+    id: string;
+    label: string;
+    reason: string;
+  }>;
+  config_warnings: string[];
+  dependency_warnings: string[];
+}
+
+export interface WorkspaceState {
+  documents: DocumentSummary[];
+  folders: FolderSummary[];
+  folder_details: Record<string, FolderDetail>;
+  health: ReadinessHealth;
 }
 
 export interface ExperimentLimits {

@@ -23,6 +23,7 @@ interface Props {
   onDeleteFolder: (folderId: string) => void;
   onPruneFolder: (folderId: string) => void;
   onMirrorPreToManual: (exportScope: GroundTruthExportScope) => void;
+  onEnsureFolderDetail?: (folderId: string) => void;
   onExportSession: (
     mode: "full" | "ground_truth",
     source: AnnotationSource,
@@ -32,16 +33,19 @@ interface Props {
   ingesting?: boolean;
   deletingId?: string | null;
   folderBusyId?: string | null;
+  folderDetailLoadingById?: Record<string, boolean>;
   exporting?: boolean;
   mirroringPreToManual?: boolean;
 }
 
 type ExportMode = "full" | "ground_truth";
+const FOLDER_DOCUMENT_PREVIEW_LIMIT = 250;
 
 interface SidebarState {
   search: string;
   ingestDragOver: boolean;
   expandedFolders: Record<string, boolean>;
+  showAllFolderDocs: Record<string, boolean>;
   exportMode: ExportMode;
   exportSource: AnnotationSource;
   exportScope: GroundTruthExportScope;
@@ -52,6 +56,7 @@ type SidebarAction =
   | { type: "set_search"; value: string }
   | { type: "set_ingest_drag_over"; value: boolean }
   | { type: "toggle_folder"; folderId: string }
+  | { type: "show_all_folder_docs"; folderId: string }
   | { type: "sync_folders"; folders: FolderSummary[] }
   | { type: "set_export_mode"; value: ExportMode }
   | { type: "set_export_source"; value: AnnotationSource }
@@ -65,6 +70,7 @@ function createInitialSidebarState(
     search: "",
     ingestDragOver: false,
     expandedFolders: {},
+    showAllFolderDocs: {},
     exportMode: "full",
     exportSource: exportSourceOptions[0]?.value ?? "manual",
     exportScope: { kind: "top_level" },
@@ -88,13 +94,25 @@ function sidebarReducer(state: SidebarState, action: SidebarAction): SidebarStat
           [action.folderId]: !state.expandedFolders[action.folderId],
         },
       };
+    case "show_all_folder_docs":
+      return state.showAllFolderDocs[action.folderId]
+        ? state
+        : {
+            ...state,
+            showAllFolderDocs: {
+              ...state.showAllFolderDocs,
+              [action.folderId]: true,
+            },
+          };
     case "sync_folders": {
       if (action.folders.length === 0) {
-        return Object.keys(state.expandedFolders).length === 0
+        return Object.keys(state.expandedFolders).length === 0 &&
+          Object.keys(state.showAllFolderDocs).length === 0
           ? state
-          : { ...state, expandedFolders: {} };
+          : { ...state, expandedFolders: {}, showAllFolderDocs: {} };
       }
       const nextExpanded = { ...state.expandedFolders };
+      const nextShowAll = { ...state.showAllFolderDocs };
       let changed = false;
       const activeFolderIds = new Set(action.folders.map((folder) => folder.id));
 
@@ -104,7 +122,15 @@ function sidebarReducer(state: SidebarState, action: SidebarAction): SidebarStat
           changed = true;
         }
       }
-      return changed ? { ...state, expandedFolders: nextExpanded } : state;
+      for (const folderId of Object.keys(nextShowAll)) {
+        if (!activeFolderIds.has(folderId)) {
+          delete nextShowAll[folderId];
+          changed = true;
+        }
+      }
+      return changed
+        ? { ...state, expandedFolders: nextExpanded, showAllFolderDocs: nextShowAll }
+        : state;
     }
     case "set_export_mode":
       return state.exportMode === action.value ? state : { ...state, exportMode: action.value };
@@ -126,21 +152,25 @@ function sidebarReducer(state: SidebarState, action: SidebarAction): SidebarStat
 }
 
 function folderMatchesSearch(
-  folderId: string,
+  folder: FolderSummary,
   search: string,
+  folderById: Map<string, FolderSummary>,
   folderDetailsById: Record<string, FolderDetail>,
 ): boolean {
   if (!search) return true;
-  const detail = folderDetailsById[folderId];
-  if (!detail) return false;
   const term = search.toLowerCase();
-  if (
-    detail.name.toLowerCase().includes(term) ||
-    detail.kind.toLowerCase().includes(term) ||
-    (detail.source_filename ?? "").toLowerCase().includes(term)
-  ) {
+  const detail = folderDetailsById[folder.id];
+  const folderSearchText = [
+    folder.id,
+    folder.name,
+    folder.kind,
+    folder.source_filename ?? "",
+    detail?.source_filename ?? "",
+  ].join(" ").toLowerCase();
+  if (folderSearchText.includes(term)) {
     return true;
   }
+  if (!detail) return false;
   if (
     detail.documents.some(
       (doc) =>
@@ -151,9 +181,10 @@ function folderMatchesSearch(
   ) {
     return true;
   }
-  return detail.child_folder_ids.some((childId) =>
-    folderMatchesSearch(childId, search, folderDetailsById),
-  );
+  return detail.child_folder_ids.some((childId) => {
+    const child = folderById.get(childId);
+    return child ? folderMatchesSearch(child, search, folderById, folderDetailsById) : false;
+  });
 }
 
 function folderDepth(folder: FolderSummary, folderById: Map<string, FolderSummary>): number {
@@ -215,6 +246,25 @@ function handleDropZoneKeyDown(
   }
 }
 
+function getDocumentPrimaryLabel(document: DocumentSummary): string {
+  return document.display_name.trim() || document.filename.trim() || document.id;
+}
+
+function DocumentLabel({ document }: { document: DocumentSummary }) {
+  const primary = getDocumentPrimaryLabel(document);
+  const title = [primary, document.filename, document.id]
+    .filter((value, index, values) => value && values.indexOf(value) === index)
+    .join(" · ");
+  return (
+    <span className="doc-label">
+      <span className="doc-filename" title={title}>
+        {primary}
+      </span>
+      {document.id !== primary && <span className="doc-id">{document.id}</span>}
+    </span>
+  );
+}
+
 function SidebarDocumentRow({
   document,
   selectedId,
@@ -243,9 +293,7 @@ function SidebarDocumentRow({
     >
       <span className="doc-row-main">
         <span className={`status-badge ${document.status}`} />
-        <span className="doc-filename" title={document.filename || document.display_name || document.id}>
-          {document.id}
-        </span>
+        <DocumentLabel document={document} />
       </span>
       <button
         type="button"
@@ -270,10 +318,14 @@ function SidebarFolderBranch({
   folderById,
   folderDetailsById,
   expandedFolders,
+  showAllFolderDocs,
   folderBusyId,
+  folderDetailLoadingById,
   selectedId,
   deletingId,
   onToggleFolder,
+  onEnsureFolderDetail,
+  onShowAllFolderDocs,
   onSelect,
   onCreateFolder,
   onRequestSample,
@@ -283,15 +335,19 @@ function SidebarFolderBranch({
   onPruneFolder,
 }: {
   folder: FolderSummary;
-  detail: FolderDetail;
+  detail?: FolderDetail;
   depth: number;
   folderById: Map<string, FolderSummary>;
   folderDetailsById: Record<string, FolderDetail>;
   expandedFolders: Record<string, boolean>;
+  showAllFolderDocs: Record<string, boolean>;
   folderBusyId: string | null;
+  folderDetailLoadingById: Record<string, boolean>;
   selectedId: string | null;
   deletingId: string | null;
   onToggleFolder: (folderId: string) => void;
+  onEnsureFolderDetail?: (folderId: string) => void;
+  onShowAllFolderDocs: (folderId: string) => void;
   onSelect: (id: string) => void;
   onCreateFolder: (name: string, parentFolderId: string | null) => void;
   onRequestSample: (folder: FolderSummary) => void;
@@ -302,7 +358,20 @@ function SidebarFolderBranch({
 }) {
   const isExpanded = expandedFolders[folder.id] ?? false;
   const busy = folderBusyId === folder.id;
+  const loadingDetail = Boolean(folderDetailLoadingById[folder.id]);
   const paddingLeft = 16 + depth * 14;
+  const documents = detail?.documents ?? [];
+  const shouldLimitDocuments =
+    documents.length > FOLDER_DOCUMENT_PREVIEW_LIMIT && !showAllFolderDocs[folder.id];
+  const visibleDocuments = shouldLimitDocuments
+    ? documents.slice(0, FOLDER_DOCUMENT_PREVIEW_LIMIT)
+    : documents;
+  const handleToggle = () => {
+    if (!isExpanded && !detail) {
+      onEnsureFolderDetail?.(folder.id);
+    }
+    onToggleFolder(folder.id);
+  };
 
   return (
     <>
@@ -313,7 +382,7 @@ function SidebarFolderBranch({
         <button
           type="button"
           className="sidebar-folder-toggle"
-          onClick={() => onToggleFolder(folder.id)}
+          onClick={handleToggle}
           aria-label={isExpanded ? "Collapse folder" : "Expand folder"}
         >
           {isExpanded ? "▾" : "▸"}
@@ -360,8 +429,13 @@ function SidebarFolderBranch({
           </button>
         </div>
       </li>
+      {isExpanded && !detail && (
+        <li className="sidebar-loading-row" style={{ paddingLeft: paddingLeft + 26 }}>
+          {loadingDetail ? "Loading folder..." : "Loading folder..."}
+        </li>
+      )}
       {isExpanded &&
-        detail.documents.map((document) => (
+        visibleDocuments.map((document) => (
           <li
             key={`folder-doc-${document.id}`}
             className={
@@ -382,9 +456,7 @@ function SidebarFolderBranch({
           >
             <span className="doc-row-main">
               <span className={`status-badge ${document.status}`} />
-              <span className="doc-filename" title={document.filename || document.display_name || document.id}>
-                {document.id}
-              </span>
+              <DocumentLabel document={document} />
             </span>
             <button
               type="button"
@@ -401,11 +473,18 @@ function SidebarFolderBranch({
             </button>
           </li>
         ))}
+      {isExpanded && shouldLimitDocuments && (
+        <li className="sidebar-show-more-row" style={{ paddingLeft: paddingLeft + 26 }}>
+          <button type="button" onClick={() => onShowAllFolderDocs(folder.id)}>
+            Show all {documents.length} documents
+          </button>
+        </li>
+      )}
       {isExpanded &&
-        detail.child_folder_ids.map((childFolderId) => {
+        detail?.child_folder_ids.map((childFolderId) => {
           const childFolder = folderById.get(childFolderId);
           const childDetail = folderDetailsById[childFolderId];
-          if (!childFolder || !childDetail) return null;
+          if (!childFolder) return null;
           return (
             <SidebarFolderBranch
               key={`folder-${childFolderId}`}
@@ -415,10 +494,14 @@ function SidebarFolderBranch({
               folderById={folderById}
               folderDetailsById={folderDetailsById}
               expandedFolders={expandedFolders}
+              showAllFolderDocs={showAllFolderDocs}
               folderBusyId={folderBusyId}
+              folderDetailLoadingById={folderDetailLoadingById}
               selectedId={selectedId}
               deletingId={deletingId}
               onToggleFolder={onToggleFolder}
+              onEnsureFolderDetail={onEnsureFolderDetail}
+              onShowAllFolderDocs={onShowAllFolderDocs}
               onSelect={onSelect}
               onCreateFolder={onCreateFolder}
               onRequestSample={onRequestSample}
@@ -439,13 +522,17 @@ function SidebarDocumentTree({
   folderById,
   folderDetailsById,
   expandedFolders,
+  showAllFolderDocs,
   selectedId,
   deletingId,
   folderBusyId,
+  folderDetailLoadingById,
   onSelect,
   onDelete,
   onDeleteFolderDocument,
   onToggleFolder,
+  onEnsureFolderDetail,
+  onShowAllFolderDocs,
   onRequestSample,
   onRequestNewSubfolder,
   onDeleteFolder,
@@ -457,13 +544,17 @@ function SidebarDocumentTree({
   folderById: Map<string, FolderSummary>;
   folderDetailsById: Record<string, FolderDetail>;
   expandedFolders: Record<string, boolean>;
+  showAllFolderDocs: Record<string, boolean>;
   selectedId: string | null;
   deletingId: string | null;
   folderBusyId: string | null;
+  folderDetailLoadingById: Record<string, boolean>;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
   onDeleteFolderDocument: (folderId: string, docId: string) => void;
   onToggleFolder: (folderId: string) => void;
+  onEnsureFolderDetail?: (folderId: string) => void;
+  onShowAllFolderDocs: (folderId: string) => void;
   onRequestSample: (folder: FolderSummary) => void;
   onRequestNewSubfolder: (folder: FolderSummary) => void;
   onDeleteFolder: (folderId: string) => void;
@@ -489,7 +580,6 @@ function SidebarDocumentTree({
       {visibleTopLevelFolders.length > 0 && <li className="sidebar-group-label">Folders</li>}
       {visibleTopLevelFolders.map((folder) => {
         const detail = folderDetailsById[folder.id];
-        if (!detail) return null;
         return (
           <SidebarFolderBranch
             key={`folder-${folder.id}`}
@@ -499,10 +589,14 @@ function SidebarDocumentTree({
             folderById={folderById}
             folderDetailsById={folderDetailsById}
             expandedFolders={expandedFolders}
+            showAllFolderDocs={showAllFolderDocs}
             folderBusyId={folderBusyId}
+            folderDetailLoadingById={folderDetailLoadingById}
             selectedId={selectedId}
             deletingId={deletingId}
             onToggleFolder={onToggleFolder}
+            onEnsureFolderDetail={onEnsureFolderDetail}
+            onShowAllFolderDocs={onShowAllFolderDocs}
             onSelect={onSelect}
             onCreateFolder={onCreateFolder}
             onRequestSample={onRequestSample}
@@ -670,6 +764,10 @@ function SidebarActionsPanel({
             <option value="keep_current">Keep Current</option>
           </select>
         </div>
+        <p className="bundle-help">
+          Replace Current updates matching imported documents. Add as New keeps both copies.
+          Keep Current skips incoming conflicts.
+        </p>
 
         <button
           type="button"
@@ -765,11 +863,13 @@ export default function Sidebar({
   onDeleteFolder,
   onPruneFolder,
   onMirrorPreToManual,
+  onEnsureFolderDetail,
   onExportSession,
   exportSourceOptions,
   ingesting = false,
   deletingId = null,
   folderBusyId = null,
+  folderDetailLoadingById = {},
   exporting = false,
   mirroringPreToManual = false,
 }: Props) {
@@ -844,9 +944,9 @@ export default function Sidebar({
       folders.filter(
         (folder) =>
           folder.parent_folder_id === null &&
-          folderMatchesSearch(folder.id, state.search, folderDetailsById),
+          folderMatchesSearch(folder, state.search, folderById, folderDetailsById),
       ),
-    [folderDetailsById, folders, state.search],
+    [folderById, folderDetailsById, folders, state.search],
   );
 
   const openIngestPicker = useCallback(() => {
@@ -912,13 +1012,17 @@ export default function Sidebar({
         folderById={folderById}
         folderDetailsById={folderDetailsById}
         expandedFolders={state.expandedFolders}
+        showAllFolderDocs={state.showAllFolderDocs}
         selectedId={selectedId}
         deletingId={deletingId}
         folderBusyId={folderBusyId}
+        folderDetailLoadingById={folderDetailLoadingById}
         onSelect={onSelect}
         onDelete={onDelete}
         onDeleteFolderDocument={onDeleteFolderDocument}
         onToggleFolder={(folderId) => dispatch({ type: "toggle_folder", folderId })}
+        onEnsureFolderDetail={onEnsureFolderDetail}
+        onShowAllFolderDocs={(folderId) => dispatch({ type: "show_all_folder_docs", folderId })}
         onCreateFolder={onCreateFolder}
         onRequestSample={handleRequestSample}
         onRequestNewSubfolder={handleRequestNewSubfolder}
