@@ -14,6 +14,10 @@ First-time setup (installs dependencies, then starts both):
 ./run.sh --install
 ```
 
+Normal startup uses the already-installed backend `.venv` and frontend
+`node_modules`; it does not sync or fetch dependencies. If dependencies are
+missing or stale, rerun `./run.sh --install`.
+
 You can override ports:
 
 ```bash

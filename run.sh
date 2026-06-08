@@ -68,6 +68,24 @@ if [[ "$INSTALL_DEPS" == true ]]; then
     (cd "$FRONTEND_DIR" && npm install)
 fi
 
+ensure_installed_dependencies() {
+    if [[ "$INSTALL_DEPS" == true ]]; then
+        return 0
+    fi
+
+    if [[ ! -x "$BACKEND_DIR/.venv/bin/uvicorn" ]]; then
+        echo "Backend dependencies are not installed."
+        echo "Run ./run.sh --install once, then use ./run.sh for normal startup."
+        exit 1
+    fi
+
+    if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
+        echo "Frontend dependencies are not installed."
+        echo "Run ./run.sh --install once, then use ./run.sh for normal startup."
+        exit 1
+    fi
+}
+
 port_listener_pids() {
     local port="$1"
     lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true
@@ -176,13 +194,15 @@ terminate_pid_tree() {
     kill "$pid" 2>/dev/null || true
 }
 
+ensure_installed_dependencies
+
 trap cleanup EXIT SIGINT SIGTERM
 
 restart_repo_processes_on_port "$BACKEND_PORT" "backend" "$BACKEND_DIR" "uvicorn" "server:app"
 restart_repo_processes_on_port "$FRONTEND_PORT" "frontend" "$FRONTEND_DIR" "vite"
 
 echo "Starting backend (FastAPI)..."
-(cd "$BACKEND_DIR" && uv run uvicorn server:app --reload --port "$BACKEND_PORT") &
+(cd "$BACKEND_DIR" && uv run --no-sync uvicorn server:app --reload --port "$BACKEND_PORT") &
 backend_job_pid=$!
 
 wait_for_backend_http_ready "$BACKEND_PORT"
