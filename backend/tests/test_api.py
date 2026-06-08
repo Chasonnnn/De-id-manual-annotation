@@ -5499,6 +5499,110 @@ def test_methods_lab_accepts_eight_method_variants_and_repeated_method_ids(clien
     assert final["methods"][3]["method_verify_override"] is False
 
 
+def test_methods_lab_batches_deid_pipeline_methods_across_documents(client, monkeypatch):
+    calls: list[tuple[str, list[str]]] = []
+
+    def fake_batch_run(**kwargs):
+        documents = list(kwargs["documents"])
+        method_id = str(kwargs["method_id"])
+        calls.append((method_id, [doc_id for doc_id, _text in documents]))
+        return {
+            doc_id: SimpleNamespace(
+                spans=[
+                    CanonicalSpan(
+                        start=text.index("Anna"),
+                        end=text.index("Anna") + 4,
+                        label="NAME",
+                        text="Anna",
+                    )
+                ],
+                warnings=[],
+                llm_confidence=None,
+                response_debug=[],
+                raw_spans=[
+                    CanonicalSpan(
+                        start=text.index("Anna"),
+                        end=text.index("Anna") + 4,
+                        label="NAME",
+                        text="Anna",
+                    )
+                ],
+                resolution_events=[],
+                resolution_policy_version=None,
+            )
+            for doc_id, text in documents
+        }
+
+    monkeypatch.setattr("server.run_deid_pipeline_method_batch_with_metadata", fake_batch_run)
+
+    first_upload = _upload(client, _make_hips_v1_custom("Hello Anna"), filename="method-a.json")
+    second_upload = _upload(client, _make_hips_v1_custom("Bye Anna"), filename="method-b.json")
+    assert first_upload.status_code == 200
+    assert second_upload.status_code == 200
+    doc_ids = [first_upload.json()["id"], second_upload.json()["id"]]
+    for doc_id in doc_ids:
+        doc_resp = client.get(f"/api/documents/{doc_id}")
+        text = doc_resp.json()["raw_text"]
+        start = text.index("Anna")
+        manual_resp = client.put(
+            f"/api/documents/{doc_id}/manual-annotations",
+            json=[{"start": start, "end": start + 4, "label": "NAME", "text": "Anna"}],
+        )
+        assert manual_resp.status_code == 200
+
+    create_resp = client.post(
+        "/api/methods-lab/runs",
+        json={
+            "name": "batched-cascades",
+            "doc_ids": doc_ids,
+            "methods": [
+                {
+                    "id": "m31",
+                    "label": "31B cascade",
+                    "method_id": "deid_pipeline_cascade_gemma31b",
+                },
+                {
+                    "id": "m12",
+                    "label": "12B cascade",
+                    "method_id": "deid_pipeline_cascade_gemma12b",
+                },
+            ],
+            "models": [
+                {
+                    "id": "model_1",
+                    "label": "Local cascade",
+                    "model": "local-cascade",
+                    "reasoning_effort": "none",
+                    "anthropic_thinking": False,
+                    "anthropic_thinking_budget_tokens": None,
+                }
+            ],
+            "runtime": {
+                "api_key": "",
+                "api_base": "",
+                "temperature": 0.0,
+                "match_mode": "exact",
+                "reference_source": "manual",
+                "fallback_reference_source": "pre",
+                "chunk_mode": "auto",
+                "chunk_size_chars": 10000,
+            },
+            "concurrency": 8,
+        },
+    )
+    assert create_resp.status_code == 200
+    final = _wait_for_methods_lab_terminal(client, create_resp.json()["id"], attempts=200)
+
+    assert final["status"] == "completed"
+    assert calls == [
+        ("deid_pipeline_cascade_gemma31b", doc_ids),
+        ("deid_pipeline_cascade_gemma12b", doc_ids),
+    ]
+    for cell in final["matrix"]["cells"]:
+        assert cell["completed_docs"] == 2
+        assert cell["failed_docs"] == 0
+
+
 def test_methods_lab_cell_summary_includes_overlap_metrics_and_error_families(
     client, monkeypatch
 ):
@@ -6129,9 +6233,9 @@ def test_methods_lab_allows_empty_pre_reference_docs_and_syncs_workspace_runs(
     assert empty_detail["status"] == "completed"
     assert empty_detail["reference_source_used"] == "pre"
     assert empty_detail["reference_spans"] == []
-    assert empty_detail["metrics"]["micro"]["tp"] == 0
-    assert empty_detail["metrics"]["micro"]["fp"] == 1
-    assert empty_detail["metrics"]["micro"]["fn"] == 0
+    assert empty_detail["scoring_status"] == "unscored_no_reference"
+    assert empty_detail["metrics"] is None
+    assert empty_detail["raw_metrics"] is None
 
     annotated_detail_resp = client.get(
         f"/api/methods-lab/runs/{run_id}/cells/{cell['id']}/documents/{annotated_doc_id}"
@@ -6139,7 +6243,13 @@ def test_methods_lab_allows_empty_pre_reference_docs_and_syncs_workspace_runs(
     assert annotated_detail_resp.status_code == 200
     annotated_detail = annotated_detail_resp.json()
     assert annotated_detail["status"] == "completed"
+    assert annotated_detail["scoring_status"] == "scored"
     assert annotated_detail["metrics"]["micro"]["f1"] == pytest.approx(1.0)
+    assert cell["scored_docs"] == 1
+    assert cell["unscored_docs"] == 1
+    assert cell["micro"]["tp"] == 1
+    assert cell["micro"]["fp"] == 0
+    assert cell["micro"]["fn"] == 0
 
     run_key = f"presidio-lite+extended-v2::{model_id}::{run_id}"
     empty_doc_resp = client.get(f"/api/documents/{empty_pre_doc_id}")
@@ -6151,6 +6261,14 @@ def test_methods_lab_allows_empty_pre_reference_docs_and_syncs_workspace_runs(
     assert run_meta["mode"] == "method"
     assert run_meta["method_id"] == "presidio-lite+extended-v2"
     assert run_meta["model"] == model_id
+    assert run_meta["display_label"] == "Regex + LLM Extended v2 · Claude Sonnet 4.6"
+    assert run_meta["method_bundle"] == "deidentify-v2"
+    assert run_meta["run_label"] == "mixed-pre-folder-run"
+    assert run_meta["save_policy"] == "create"
+    assert run_meta["runtime"]["source"] == "methods_lab"
+    assert run_meta["runtime"]["run_id"] == run_id
+    assert run_meta["runtime"]["cell_id"] == "model_1__method_1"
+    assert run_meta["runtime"]["reference_source"] == "pre"
     assert "label_profile" not in run_meta
 
     runs_sidecar = (

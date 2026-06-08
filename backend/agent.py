@@ -4085,6 +4085,30 @@ def _run_deid_pipeline_method_with_metadata(
     method_verify: bool | None,
     progress_callback: Callable[[int, str], None] | None = None,
 ) -> MethodRunResult:
+    return run_deid_pipeline_method_batch_with_metadata(
+        documents=[(DEID_PIPELINE_TRANSCRIPT_ID, text)],
+        method_id=method_id,
+        system_prompt=system_prompt,
+        method_verify=method_verify,
+        progress_callback=progress_callback,
+    )[DEID_PIPELINE_TRANSCRIPT_ID]
+
+
+def _deid_pipeline_batch_filename(index: int, doc_id: str) -> str:
+    safe_doc_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(doc_id)).strip("._-")
+    if not safe_doc_id:
+        safe_doc_id = "document"
+    return f"{index:04d}-{safe_doc_id}.json"
+
+
+def run_deid_pipeline_method_batch_with_metadata(
+    *,
+    documents: list[tuple[str, str]],
+    method_id: str,
+    system_prompt: str,
+    method_verify: bool | None,
+    progress_callback: Callable[[int, str], None] | None = None,
+) -> dict[str, MethodRunResult]:
     runtime_error = _deid_pipeline_runtime_error(method_id)
     if runtime_error is not None:
         raise ValueError(runtime_error)
@@ -4094,6 +4118,10 @@ def _run_deid_pipeline_method_with_metadata(
     uv_bin = _resolve_deid_pipeline_uv_bin()
     if repo_root is None or workspace_root is None or uv_bin is None:
         raise ValueError("de-id pipeline runtime configuration resolved incompletely")
+
+    normalized_documents = [(str(doc_id), str(text)) for doc_id, text in documents]
+    if not normalized_documents:
+        return {}
 
     warnings: list[str] = []
     if system_prompt.strip():
@@ -4113,18 +4141,23 @@ def _run_deid_pipeline_method_with_metadata(
         input_dir.mkdir(parents=True, exist_ok=True)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        input_path = input_dir / DEID_PIPELINE_INPUT_FILENAME
-        input_path.write_text(
-            json.dumps(
-                {
-                    "id": DEID_PIPELINE_TRANSCRIPT_ID,
-                    "transcript": text,
-                },
-                ensure_ascii=False,
+        input_files_by_doc_id: dict[str, Path] = {}
+        text_by_doc_id: dict[str, str] = {}
+        for index, (doc_id, doc_text) in enumerate(normalized_documents, start=1):
+            input_path = input_dir / _deid_pipeline_batch_filename(index, doc_id)
+            input_path.write_text(
+                json.dumps(
+                    {
+                        "id": doc_id,
+                        "transcript": doc_text,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
             )
-            + "\n",
-            encoding="utf-8",
-        )
+            input_files_by_doc_id[doc_id] = input_path
+            text_by_doc_id[doc_id] = doc_text
 
         command = _build_deid_pipeline_command(
             method_id=method_id,
@@ -4149,19 +4182,22 @@ def _run_deid_pipeline_method_with_metadata(
             raise ValueError(f"de-id pipeline export failed: {detail}")
 
         export_slot = str(DEID_PIPELINE_METHOD_SPECS[method_id]["export_slot"])
-        spans = _load_deid_pipeline_spans(
-            export_path=output_dir / export_slot / input_path.name,
-            text=text,
-        )
-    return MethodRunResult(
-        spans=list(spans),
-        warnings=warnings,
-        llm_confidence=None,
-        response_debug=[],
-        raw_spans=list(spans),
-        resolution_events=[],
-        resolution_policy_version=None,
-    )
+        results: dict[str, MethodRunResult] = {}
+        for doc_id, input_path in input_files_by_doc_id.items():
+            spans = _load_deid_pipeline_spans(
+                export_path=output_dir / export_slot / input_path.name,
+                text=text_by_doc_id[doc_id],
+            )
+            results[doc_id] = MethodRunResult(
+                spans=list(spans),
+                warnings=list(warnings),
+                llm_confidence=None,
+                response_debug=[],
+                raw_spans=list(spans),
+                resolution_events=[],
+                resolution_policy_version=None,
+            )
+    return results
 
 
 def run_method_with_metadata(

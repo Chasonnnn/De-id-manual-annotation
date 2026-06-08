@@ -219,6 +219,8 @@ def _matrix_rows(kind: str, detail: dict[str, Any]) -> list[dict[str, Any]]:
             "model_label": cell.get("model_label"),
             "total_docs": cell.get("total_docs"),
             "completed_docs": cell.get("completed_docs"),
+            "scored_docs": cell.get("scored_docs"),
+            "unscored_docs": cell.get("unscored_docs"),
             "failed_docs": cell.get("failed_docs"),
             "pending_docs": cell.get("pending_docs"),
             "precision": cell.get("micro", {}).get("precision"),
@@ -265,6 +267,8 @@ def _write_output_csv(path_value: str | None, *, kind: str, detail: dict[str, An
             "prompt_label",
             "total_docs",
             "completed_docs",
+            "scored_docs",
+            "unscored_docs",
             "failed_docs",
             "pending_docs",
             "precision",
@@ -291,6 +295,8 @@ def _write_output_csv(path_value: str | None, *, kind: str, detail: dict[str, An
             "method_label",
             "total_docs",
             "completed_docs",
+            "scored_docs",
+            "unscored_docs",
             "failed_docs",
             "pending_docs",
             "precision",
@@ -646,7 +652,7 @@ def _print_run_summary(kind: str, detail: dict[str, Any]) -> None:
             )
         return
 
-    print("cell_id\tmodel\tmethod\tstatus\tcompleted_docs\tfailed_docs\tf1\tmean_confidence")
+    print("cell_id\tmodel\tmethod\tstatus\tcompleted_docs\tscored_docs\tunscored_docs\tfailed_docs\tf1\tmean_confidence")
     for row in _matrix_rows(kind, detail):
         print(
             "\t".join(
@@ -656,6 +662,8 @@ def _print_run_summary(kind: str, detail: dict[str, Any]) -> None:
                     str(row["method_label"]),
                     str(row["status"]),
                     str(row["completed_docs"]),
+                    str(row["scored_docs"]),
+                    str(row["unscored_docs"]),
                     str(row["failed_docs"]),
                     str(row["f1"]),
                     str(row["mean_confidence"]),

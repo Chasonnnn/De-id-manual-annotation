@@ -1585,6 +1585,73 @@ def test_list_agent_methods_marks_only_cascade_unavailable_for_missing_reviewer_
     assert "adapters.safetensors" in str(by_id["deid_pipeline_cascade_gemma31b"]["unavailable_reason"])
 
 
+def test_run_deid_pipeline_method_batch_invokes_export_once_and_maps_outputs(
+    monkeypatch, tmp_path
+):
+    _configure_deid_pipeline_runtime(monkeypatch, tmp_path)
+    calls = []
+    docs = [
+        ("doc-one", "Tutor: Hi Anna"),
+        ("doc-two", "Email alex@example.com"),
+    ]
+
+    def fake_run(command, cwd, capture_output, text, check):
+        calls.append(command)
+        output_dir = Path(command[command.index("--output-dir") + 1])
+        output_slot = command[command.index("--output-slot") + 1]
+        input_dir = Path(command[command.index("--input-dir") + 1])
+        final_dir = output_dir / output_slot
+        final_dir.mkdir(parents=True)
+        for input_path in sorted(input_dir.glob("*.json")):
+            payload = json.loads(input_path.read_text(encoding="utf-8"))
+            transcript = payload["transcript"]
+            if payload["id"] == "doc-one":
+                span_text = "Anna"
+                start = transcript.index(span_text)
+                spans = [
+                    {
+                        "start": start,
+                        "end": start + len(span_text),
+                        "text": span_text,
+                        "entity_type": "NAME",
+                    }
+                ]
+            else:
+                span_text = "alex@example.com"
+                start = transcript.index(span_text)
+                spans = [
+                    {
+                        "start": start,
+                        "end": start + len(span_text),
+                        "text": span_text,
+                        "entity_type": "EMAIL",
+                    }
+                ]
+            (final_dir / input_path.name).write_text(
+                json.dumps({"id": payload["id"], "pii_occurrences": spans}),
+                encoding="utf-8",
+            )
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(agent.subprocess, "run", fake_run)
+
+    results = agent.run_deid_pipeline_method_batch_with_metadata(
+        documents=docs,
+        method_id="deid_pipeline_cascade_gemma31b",
+        system_prompt="",
+        method_verify=None,
+    )
+
+    assert len(calls) == 1
+    assert sorted(results) == ["doc-one", "doc-two"]
+    assert results["doc-one"].spans == [
+        CanonicalSpan(start=10, end=14, label="NAME", text="Anna")
+    ]
+    assert results["doc-two"].spans == [
+        CanonicalSpan(start=6, end=22, label="EMAIL", text="alex@example.com")
+    ]
+
+
 def test_list_agent_methods_reports_deidentify_v2_catalog_entries():
     methods = agent.list_agent_methods(method_bundle="deidentify-v2")
 

@@ -5,6 +5,7 @@ import copy
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import HTTPException
@@ -626,6 +627,8 @@ def _build_prompt_lab_cell_summary(cell: dict, total_docs: int, run_status: str)
     docs_raw = cell.get("documents", {})
     documents = docs_raw if isinstance(docs_raw, dict) else {}
     completed_docs = 0
+    scored_docs = 0
+    unscored_docs = 0
     failed_docs = 0
     pending_docs = 0
     metric_counts = {"tp": 0, "fp": 0, "fn": 0}
@@ -645,18 +648,29 @@ def _build_prompt_lab_cell_summary(cell: dict, total_docs: int, run_status: str)
         status = str(result.get("status", "pending"))
         if status == "completed":
             completed_docs += 1
-            _accumulate_metrics(
-                result.get("metrics"),
-                counts=metric_counts,
-                per_label_counts=per_label_counts,
-                co_primary_counts=co_primary_counts,
+            reference_spans = result.get("reference_spans")
+            reference_span_count = len(reference_spans) if isinstance(reference_spans, list) else 0
+            has_metrics = isinstance(result.get("metrics"), dict)
+            scoring_status = str(result.get("scoring_status") or "")
+            is_scored = scoring_status == "scored" or (
+                not scoring_status and has_metrics and reference_span_count > 0
             )
-            _accumulate_metrics(
-                result.get("raw_metrics"),
-                counts=raw_metric_counts,
-                per_label_counts=raw_per_label_counts,
-                co_primary_counts=raw_co_primary_counts,
-            )
+            if is_scored:
+                scored_docs += 1
+                _accumulate_metrics(
+                    result.get("metrics"),
+                    counts=metric_counts,
+                    per_label_counts=per_label_counts,
+                    co_primary_counts=co_primary_counts,
+                )
+                _accumulate_metrics(
+                    result.get("raw_metrics"),
+                    counts=raw_metric_counts,
+                    per_label_counts=raw_per_label_counts,
+                    co_primary_counts=raw_co_primary_counts,
+                )
+            else:
+                unscored_docs += 1
             _accumulate_resolution_summary(
                 result.get("resolution_summary"),
                 totals=resolution_totals,
@@ -680,7 +694,7 @@ def _build_prompt_lab_cell_summary(cell: dict, total_docs: int, run_status: str)
             pending_docs += 1
 
     processed = completed_docs + failed_docs
-    if completed_docs > 0:
+    if scored_docs > 0:
         micro, per_label_summary, co_primary_summary = _build_metric_summary(
             counts=metric_counts,
             per_label_counts=per_label_counts,
@@ -730,6 +744,9 @@ def _build_prompt_lab_cell_summary(cell: dict, total_docs: int, run_status: str)
         "status": status,
         "total_docs": total_docs,
         "completed_docs": completed_docs,
+        "scored_docs": scored_docs,
+        "unscored_docs": unscored_docs,
+        "metrics_available": scored_docs > 0,
         "failed_docs": failed_docs,
         "pending_docs": pending_docs,
         "error_count": failed_docs,
@@ -1482,6 +1499,8 @@ def _build_methods_lab_cell_summary(cell: dict, total_docs: int, run_status: str
     docs_raw = cell.get("documents", {})
     documents = docs_raw if isinstance(docs_raw, dict) else {}
     completed_docs = 0
+    scored_docs = 0
+    unscored_docs = 0
     failed_docs = 0
     pending_docs = 0
     metric_counts = {"tp": 0, "fp": 0, "fn": 0}
@@ -1501,18 +1520,29 @@ def _build_methods_lab_cell_summary(cell: dict, total_docs: int, run_status: str
         status = str(result.get("status", "pending"))
         if status == "completed":
             completed_docs += 1
-            _accumulate_metrics(
-                result.get("metrics"),
-                counts=metric_counts,
-                per_label_counts=per_label_counts,
-                co_primary_counts=co_primary_counts,
+            reference_spans = result.get("reference_spans")
+            reference_span_count = len(reference_spans) if isinstance(reference_spans, list) else 0
+            has_metrics = isinstance(result.get("metrics"), dict)
+            scoring_status = str(result.get("scoring_status") or "")
+            is_scored = scoring_status == "scored" or (
+                not scoring_status and has_metrics and reference_span_count > 0
             )
-            _accumulate_metrics(
-                result.get("raw_metrics"),
-                counts=raw_metric_counts,
-                per_label_counts=raw_per_label_counts,
-                co_primary_counts=raw_co_primary_counts,
-            )
+            if is_scored:
+                scored_docs += 1
+                _accumulate_metrics(
+                    result.get("metrics"),
+                    counts=metric_counts,
+                    per_label_counts=per_label_counts,
+                    co_primary_counts=co_primary_counts,
+                )
+                _accumulate_metrics(
+                    result.get("raw_metrics"),
+                    counts=raw_metric_counts,
+                    per_label_counts=raw_per_label_counts,
+                    co_primary_counts=raw_co_primary_counts,
+                )
+            else:
+                unscored_docs += 1
             _accumulate_resolution_summary(
                 result.get("resolution_summary"),
                 totals=resolution_totals,
@@ -1536,7 +1566,7 @@ def _build_methods_lab_cell_summary(cell: dict, total_docs: int, run_status: str
             pending_docs += 1
 
     processed = completed_docs + failed_docs
-    if completed_docs > 0:
+    if scored_docs > 0:
         micro, per_label_summary, co_primary_summary = _build_metric_summary(
             counts=metric_counts,
             per_label_counts=per_label_counts,
@@ -1586,6 +1616,9 @@ def _build_methods_lab_cell_summary(cell: dict, total_docs: int, run_status: str
         "status": status,
         "total_docs": total_docs,
         "completed_docs": completed_docs,
+        "scored_docs": scored_docs,
+        "unscored_docs": unscored_docs,
+        "metrics_available": scored_docs > 0,
         "failed_docs": failed_docs,
         "pending_docs": pending_docs,
         "error_count": failed_docs,
@@ -1807,10 +1840,15 @@ def _sync_methods_lab_result_to_workspace(
     session_id: str,
     doc_id: str,
     method_id: str,
+    method_variant_id: str,
+    method_label: str,
     method_verify_override: bool | None,
     target_model_ids: list[str],
     model_by_id: dict[str, dict[str, Any]],
     method_bundle: str,
+    run_name: str | None,
+    run_created_at: str | None,
+    runtime: dict[str, object],
     result: dict[str, Any],
 ) -> None:
     srv = _server()
@@ -1852,6 +1890,8 @@ def _sync_methods_lab_result_to_workspace(
         workspace_model = (
             str(model_item.get("model") or target_model_id or "rule").strip() or "rule"
         )
+        model_label = str(model_item.get("label") or workspace_model)
+        cell_id = f"{target_model_id}__{method_variant_id}"
         run_key = _build_methods_lab_workspace_run_key(
             method_id=method_id,
             model=workspace_model,
@@ -1871,8 +1911,27 @@ def _sync_methods_lab_result_to_workspace(
             SavedRunMetadata(
                 mode="method",
                 updated_at=updated_at,
+                created_at=run_created_at,
+                run_label=run_name,
+                display_label=f"{method_label} · {model_label}",
                 method_id=method_id,
+                method_bundle=method_bundle,
                 model=workspace_model,
+                save_policy="create",
+                runtime={
+                    "source": "methods_lab",
+                    "run_id": run_id,
+                    "cell_id": cell_id,
+                    "method_variant_id": method_variant_id,
+                    "method_label": method_label,
+                    "model_id": target_model_id,
+                    "model_label": model_label,
+                    "reference_source": runtime.get("reference_source"),
+                    "fallback_reference_source": runtime.get("fallback_reference_source"),
+                    "match_mode": runtime.get("match_mode"),
+                    "chunk_mode": runtime.get("chunk_mode"),
+                    "chunk_size_chars": runtime.get("chunk_size_chars"),
+                },
                 prompt_snapshot=srv._build_method_prompt_snapshot(
                     method_id=method_id,
                     additional_constraints="",
@@ -1940,15 +1999,20 @@ def run_methods_lab_job(
     )
 
     tasks: list[tuple[str, str, str | None]] = []
+    batched_method_variant_ids: list[str] = []
     for method in methods:
         if not isinstance(method, dict):
             continue
         method_variant_id = str(method.get("id", ""))
+        method_id = str(method.get("method_id", ""))
         method_definition = srv.get_method_definition_by_id(
-            str(method.get("method_id", "")),
+            method_id,
             method_bundle=method_bundle,  # type: ignore[arg-type]
         )
         if method_definition is None:
+            continue
+        if srv._is_deid_pipeline_method_id(method_id):
+            batched_method_variant_ids.append(method_variant_id)
             continue
         if bool(method_definition.get("uses_llm")):
             for model in models:
@@ -1959,6 +2023,129 @@ def run_methods_lab_job(
         else:
             for doc_id in doc_ids:
                 tasks.append((method_variant_id, str(doc_id), None))
+
+    def _store_methods_lab_document_result(
+        method_variant_id: str,
+        doc_id: str,
+        target_model_ids: list[str],
+        result: dict[str, Any],
+    ) -> None:
+        with srv._methods_lab_lock:
+            latest = srv._load_methods_lab_run(run_id, session_id)
+            if latest is None:
+                return
+            cells = latest.get("cells", {})
+            if not isinstance(cells, dict):
+                return
+            method_variant = method_by_variant_id.get(method_variant_id)
+            for target_model_id in target_model_ids:
+                cell_id = f"{target_model_id}__{method_variant_id}"
+                if isinstance(cells.get(cell_id), dict):
+                    cells[cell_id]["documents"][doc_id] = copy.deepcopy(result)
+            if isinstance(method_variant, dict):
+                _sync_methods_lab_result_to_workspace(
+                    run_id=run_id,
+                    session_id=session_id,
+                    doc_id=doc_id,
+                    method_id=str(method_variant.get("method_id", "")),
+                    method_variant_id=method_variant_id,
+                    method_label=str(method_variant.get("label") or method_variant_id),
+                    method_verify_override=method_variant.get("method_verify_override"),
+                    target_model_ids=target_model_ids,
+                    model_by_id=model_by_id,
+                    method_bundle=method_bundle,
+                    run_name=str(latest.get("name") or ""),
+                    run_created_at=(
+                        str(latest.get("created_at"))
+                        if latest.get("created_at") is not None
+                        else None
+                    ),
+                    runtime=runtime,
+                    result=result,
+                )
+            srv._save_methods_lab_run(latest, session_id)
+
+    def _completed_methods_lab_result(
+        *,
+        enriched: Any,
+        resolved_reference_source: str,
+        reference_spans: list[CanonicalSpan],
+        method_result: Any,
+        runtime_diagnostics: dict[str, object],
+    ) -> dict[str, Any]:
+        hypothesis_spans = list(method_result.spans)
+        raw_hypothesis_spans = (
+            list(method_result.raw_spans)
+            if getattr(method_result, "raw_spans", None)
+            else list(hypothesis_spans)
+        )
+        resolution_events = list(getattr(method_result, "resolution_events", []) or [])
+        common_result: dict[str, Any] = {
+            "status": "completed",
+            "reference_source_used": resolved_reference_source,
+            "reference_spans": [span.model_dump() for span in reference_spans],
+            "raw_hypothesis_spans": [span.model_dump() for span in raw_hypothesis_spans],
+            "hypothesis_spans": [span.model_dump() for span in hypothesis_spans],
+            "warnings": list(getattr(method_result, "warnings", []) or []),
+            "response_debug": list(getattr(method_result, "response_debug", []) or []),
+            "resolution_events": [event.model_dump() for event in resolution_events],
+            "resolution_policy_version": (
+                str(getattr(method_result, "resolution_policy_version", ""))
+                if getattr(method_result, "resolution_policy_version", None) is not None
+                else None
+            ),
+            "resolution_summary": srv.summarize_resolution_events(resolution_events),
+            "runtime_diagnostics": runtime_diagnostics,
+            "updated_at": srv._now_iso(),
+            "filename": enriched.filename,
+        }
+        llm_confidence = getattr(method_result, "llm_confidence", None)
+        common_result["llm_confidence"] = (
+            llm_confidence.model_dump() if llm_confidence is not None else None
+        )
+
+        if not reference_spans:
+            return {
+                **common_result,
+                "scoring_status": "unscored_no_reference",
+                "metrics": None,
+                "raw_metrics": None,
+            }
+
+        projected_reference, projected_hypothesis = srv._prepare_experiment_scoring_spans(
+            reference_spans,
+            hypothesis_spans,
+            method_bundle=method_bundle,
+            reference_label_set=reference_label_set,
+        )
+        projected_reference_raw, projected_hypothesis_raw = srv._prepare_experiment_scoring_spans(
+            reference_spans,
+            raw_hypothesis_spans,
+            method_bundle=method_bundle,
+            reference_label_set=reference_label_set,
+        )
+        scoring_match_mode = srv._normalize_metrics_mode_for_method_bundle(
+            match_mode,
+            method_bundle=method_bundle,
+        )
+        return {
+            **common_result,
+            "scoring_status": "scored",
+            "raw_metrics": srv._serialize_metrics_payload(
+                srv.compute_metrics(
+                    projected_reference_raw,
+                    projected_hypothesis_raw,
+                    scoring_match_mode,
+                )
+            ),
+            "metrics": srv._serialize_metrics_payload(
+                srv.compute_metrics(
+                    projected_reference,
+                    projected_hypothesis,
+                    scoring_match_mode,
+                )
+            ),
+        }
 
     def _execute_task(
         method_variant_id: str,
@@ -2174,62 +2361,25 @@ def run_methods_lab_job(
                     )
                 finally:
                     task_executor.shutdown(wait=not timed_out, cancel_futures=timed_out)
-            projected_reference, projected_hypothesis = srv._prepare_experiment_scoring_spans(
-                reference_spans,
-                hypothesis_spans,
-                method_bundle=method_bundle,
-                reference_label_set=reference_label_set,
-            )
-            projected_reference_raw, projected_hypothesis_raw = srv._prepare_experiment_scoring_spans(
-                reference_spans,
-                raw_hypothesis_spans,
-                method_bundle=method_bundle,
-                reference_label_set=reference_label_set,
-            )
-            scoring_match_mode = srv._normalize_metrics_mode_for_method_bundle(
-                match_mode,
-                method_bundle=method_bundle,
-            )
-            metrics = srv._serialize_metrics_payload(
-                srv.compute_metrics(
-                    projected_reference,
-                    projected_hypothesis,
-                    scoring_match_mode,
-                )
-            )
-            raw_metrics = srv._serialize_metrics_payload(
-                srv.compute_metrics(
-                    projected_reference_raw,
-                    projected_hypothesis_raw,
-                    scoring_match_mode,
-                )
-            )
             return (
                 method_variant_id,
                 doc_id,
                 target_model_ids,
-                {
-                    "status": "completed",
-                    "reference_source_used": resolved_reference_source,
-                    "reference_spans": [span.model_dump() for span in reference_spans],
-                    "raw_hypothesis_spans": [
-                        span.model_dump() for span in raw_hypothesis_spans
-                    ],
-                    "hypothesis_spans": [span.model_dump() for span in hypothesis_spans],
-                    "raw_metrics": raw_metrics,
-                    "metrics": metrics,
-                    "warnings": warnings,
-                    "llm_confidence": (
-                        llm_confidence.model_dump() if llm_confidence is not None else None
+                _completed_methods_lab_result(
+                    enriched=enriched,
+                    resolved_reference_source=resolved_reference_source,
+                    reference_spans=reference_spans,
+                    method_result=SimpleNamespace(
+                        spans=hypothesis_spans,
+                        warnings=warnings,
+                        llm_confidence=llm_confidence,
+                        response_debug=response_debug,
+                        raw_spans=raw_hypothesis_spans,
+                        resolution_events=resolution_events,
+                        resolution_policy_version=resolution_policy_version,
                     ),
-                    "response_debug": response_debug,
-                    "resolution_events": [event.model_dump() for event in resolution_events],
-                    "resolution_policy_version": resolution_policy_version,
-                    "resolution_summary": srv.summarize_resolution_events(resolution_events),
-                    "runtime_diagnostics": _runtime_snapshot(),
-                    "updated_at": srv._now_iso(),
-                    "filename": enriched.filename,
-                },
+                    runtime_diagnostics=_runtime_snapshot(),
+                ),
             )
         except Exception as exc:
             message = str(exc).strip() or exc.__class__.__name__
@@ -2248,6 +2398,128 @@ def run_methods_lab_job(
                     "filename": enriched.filename,
                 },
             )
+
+    def _execute_deid_pipeline_batch(method_variant_id: str) -> None:
+        method_variant = method_by_variant_id.get(method_variant_id)
+        if not isinstance(method_variant, dict):
+            return
+        method_id = str(method_variant.get("method_id", ""))
+        target_model_ids = list(all_model_ids)
+        batch_documents: list[tuple[str, str]] = []
+        context_by_doc_id: dict[str, tuple[Any, str, list[CanonicalSpan], dict[str, object]]] = {}
+        for doc_id in [str(value) for value in doc_ids]:
+            doc = srv._load_doc(doc_id, session_id)
+            if doc is None:
+                _store_methods_lab_document_result(
+                    method_variant_id,
+                    doc_id,
+                    target_model_ids,
+                    {
+                        "status": "unavailable",
+                        "error": "Document no longer exists",
+                        "updated_at": srv._now_iso(),
+                    },
+                )
+                continue
+            enriched = srv._enrich_doc(doc, session_id)
+            resolved_reference_source, reference_spans = _resolve_prompt_lab_reference(
+                enriched,
+                reference_source,
+                fallback_reference_source,
+            )
+            if not reference_spans and resolved_reference_source != "pre":
+                _store_methods_lab_document_result(
+                    method_variant_id,
+                    doc_id,
+                    target_model_ids,
+                    {
+                        "status": "unavailable",
+                        "error": "Methods Lab requires reference annotations for scoring.",
+                        "updated_at": srv._now_iso(),
+                        "filename": enriched.filename,
+                    },
+                )
+                continue
+            started_at = srv._now_iso()
+            runtime_diagnostics = {
+                "started_at": started_at,
+                "last_progress_at": started_at,
+                "batch_method_id": method_id,
+                "batch_size": len(doc_ids),
+            }
+            context_by_doc_id[doc_id] = (
+                enriched,
+                resolved_reference_source,
+                reference_spans,
+                runtime_diagnostics,
+            )
+            batch_documents.append((doc_id, enriched.raw_text))
+
+        if not batch_documents:
+            return
+
+        try:
+            batch_results = srv.run_deid_pipeline_method_batch_with_metadata(
+                documents=batch_documents,
+                method_id=method_id,
+                system_prompt="",
+                method_verify=method_variant.get("method_verify_override"),
+            )
+        except Exception as exc:
+            message = str(exc).strip() or exc.__class__.__name__
+            if len(message) > 800:
+                message = f"{message[:800]}..."
+            for doc_id, _text in batch_documents:
+                enriched, _source, _reference, runtime_diagnostics = context_by_doc_id[doc_id]
+                _store_methods_lab_document_result(
+                    method_variant_id,
+                    doc_id,
+                    target_model_ids,
+                    {
+                        "status": "failed",
+                        "error": message,
+                        "error_family": srv._normalize_error_family(message),
+                        "runtime_diagnostics": runtime_diagnostics,
+                        "updated_at": srv._now_iso(),
+                        "filename": enriched.filename,
+                    },
+                )
+            return
+
+        for doc_id, _text in batch_documents:
+            enriched, resolved_reference_source, reference_spans, runtime_diagnostics = (
+                context_by_doc_id[doc_id]
+            )
+            method_result = batch_results.get(doc_id)
+            if method_result is None:
+                result = {
+                    "status": "failed",
+                    "error": "de-id pipeline batch did not return a result for this document",
+                    "error_family": "missing_output",
+                    "runtime_diagnostics": runtime_diagnostics,
+                    "updated_at": srv._now_iso(),
+                    "filename": enriched.filename,
+                }
+            else:
+                result = _completed_methods_lab_result(
+                    enriched=enriched,
+                    resolved_reference_source=resolved_reference_source,
+                    reference_spans=reference_spans,
+                    method_result=method_result,
+                    runtime_diagnostics=runtime_diagnostics,
+                )
+            _store_methods_lab_document_result(
+                method_variant_id,
+                doc_id,
+                target_model_ids,
+                result,
+            )
+
+    for method_variant_id in batched_method_variant_ids:
+        if cancel_event is not None and cancel_event.is_set():
+            _mark_methods_lab_run_cancelled(run_id, session_id)
+            return
+        _execute_deid_pipeline_batch(method_variant_id)
 
     max_workers = srv._resolve_experiment_worker_count(
         int(run.get("concurrency", srv.METHODS_LAB_DEFAULT_CONCURRENCY)),
@@ -2294,31 +2566,12 @@ def run_methods_lab_job(
                         "updated_at": srv._now_iso(),
                     }
                 future_map.pop(future, None)
-                with srv._methods_lab_lock:
-                    latest = srv._load_methods_lab_run(run_id, session_id)
-                    if latest is None:
-                        continue
-                    cells = latest.get("cells", {})
-                    if not isinstance(cells, dict):
-                        continue
-                    method_variant = method_by_variant_id.get(method_variant_id)
-                    for target_model_id in target_model_ids:
-                        cell_id = f"{target_model_id}__{method_variant_id}"
-                        if isinstance(cells.get(cell_id), dict):
-                            cells[cell_id]["documents"][doc_id] = copy.deepcopy(result)
-                    if isinstance(method_variant, dict):
-                        _sync_methods_lab_result_to_workspace(
-                            run_id=run_id,
-                            session_id=session_id,
-                            doc_id=doc_id,
-                            method_id=str(method_variant.get("method_id", "")),
-                            method_verify_override=method_variant.get("method_verify_override"),
-                            target_model_ids=target_model_ids,
-                            model_by_id=model_by_id,
-                            method_bundle=method_bundle,
-                            result=result,
-                        )
-                    srv._save_methods_lab_run(latest, session_id)
+                _store_methods_lab_document_result(
+                    method_variant_id,
+                    doc_id,
+                    target_model_ids,
+                    result,
+                )
     except Exception as exc:
         with srv._methods_lab_lock:
             latest = srv._load_methods_lab_run(run_id, session_id)
