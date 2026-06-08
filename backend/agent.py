@@ -491,7 +491,7 @@ DEID_PIPELINE_METHOD_SPECS: dict[str, dict[str, Any]] = {
     },
     "deid_pipeline_cascade_gemma31b": {
         "label": "de-id pipeline · Operational union + Gemma 31B reviewer",
-        "description": "Operational Phase 21 union filtered by the 3-epoch Gemma 4 31B Phase31 reviewer (v2_current base + words institution/location rule).",
+        "description": "Operational Phase 21 union filtered by the 3-epoch Gemma 4 31B Phase31 reviewer (mlx-lm words, v2_current base + words institution/location rule + direct-address guard).",
         "model_slots": ["deberta_phase21_sidecar", "modernbert_phase21_c_len384"],
         "export_slot": "operational_union_gemma31b_reviewer",
         "include_operational_union": True,
@@ -499,7 +499,7 @@ DEID_PIPELINE_METHOD_SPECS: dict[str, dict[str, Any]] = {
         "reviewer": {
             "backend": "mlx-lm",
             "label_format": "words",
-            "direct_address_guard": False,
+            "direct_address_guard": True,
             "model_id": DEID_PIPELINE_REVIEWER_MODEL_ID,
             "rule_file": DEID_PIPELINE_REVIEWER_31B_RULE_FILE,
             # model_path / adapter_path / prompt_variant / artifact_id stay env-overridable

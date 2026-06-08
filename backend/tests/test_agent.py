@@ -2033,7 +2033,8 @@ def test_run_method_with_metadata_deid_pipeline_builds_expected_cascade_command_
     assert command[command.index("--reviewer-label-format") + 1] == "words"
     assert command[command.index("--reviewer-extra-system-rule-file") + 1] == str(runtime["reviewer_31b_rule_file"])
     assert command[command.index("--reviewer-batch-size") + 1] == "1"
-    assert "--reviewer-direct-address-guard" not in command
+    # 31B now carries the words-phrased L3 direct-address guard too (apples-to-apples with 12B).
+    assert "--reviewer-direct-address-guard" in command
     assert command[command.index("--output-slot") + 1] == "operational_union_gemma31b_reviewer"
     assert command.count("--model-slot") == 2
     assert "--include-operational-union" not in command
