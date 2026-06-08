@@ -431,14 +431,32 @@ DEID_PIPELINE_REVIEWER_ADAPTER_PATH_ENV = "DEID_PIPELINE_REVIEWER_ADAPTER_PATH"
 DEID_PIPELINE_REVIEWER_PROMPT_VARIANT_ENV = "DEID_PIPELINE_REVIEWER_PROMPT_VARIANT"
 DEID_PIPELINE_EXPORT_SCRIPT = Path("scripts/export_phase21_candidate_predictions.py")
 DEID_PIPELINE_CASCADE_EXPORT_SCRIPT = Path("scripts/export_phase31_cascade_predictions.py")
+# 31B reviewer (mlx-lm, REDACT/KEEP words) — model / adapter / prompt-variant stay
+# env-overridable via the resolvers below. Repointed to the 3-epoch transfer adapter and
+# the v2_current base + words institution/location rule (matched to the 12B's config).
 DEID_PIPELINE_DEFAULT_REVIEWER_MODEL_PATH = Path("/Users/chason/llm-models/mlx/gemma-4-31B-it-q4")
 DEID_PIPELINE_DEFAULT_REVIEWER_ADAPTER_PATH = Path(
     "/Users/chason/contextshift-deid/workspaces/action/artifacts/experiments/"
-    "20260410_phase32-31b-1epoch/configs/r8-lr1e05-ep1-binary-asis-v2current/"
+    "20260408_phase32-31b-transfer/configs/r8-lr1e05-ep3-binary-asis-v2current/"
     "run/training/adapters"
 )
-DEID_PIPELINE_DEFAULT_REVIEWER_PROMPT_VARIANT = "variant_b_plus"
-DEID_PIPELINE_REVIEWER_ARTIFACT_ID = "phase32-31b-seed42-variant-b-plus"
+DEID_PIPELINE_DEFAULT_REVIEWER_PROMPT_VARIANT = "v2_current"
+DEID_PIPELINE_REVIEWER_ARTIFACT_ID = "phase32-31b-ep3-v2current-words-rule"
+DEID_PIPELINE_REVIEWER_MODEL_ID = "google/gemma-4-31B-it"
+# Repo-relative institution/location rule appended to the reviewer system prompt (L4).
+DEID_PIPELINE_REVIEWER_31B_RULE_FILE = "configs/phase31_reviewer_rules/institution_location_words_v1.txt"
+
+# 12B reviewer (mlx-vlm, single-token A/B) — validated 3-epoch local QLoRA, v2_current base
+# + A/B institution/location rule + direct-address guard. Fixed config (not env-overridable).
+DEID_PIPELINE_REVIEWER_12B_MODEL_ID = "mlx-community/gemma-4-12B-it-4bit"
+DEID_PIPELINE_REVIEWER_12B_MODEL_PATH = Path("/Users/chason/llm-models/mlx/gemma-4-12B-it-4bit")
+DEID_PIPELINE_REVIEWER_12B_ADAPTER_PATH = Path(
+    "/Users/chason/contextshift-deid/workspaces/action/artifacts/experiments/"
+    "20260606_012858_phase31-gemma4-12b-local-qlora-full-ep3/training"
+)
+DEID_PIPELINE_REVIEWER_12B_PROMPT_VARIANT = "v2_current"
+DEID_PIPELINE_REVIEWER_12B_ARTIFACT_ID = "phase31-gemma4-12b-ep3-v2current-abrule"
+DEID_PIPELINE_REVIEWER_12B_RULE_FILE = "configs/phase31_reviewer_rules/institution_location_v1.txt"
 DEID_PIPELINE_DEFAULT_MLX_PYTHON_CANDIDATES = (
     Path("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"),
     Path("/opt/homebrew/bin/python3"),
@@ -473,11 +491,41 @@ DEID_PIPELINE_METHOD_SPECS: dict[str, dict[str, Any]] = {
     },
     "deid_pipeline_cascade_gemma31b": {
         "label": "de-id pipeline · Operational union + Gemma 31B reviewer",
-        "description": "Operational Phase 21 union filtered by the seed42 Gemma 4 31B Phase31 reviewer with the variant_b_plus prompt.",
+        "description": "Operational Phase 21 union filtered by the 3-epoch Gemma 4 31B Phase31 reviewer (v2_current base + words institution/location rule).",
         "model_slots": ["deberta_phase21_sidecar", "modernbert_phase21_c_len384"],
         "export_slot": "operational_union_gemma31b_reviewer",
         "include_operational_union": True,
         "cascade_reviewer": True,
+        "reviewer": {
+            "backend": "mlx-lm",
+            "label_format": "words",
+            "direct_address_guard": False,
+            "model_id": DEID_PIPELINE_REVIEWER_MODEL_ID,
+            "rule_file": DEID_PIPELINE_REVIEWER_31B_RULE_FILE,
+            # model_path / adapter_path / prompt_variant / artifact_id stay env-overridable
+            # via the existing resolvers (backward-compatible with .env.local).
+            "env_overridable": True,
+        },
+    },
+    "deid_pipeline_cascade_gemma12b": {
+        "label": "de-id pipeline · Operational union + Gemma 12B reviewer",
+        "description": "Operational Phase 21 union filtered by the 3-epoch local Gemma 4 12B Phase31 reviewer (mlx-vlm A/B, v2_current base + A/B institution/location rule + direct-address guard).",
+        "model_slots": ["deberta_phase21_sidecar", "modernbert_phase21_c_len384"],
+        "export_slot": "operational_union_gemma12b_reviewer",
+        "include_operational_union": True,
+        "cascade_reviewer": True,
+        "reviewer": {
+            "backend": "mlx-vlm",
+            "label_format": "letters",
+            "direct_address_guard": True,
+            "model_id": DEID_PIPELINE_REVIEWER_12B_MODEL_ID,
+            "model_path": DEID_PIPELINE_REVIEWER_12B_MODEL_PATH,
+            "adapter_path": DEID_PIPELINE_REVIEWER_12B_ADAPTER_PATH,
+            "prompt_variant": DEID_PIPELINE_REVIEWER_12B_PROMPT_VARIANT,
+            "artifact_id": DEID_PIPELINE_REVIEWER_12B_ARTIFACT_ID,
+            "rule_file": DEID_PIPELINE_REVIEWER_12B_RULE_FILE,
+            "env_overridable": False,
+        },
     },
 }
 
@@ -575,6 +623,40 @@ def _resolve_deid_pipeline_reviewer_prompt_variant() -> str:
     return raw or DEID_PIPELINE_DEFAULT_REVIEWER_PROMPT_VARIANT
 
 
+def _deid_pipeline_reviewer_resolved(method_id: str, repo_root: Path) -> dict[str, Any]:
+    """Resolve the full reviewer config for a cascade method.
+
+    Single source of truth for both the command builder and the availability check, so the
+    flags passed to the cascade export and the files validated for availability never drift.
+    The 31B keeps env-overridable model/adapter/prompt-variant (backward-compatible); the 12B
+    reads a fixed validated config from its spec. The institution/location rule file is
+    repo-relative and resolved against the contextshift checkout.
+    """
+    reviewer = dict((DEID_PIPELINE_METHOD_SPECS.get(method_id) or {}).get("reviewer") or {})
+    if reviewer.get("env_overridable"):
+        model_path = _resolve_deid_pipeline_reviewer_model_path()
+        adapter_path = _resolve_deid_pipeline_reviewer_adapter_path()
+        prompt_variant = _resolve_deid_pipeline_reviewer_prompt_variant()
+        artifact_id = DEID_PIPELINE_REVIEWER_ARTIFACT_ID
+    else:
+        model_path = Path(reviewer["model_path"]).expanduser().resolve()
+        adapter_path = Path(reviewer["adapter_path"]).expanduser().resolve()
+        prompt_variant = str(reviewer["prompt_variant"])
+        artifact_id = str(reviewer["artifact_id"])
+    return {
+        "model_id": str(reviewer["model_id"]),
+        "model_path": model_path,
+        "adapter_path": adapter_path,
+        "prompt_variant": prompt_variant,
+        "artifact_id": artifact_id,
+        "backend": str(reviewer["backend"]),
+        "label_format": str(reviewer["label_format"]),
+        "direct_address_guard": bool(reviewer["direct_address_guard"]),
+        "rule_file": (repo_root / str(reviewer["rule_file"])).expanduser().resolve(),
+        "batch_size": int(reviewer.get("batch_size", 1)),
+    }
+
+
 def _is_deid_pipeline_cascade_method_id(method_id: str) -> bool:
     return bool((DEID_PIPELINE_METHOD_SPECS.get(method_id) or {}).get("cascade_reviewer"))
 
@@ -625,16 +707,31 @@ def _deid_pipeline_runtime_error(method_id: str | None = None) -> str | None:
             if _resolve_repo_env_value(DEID_PIPELINE_MLX_PYTHON_ENV):
                 return f"{DEID_PIPELINE_MLX_PYTHON_ENV} does not point to an executable Python."
             return "Could not find python3 for the local MLX reviewer; set DEID_PIPELINE_MLX_PYTHON."
-        reviewer_model_path = _resolve_deid_pipeline_reviewer_model_path()
-        if not reviewer_model_path.is_dir():
-            return f"Missing reviewer model path: {reviewer_model_path}"
-        reviewer_adapter_path = _resolve_deid_pipeline_reviewer_adapter_path()
-        if not reviewer_adapter_path.is_dir():
-            return f"Missing reviewer adapter path: {reviewer_adapter_path}"
-        if not (reviewer_adapter_path / "adapter_config.json").is_file():
-            return f"Missing reviewer adapter config: {reviewer_adapter_path / 'adapter_config.json'}"
-        if not (reviewer_adapter_path / "adapters.safetensors").is_file():
-            return f"Missing reviewer adapter weights: {reviewer_adapter_path / 'adapters.safetensors'}"
+        # Validate each requested cascade reviewer's own model / adapter / rule files. When no
+        # method is named, all cascade methods must be available (the methods list calls this).
+        if method_id is None:
+            cascade_method_ids = [
+                spec_id
+                for spec_id, spec in DEID_PIPELINE_METHOD_SPECS.items()
+                if bool(spec.get("cascade_reviewer"))
+            ]
+        else:
+            cascade_method_ids = [method_id]
+        for cascade_method_id in cascade_method_ids:
+            reviewer = _deid_pipeline_reviewer_resolved(cascade_method_id, repo_root)
+            reviewer_model_path = reviewer["model_path"]
+            if not reviewer_model_path.is_dir():
+                return f"Missing reviewer model path: {reviewer_model_path}"
+            reviewer_adapter_path = reviewer["adapter_path"]
+            if not reviewer_adapter_path.is_dir():
+                return f"Missing reviewer adapter path: {reviewer_adapter_path}"
+            if not (reviewer_adapter_path / "adapter_config.json").is_file():
+                return f"Missing reviewer adapter config: {reviewer_adapter_path / 'adapter_config.json'}"
+            if not (reviewer_adapter_path / "adapters.safetensors").is_file():
+                return f"Missing reviewer adapter weights: {reviewer_adapter_path / 'adapters.safetensors'}"
+            reviewer_rule_file = reviewer["rule_file"]
+            if not reviewer_rule_file.is_file():
+                return f"Missing reviewer rule file: {reviewer_rule_file}"
     return None
 
 
@@ -645,8 +742,8 @@ def _build_deid_pipeline_method_definitions() -> list[dict[str, Any]]:
         "Requires frozen Phase 21 candidate workspace assets under DEID_PIPELINE_WORKSPACE_ROOT or repo_root/workspaces/candidate.",
     ]
     reviewer_limitations = [
-        f"Requires the local Gemma 31B MLX reviewer configured via {DEID_PIPELINE_MLX_PYTHON_ENV}, {DEID_PIPELINE_ACTION_WORKSPACE_ROOT_ENV}, {DEID_PIPELINE_REVIEWER_MODEL_PATH_ENV}, and {DEID_PIPELINE_REVIEWER_ADAPTER_PATH_ENV}.",
-        "Uses the seed42 Phase32 31B adapter with the variant_b_plus reviewer prompt by default.",
+        f"Requires a local Gemma MLX reviewer (mlx_lm + mlx_vlm) configured via {DEID_PIPELINE_MLX_PYTHON_ENV} and {DEID_PIPELINE_ACTION_WORKSPACE_ROOT_ENV}.",
+        "Reviewers use the 3-epoch Gemma Phase31 adapters with the v2_current base prompt plus the institution/location rule (L4); the 31B model/adapter stay env-overridable.",
     ]
     for method_id, spec in DEID_PIPELINE_METHOD_SPECS.items():
         definitions.append(
@@ -3866,6 +3963,7 @@ def _build_deid_pipeline_command(
         action_workspace_root = _resolve_deid_pipeline_action_workspace_root(repo_root)
         if action_workspace_root is None:
             raise ValueError(f"{DEID_PIPELINE_ACTION_WORKSPACE_ROOT_ENV} does not resolve")
+        reviewer = _deid_pipeline_reviewer_resolved(method_id, repo_root)
         command = [
             mlx_python,
             str(repo_root / DEID_PIPELINE_CASCADE_EXPORT_SCRIPT),
@@ -3881,17 +3979,29 @@ def _build_deid_pipeline_command(
             str(output_dir),
             "--span-field",
             "pii_occurrences",
+            "--reviewer-model-id",
+            str(reviewer["model_id"]),
             "--reviewer-model-path",
-            str(_resolve_deid_pipeline_reviewer_model_path()),
+            str(reviewer["model_path"]),
             "--reviewer-adapter-path",
-            str(_resolve_deid_pipeline_reviewer_adapter_path()),
+            str(reviewer["adapter_path"]),
             "--reviewer-artifact-id",
-            DEID_PIPELINE_REVIEWER_ARTIFACT_ID,
+            str(reviewer["artifact_id"]),
             "--reviewer-prompt-variant",
-            _resolve_deid_pipeline_reviewer_prompt_variant(),
+            str(reviewer["prompt_variant"]),
+            "--reviewer-backend",
+            str(reviewer["backend"]),
+            "--reviewer-label-format",
+            str(reviewer["label_format"]),
+            "--reviewer-extra-system-rule-file",
+            str(reviewer["rule_file"]),
+            "--reviewer-batch-size",
+            str(reviewer["batch_size"]),
             "--output-slot",
             str(spec["export_slot"]),
         ]
+        if reviewer["direct_address_guard"]:
+            command.append("--reviewer-direct-address-guard")
     else:
         command = [
             uv_bin,

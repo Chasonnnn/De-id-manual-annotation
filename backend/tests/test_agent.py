@@ -1471,10 +1471,27 @@ def _configure_deid_pipeline_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 
     reviewer_model_path = repo_root / "models" / "gemma-4-31B-it-q4"
     reviewer_model_path.mkdir(parents=True)
-    reviewer_adapter_path = repo_root / "adapters" / "phase32-seed42"
+    reviewer_adapter_path = repo_root / "adapters" / "phase32-31b-ep3"
     reviewer_adapter_path.mkdir(parents=True)
     (reviewer_adapter_path / "adapter_config.json").write_text("{}", encoding="utf-8")
     (reviewer_adapter_path / "adapters.safetensors").write_bytes(b"fake adapter")
+
+    # Both reviewers append a repo-relative institution/location rule file (L4).
+    rule_dir = repo_root / "configs" / "phase31_reviewer_rules"
+    rule_dir.mkdir(parents=True)
+    reviewer_31b_rule_file = rule_dir / "institution_location_words_v1.txt"
+    reviewer_31b_rule_file.write_text("words rule\n", encoding="utf-8")
+    reviewer_12b_rule_file = rule_dir / "institution_location_v1.txt"
+    reviewer_12b_rule_file.write_text("A/B rule\n", encoding="utf-8")
+
+    # The 12B reviewer carries fixed (non-env) model/adapter paths in its spec; point them
+    # at hermetic fakes so availability/command tests do not depend on the real machine.
+    reviewer_12b_model_path = repo_root / "models" / "gemma-4-12B-it-4bit"
+    reviewer_12b_model_path.mkdir(parents=True)
+    reviewer_12b_adapter_path = repo_root / "adapters" / "phase31-12b-ep3"
+    reviewer_12b_adapter_path.mkdir(parents=True)
+    (reviewer_12b_adapter_path / "adapter_config.json").write_text("{}", encoding="utf-8")
+    (reviewer_12b_adapter_path / "adapters.safetensors").write_bytes(b"fake adapter")
 
     env_path = tmp_path / ".env.local"
     monkeypatch.setattr(agent, "ROOT_ENV_PATH", env_path)
@@ -1485,7 +1502,10 @@ def _configure_deid_pipeline_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     monkeypatch.setenv("DEID_PIPELINE_MLX_PYTHON", str(mlx_python))
     monkeypatch.setenv("DEID_PIPELINE_REVIEWER_MODEL_PATH", str(reviewer_model_path))
     monkeypatch.setenv("DEID_PIPELINE_REVIEWER_ADAPTER_PATH", str(reviewer_adapter_path))
-    monkeypatch.setenv("DEID_PIPELINE_REVIEWER_PROMPT_VARIANT", "variant_b_plus")
+    monkeypatch.setenv("DEID_PIPELINE_REVIEWER_PROMPT_VARIANT", "v2_current")
+    twelve_b_reviewer = agent.DEID_PIPELINE_METHOD_SPECS["deid_pipeline_cascade_gemma12b"]["reviewer"]
+    monkeypatch.setitem(twelve_b_reviewer, "model_path", reviewer_12b_model_path)
+    monkeypatch.setitem(twelve_b_reviewer, "adapter_path", reviewer_12b_adapter_path)
     return {
         "repo_root": repo_root,
         "workspace_root": workspace_root,
@@ -1496,6 +1516,10 @@ def _configure_deid_pipeline_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: 
         "cascade_export_script": cascade_export_script,
         "reviewer_model_path": reviewer_model_path,
         "reviewer_adapter_path": reviewer_adapter_path,
+        "reviewer_31b_rule_file": reviewer_31b_rule_file,
+        "reviewer_12b_model_path": reviewer_12b_model_path,
+        "reviewer_12b_adapter_path": reviewer_12b_adapter_path,
+        "reviewer_12b_rule_file": reviewer_12b_rule_file,
     }
 
 
@@ -1509,10 +1533,13 @@ def test_list_agent_methods_reports_deid_pipeline_catalog_entries(monkeypatch, t
     assert by_id["deid_pipeline_modernbert"]["label"] == "de-id pipeline · ModernBERT C len384"
     assert by_id["deid_pipeline_union"]["label"] == "de-id pipeline · Operational union"
     assert by_id["deid_pipeline_cascade_gemma31b"]["label"] == "de-id pipeline · Operational union + Gemma 31B reviewer"
+    assert by_id["deid_pipeline_cascade_gemma12b"]["label"] == "de-id pipeline · Operational union + Gemma 12B reviewer"
     assert by_id["deid_pipeline_deberta"]["uses_llm"] is False
     assert by_id["deid_pipeline_cascade_gemma31b"]["uses_llm"] is False
+    assert by_id["deid_pipeline_cascade_gemma12b"]["uses_llm"] is False
     assert by_id["deid_pipeline_deberta"]["available"] is True
     assert by_id["deid_pipeline_cascade_gemma31b"]["available"] is True
+    assert by_id["deid_pipeline_cascade_gemma12b"]["available"] is True
     assert "NAME" in by_id["deid_pipeline_union"]["output_labels"]
 
 
@@ -2001,11 +2028,90 @@ def test_run_method_with_metadata_deid_pipeline_builds_expected_cascade_command_
     assert command[command.index("--action-workspace-root") + 1] == str(runtime["action_workspace_root"])
     assert command[command.index("--reviewer-model-path") + 1] == str(runtime["reviewer_model_path"])
     assert command[command.index("--reviewer-adapter-path") + 1] == str(runtime["reviewer_adapter_path"])
-    assert command[command.index("--reviewer-prompt-variant") + 1] == "variant_b_plus"
+    assert command[command.index("--reviewer-prompt-variant") + 1] == "v2_current"
+    assert command[command.index("--reviewer-backend") + 1] == "mlx-lm"
+    assert command[command.index("--reviewer-label-format") + 1] == "words"
+    assert command[command.index("--reviewer-extra-system-rule-file") + 1] == str(runtime["reviewer_31b_rule_file"])
+    assert command[command.index("--reviewer-batch-size") + 1] == "1"
+    assert "--reviewer-direct-address-guard" not in command
     assert command[command.index("--output-slot") + 1] == "operational_union_gemma31b_reviewer"
     assert command.count("--model-slot") == 2
     assert "--include-operational-union" not in command
     assert seen["cwd"] == runtime["repo_root"]
+    assert [(span.label, span.text) for span in result.spans] == [("NAME", "Alice")]
+
+
+def test_run_method_with_metadata_deid_pipeline_builds_expected_12b_cascade_command(
+    monkeypatch, tmp_path
+):
+    runtime = _configure_deid_pipeline_runtime(monkeypatch, tmp_path)
+
+    seen: dict[str, object] = {}
+
+    def fake_run(command, cwd, capture_output, text, check=False):
+        seen["command"] = list(command)
+        output_dir = Path(command[command.index("--output-dir") + 1])
+        input_dir = Path(command[command.index("--input-dir") + 1])
+        input_name = next(input_dir.glob("*.json")).name
+        export_file = output_dir / "operational_union_gemma12b_reviewer" / input_name
+        export_file.parent.mkdir(parents=True, exist_ok=True)
+        export_file.write_text(
+            json.dumps(
+                {
+                    "id": "doc-1",
+                    "transcript": "Call Alice at alice.example.com",
+                    "pii_occurrences": [
+                        {
+                            "start": 5,
+                            "end": 10,
+                            "text": "Alice",
+                            "pii_type": "NAME",
+                            "entity_type": "NAME",
+                            "reviewer_action": "REDACT",
+                        }
+                    ],
+                    "cascade_prediction_export": {
+                        "reviewer_artifact_id": "phase31-gemma4-12b-ep3-v2current-abrule",
+                        "reviewer_prompt_variant": "v2_current",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return types.SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(agent.subprocess, "run", fake_run)
+
+    result = run_method_with_metadata(
+        text="Call Alice at alice.example.com",
+        method_id="deid_pipeline_cascade_gemma12b",
+        api_key=None,
+        api_base=None,
+        model="ignored-model",
+        system_prompt="",
+        temperature=0.0,
+        reasoning_effort="none",
+        anthropic_thinking=False,
+        anthropic_thinking_budget_tokens=None,
+        method_verify=False,
+        label_profile="simple",
+        method_bundle="audited",
+    )
+
+    command = seen["command"]
+    assert isinstance(command, list)
+    assert command[0] == str(runtime["mlx_python"])
+    assert command[1] == str(runtime["cascade_export_script"])
+    assert command[command.index("--reviewer-model-path") + 1] == str(runtime["reviewer_12b_model_path"])
+    assert command[command.index("--reviewer-adapter-path") + 1] == str(runtime["reviewer_12b_adapter_path"])
+    assert command[command.index("--reviewer-prompt-variant") + 1] == "v2_current"
+    assert command[command.index("--reviewer-backend") + 1] == "mlx-vlm"
+    assert command[command.index("--reviewer-label-format") + 1] == "letters"
+    assert command[command.index("--reviewer-extra-system-rule-file") + 1] == str(runtime["reviewer_12b_rule_file"])
+    assert command[command.index("--reviewer-batch-size") + 1] == "1"
+    assert "--reviewer-direct-address-guard" in command
+    assert command[command.index("--reviewer-artifact-id") + 1] == "phase31-gemma4-12b-ep3-v2current-abrule"
+    assert command[command.index("--output-slot") + 1] == "operational_union_gemma12b_reviewer"
     assert [(span.label, span.text) for span in result.spans] == [("NAME", "Alice")]
 
 
