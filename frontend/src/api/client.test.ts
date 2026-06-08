@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   compareMetrics,
   exportGroundTruth,
+  exportSession,
   getMetricsCandidates,
   getHealth,
   getWorkspace,
@@ -355,6 +356,37 @@ describe("ground-truth export", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/session/export-ground-truth?source=manual&scope=folder&folder_id=folder-import",
+    );
+  });
+});
+
+describe("session export", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("serializes top-level full-session export scope explicitly", async () => {
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ format: "annotation_session_bundle" }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await exportSession({ kind: "top_level" });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/session/export?scope=top_level", undefined);
+  });
+
+  it("serializes folder full-session export scope with folder_id", async () => {
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ format: "annotation_session_bundle" }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await exportSession({ kind: "folder", folderId: "folder-import" });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/session/export?scope=folder&folder_id=folder-import",
+      undefined,
     );
   });
 });

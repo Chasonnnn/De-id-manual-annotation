@@ -654,6 +654,119 @@ def _resolve_ground_truth_export_doc_ids(
     return doc_ids
 
 
+def _resolve_session_bundle_export_scope(
+    scope: Literal["top_level", "folder"] | None,
+    folder_id: str | None,
+    session_id: str = "default",
+) -> tuple[list[str], list[FolderRecord], dict[str, str]]:
+    if scope is None:
+        folder_records = _load_all_folders(session_id)
+        doc_ids_to_export: list[str] = []
+        seen_doc_ids: set[str] = set()
+
+        def append_doc_id(doc_id: str | None) -> None:
+            if not doc_id:
+                return
+            normalized = str(doc_id).strip()
+            if not normalized or normalized in seen_doc_ids:
+                return
+            seen_doc_ids.add(normalized)
+            doc_ids_to_export.append(normalized)
+
+        for did in _load_session_index(session_id):
+            append_doc_id(did)
+        for folder in folder_records:
+            append_doc_id(folder.merged_doc_id)
+            for doc_id in folder.doc_ids:
+                append_doc_id(doc_id)
+        return doc_ids_to_export, folder_records, {"kind": "all"}
+
+    if scope == "top_level":
+        return _load_session_index(session_id), [], {"kind": "top_level"}
+
+    normalized_folder_id = folder_id.strip() if folder_id else ""
+    if not normalized_folder_id:
+        raise HTTPException(status_code=400, detail="folder_id is required when scope=folder")
+
+    root_folder = _load_folder(normalized_folder_id, session_id)
+    if root_folder is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    doc_ids: list[str] = []
+    seen_doc_ids: set[str] = set()
+    folder_records: list[FolderRecord] = []
+    visited_folder_ids: set[str] = set()
+
+    def append_doc_id(doc_id: str | None) -> None:
+        if not doc_id:
+            return
+        normalized = str(doc_id).strip()
+        if not normalized or normalized in seen_doc_ids:
+            return
+        seen_doc_ids.add(normalized)
+        doc_ids.append(normalized)
+
+    def visit_folder(folder: FolderRecord) -> None:
+        if folder.id in visited_folder_ids:
+            return
+        visited_folder_ids.add(folder.id)
+        folder_records.append(folder)
+        append_doc_id(folder.merged_doc_id)
+        for doc_id in folder.doc_ids:
+            append_doc_id(doc_id)
+        for child_folder_id in folder.child_folder_ids:
+            child_folder = _load_folder(child_folder_id, session_id)
+            if child_folder is not None:
+                visit_folder(child_folder)
+
+    visit_folder(root_folder)
+    return doc_ids, folder_records, {"kind": "folder", "folder_id": normalized_folder_id}
+
+
+def _filter_lab_run_for_export(
+    run: dict,
+    *,
+    exported_doc_ids: set[str],
+    exported_folder_ids: set[str],
+) -> dict | None:
+    copied = copy.deepcopy(run)
+    raw_doc_ids = copied.get("doc_ids", [])
+    doc_ids = [str(value) for value in raw_doc_ids] if isinstance(raw_doc_ids, list) else []
+    scoped_doc_ids = [doc_id for doc_id in doc_ids if doc_id in exported_doc_ids]
+
+    raw_folder_ids = copied.get("folder_ids", [])
+    folder_ids = (
+        [str(value) for value in raw_folder_ids]
+        if isinstance(raw_folder_ids, list)
+        else []
+    )
+    scoped_folder_ids = [
+        folder_id for folder_id in folder_ids if folder_id in exported_folder_ids
+    ]
+
+    cells = copied.get("cells", {})
+    if isinstance(cells, dict):
+        for cell in cells.values():
+            if not isinstance(cell, dict):
+                continue
+            documents = cell.get("documents", {})
+            if not isinstance(documents, dict):
+                cell["documents"] = {}
+                continue
+            cell["documents"] = {
+                str(doc_id): copy.deepcopy(result)
+                for doc_id, result in documents.items()
+                if str(doc_id) in exported_doc_ids
+            }
+
+    if not scoped_doc_ids and not scoped_folder_ids:
+        return None
+
+    copied["doc_ids"] = scoped_doc_ids
+    copied["folder_ids"] = scoped_folder_ids
+    return copied
+
+
 def _find_folders_for_doc(doc_id: str, session_id: str = "default") -> list[FolderRecord]:
     return [folder for folder in _load_all_folders(session_id) if doc_id in folder.doc_ids]
 
@@ -6680,28 +6793,18 @@ async def get_metrics(
 
 
 @app.get("/api/session/export")
-async def export_session_bundle():
+async def export_session_bundle(
+    scope: Annotated[Literal["top_level", "folder"] | None, Query()] = None,
+    folder_id: Annotated[str | None, Query()] = None,
+):
     session_id = "default"
-    ids = _load_session_index(session_id)
-    folder_records = _load_all_folders(session_id)
-    doc_ids_to_export: list[str] = []
-    seen_doc_ids: set[str] = set()
-
-    def _append_export_doc_id(doc_id: str | None) -> None:
-        if not doc_id:
-            return
-        normalized = str(doc_id).strip()
-        if not normalized or normalized in seen_doc_ids:
-            return
-        seen_doc_ids.add(normalized)
-        doc_ids_to_export.append(normalized)
-
-    for did in ids:
-        _append_export_doc_id(did)
-    for folder in folder_records:
-        _append_export_doc_id(folder.merged_doc_id)
-        for doc_id in folder.doc_ids:
-            _append_export_doc_id(doc_id)
+    doc_ids_to_export, folder_records, export_scope = _resolve_session_bundle_export_scope(
+        scope,
+        folder_id,
+        session_id,
+    )
+    exported_doc_ids = set(doc_ids_to_export)
+    exported_folder_ids = {folder.id for folder in folder_records}
 
     documents: list[dict] = []
     for did in doc_ids_to_export:
@@ -6763,13 +6866,36 @@ async def export_session_bundle():
             export_item["agent_metrics"] = metrics_payload
         documents.append(export_item)
 
-    prompt_lab_runs = _export_prompt_lab_runs(session_id)
-    methods_lab_runs = _export_methods_lab_runs(session_id)
+    prompt_lab_runs = [
+        filtered
+        for run in _export_prompt_lab_runs(session_id)
+        if (
+            filtered := _filter_lab_run_for_export(
+                run,
+                exported_doc_ids=exported_doc_ids,
+                exported_folder_ids=exported_folder_ids,
+            )
+        )
+        is not None
+    ]
+    methods_lab_runs = [
+        filtered
+        for run in _export_methods_lab_runs(session_id)
+        if (
+            filtered := _filter_lab_run_for_export(
+                run,
+                exported_doc_ids=exported_doc_ids,
+                exported_folder_ids=exported_folder_ids,
+            )
+        )
+        is not None
+    ]
     exported_at = datetime.now(timezone.utc).isoformat()
 
     return {
         "format": BUNDLE_FORMAT,
         "version": BUNDLE_VERSION,
+        "export_scope": export_scope,
         "compatibility": {
             "tool_version": TOOL_VERSION,
             "import_supported_versions": sorted(SUPPORTED_BUNDLE_VERSIONS),

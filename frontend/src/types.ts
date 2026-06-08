@@ -417,6 +417,7 @@ export interface MetricsCompareResult {
 export interface SessionExportBundle {
   format: string;
   version: number;
+  export_scope?: { kind: "all" } | { kind: "top_level" } | { kind: "folder"; folder_id: string };
   compatibility?: {
     tool_version?: string;
     import_supported_versions?: number[];

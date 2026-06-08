@@ -191,12 +191,13 @@ def test_workspace_endpoint_returns_sidebar_data_without_folder_details(client):
 def test_session_export_includes_summary_counts_and_export_timestamp(client):
     upload_resp = _upload(client, data=_make_multi_record_jsonl(), filename="sessions.jsonl")
     assert upload_resp.status_code == 200
+    doc_id = upload_resp.json()["id"]
 
     _prompt_lab_runs["default"] = ["prompt-run"]
-    _save_prompt_lab_run({"id": "prompt-run", "status": "completed"})
+    _save_prompt_lab_run({"id": "prompt-run", "status": "completed", "doc_ids": [doc_id]})
     _save_prompt_lab_index()
     _methods_lab_runs["default"] = ["methods-run"]
-    _save_methods_lab_run({"id": "methods-run", "status": "completed"})
+    _save_methods_lab_run({"id": "methods-run", "status": "completed", "doc_ids": [doc_id]})
     _save_methods_lab_index()
 
     resp = client.get("/api/session/export")
@@ -210,6 +211,97 @@ def test_session_export_includes_summary_counts_and_export_timestamp(client):
     assert payload["summary"]["prompt_lab_run_count"] == 1
     assert payload["summary"]["methods_lab_run_count"] == 1
     assert payload["summary"]["exported_at"] == payload["exported_at"]
+
+
+def test_session_export_folder_scope_filters_documents_folders_and_lab_runs(client):
+    first_upload = _upload(client, _make_hips_v1_custom("Hello Anna"), filename="first.json")
+    second_upload = _upload(client, _make_hips_v1_custom("Hello Nora"), filename="second.json")
+    assert first_upload.status_code == 200
+    assert second_upload.status_code == 200
+    first_doc_id = first_upload.json()["id"]
+    second_doc_id = second_upload.json()["id"]
+
+    first_folder = FolderRecord(
+        id="folder-one",
+        name="Folder One",
+        kind="manual",
+        parent_folder_id=None,
+        doc_ids=[first_doc_id],
+        child_folder_ids=[],
+        created_at="2026-06-08T00:00:00Z",
+    )
+    second_folder = FolderRecord(
+        id="folder-two",
+        name="Folder Two",
+        kind="manual",
+        parent_folder_id=None,
+        doc_ids=[second_doc_id],
+        child_folder_ids=[],
+        created_at="2026-06-08T00:00:00Z",
+    )
+    _save_folder(first_folder)
+    _save_folder(second_folder)
+    _save_folder_index([first_folder.id, second_folder.id])
+
+    _prompt_lab_runs["default"] = ["prompt-run"]
+    _save_prompt_lab_run(
+        {
+            "id": "prompt-run",
+            "status": "completed",
+            "doc_ids": [first_doc_id, second_doc_id],
+            "folder_ids": [first_folder.id, second_folder.id],
+            "cells": {
+                "model_1__prompt_1": {
+                    "documents": {
+                        first_doc_id: {"status": "completed"},
+                        second_doc_id: {"status": "completed"},
+                    }
+                }
+            },
+        }
+    )
+    _save_prompt_lab_index()
+
+    _methods_lab_runs["default"] = ["methods-run"]
+    _save_methods_lab_run(
+        {
+            "id": "methods-run",
+            "status": "completed",
+            "doc_ids": [first_doc_id, second_doc_id],
+            "folder_ids": [first_folder.id, second_folder.id],
+            "cells": {
+                "model_1__method_1": {
+                    "documents": {
+                        first_doc_id: {"status": "completed"},
+                        second_doc_id: {"status": "completed"},
+                    }
+                }
+            },
+        }
+    )
+    _save_methods_lab_index()
+
+    resp = client.get(f"/api/session/export?scope=folder&folder_id={first_folder.id}")
+
+    assert resp.status_code == 200
+    bundle = resp.json()
+    assert bundle["export_scope"] == {"kind": "folder", "folder_id": first_folder.id}
+    assert [item["source"]["id"] for item in bundle["documents"]] == [first_doc_id]
+    assert [item["id"] for item in bundle["folders"]] == [first_folder.id]
+    assert bundle["summary"]["document_count"] == 1
+    assert bundle["summary"]["folder_count"] == 1
+    assert bundle["summary"]["prompt_lab_run_count"] == 1
+    assert bundle["summary"]["methods_lab_run_count"] == 1
+
+    prompt_run = bundle["prompt_lab_runs"][0]
+    assert prompt_run["doc_ids"] == [first_doc_id]
+    assert prompt_run["folder_ids"] == [first_folder.id]
+    assert list(prompt_run["cells"]["model_1__prompt_1"]["documents"]) == [first_doc_id]
+
+    methods_run = bundle["methods_lab_runs"][0]
+    assert methods_run["doc_ids"] == [first_doc_id]
+    assert methods_run["folder_ids"] == [first_folder.id]
+    assert list(methods_run["cells"]["model_1__method_1"]["documents"]) == [first_doc_id]
 
 
 def test_runtime_json_writes_are_atomic_and_leave_no_temp_files(client):

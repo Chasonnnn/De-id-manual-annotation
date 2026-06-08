@@ -173,8 +173,12 @@ export async function deleteDocument(docId: string): Promise<{ deleted: boolean;
   return request(`/documents/${docId}`, { method: "DELETE" });
 }
 
-export async function exportSession(): Promise<SessionExportBundle> {
-  return request("/session/export");
+export async function exportSession(exportScope: GroundTruthExportScope): Promise<SessionExportBundle> {
+  const params = new URLSearchParams({ scope: exportScope.kind });
+  if (exportScope.kind === "folder") {
+    params.set("folder_id", exportScope.folderId);
+  }
+  return request(`/session/export?${params.toString()}`);
 }
 
 export async function exportGroundTruth(

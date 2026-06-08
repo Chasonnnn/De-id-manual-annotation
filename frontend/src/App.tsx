@@ -952,7 +952,7 @@ function useAppContentController() {
     setExporting(true);
     try {
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const fullBundle = mode === "full" ? await exportSession() : null;
+      const fullBundle = mode === "full" ? await exportSession(exportScope) : null;
       const blob =
         mode === "full"
           ? new Blob([JSON.stringify(fullBundle, null, 2)], {
