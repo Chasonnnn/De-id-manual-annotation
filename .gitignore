@@ -1,6 +1,7 @@
 # Runtime data
 .annotation_tool/
 backend/.benchmark_artifacts/
+.playwright-mcp/
 .env.local
 output/
 TIMSS/
