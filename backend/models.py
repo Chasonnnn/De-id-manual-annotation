@@ -96,7 +96,7 @@ class AgentRunMetrics(BaseModel):
 class CanonicalDocument(BaseModel):
     id: str
     filename: str
-    format: Literal["hips_v1", "hips_v2", "jsonl", "plain_text", "timss_txt"]
+    format: Literal["hips_v1", "hips_v2", "jsonl", "plain_text", "timss_txt", "saga_json"]
     raw_text: str
     utterances: list[UtteranceRow]
     pre_annotations: list[CanonicalSpan]

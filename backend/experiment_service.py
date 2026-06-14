@@ -2000,6 +2000,7 @@ def run_methods_lab_job(
 
     tasks: list[tuple[str, str, str | None]] = []
     batched_method_variant_ids: list[str] = []
+    single_deid_method_variant_ids: list[str] = []
     for method in methods:
         if not isinstance(method, dict):
             continue
@@ -2012,7 +2013,10 @@ def run_methods_lab_job(
         if method_definition is None:
             continue
         if srv._is_deid_pipeline_method_id(method_id):
-            batched_method_variant_ids.append(method_variant_id)
+            if srv._is_deid_pipeline_cascade_method_id(method_id):
+                batched_method_variant_ids.append(method_variant_id)
+            else:
+                single_deid_method_variant_ids.append(method_variant_id)
             continue
         if bool(method_definition.get("uses_llm")):
             for model in models:
@@ -2515,11 +2519,214 @@ def run_methods_lab_job(
                 result,
             )
 
-    for method_variant_id in batched_method_variant_ids:
+    def _execute_deid_pipeline_batch_group(method_variant_ids: list[str]) -> None:
+        if not method_variant_ids:
+            return
+        target_model_ids = list(all_model_ids)
+        method_ids: list[str] = []
+        method_verify_by_method_id: dict[str, bool | None] = {}
+        context_by_method_variant_id: dict[str, dict[str, dict[str, Any]]] = {}
+        batch_documents_by_doc_id: dict[str, tuple[str, str]] = {}
+        normalized_doc_ids = [str(value) for value in doc_ids]
+
+        for method_variant_id in method_variant_ids:
+            method_variant = method_by_variant_id.get(method_variant_id)
+            if not isinstance(method_variant, dict):
+                continue
+            method_id = str(method_variant.get("method_id", ""))
+            if method_id not in method_ids:
+                method_ids.append(method_id)
+                method_verify_by_method_id[method_id] = method_variant.get("method_verify_override")  # type: ignore[assignment]
+            context_by_doc_id: dict[str, dict[str, Any]] = {}
+            context_by_method_variant_id[method_variant_id] = context_by_doc_id
+            for doc_id in normalized_doc_ids:
+                doc = srv._load_doc(doc_id, session_id)
+                if doc is None:
+                    _store_methods_lab_document_result(
+                        method_variant_id,
+                        doc_id,
+                        target_model_ids,
+                        {
+                            "status": "unavailable",
+                            "error": "Document no longer exists",
+                            "updated_at": srv._now_iso(),
+                        },
+                    )
+                    continue
+                enriched = srv._enrich_doc(doc, session_id)
+                resolved_reference_source, reference_spans = _resolve_prompt_lab_reference(
+                    enriched,
+                    reference_source,
+                    fallback_reference_source,
+                )
+                if not reference_spans and resolved_reference_source != "pre":
+                    _store_methods_lab_document_result(
+                        method_variant_id,
+                        doc_id,
+                        target_model_ids,
+                        {
+                            "status": "unavailable",
+                            "error": "Methods Lab requires reference annotations for scoring.",
+                            "updated_at": srv._now_iso(),
+                            "filename": enriched.filename,
+                        },
+                    )
+                    continue
+                started_at = srv._now_iso()
+                runtime_diagnostics = {
+                    "started_at": started_at,
+                    "last_progress_at": started_at,
+                    "stage": "queued",
+                    "batch_method_id": method_id,
+                    "batch_size": len(normalized_doc_ids),
+                    "completed_methods": 0,
+                    "total_methods": len(method_ids),
+                }
+                context_by_doc_id[doc_id] = {
+                    "enriched": enriched,
+                    "resolved_reference_source": resolved_reference_source,
+                    "reference_spans": reference_spans,
+                    "runtime_diagnostics": runtime_diagnostics,
+                }
+                batch_documents_by_doc_id.setdefault(doc_id, (doc_id, enriched.raw_text))
+                _persist_methods_lab_document_runtime(
+                    run_id=run_id,
+                    session_id=session_id,
+                    method_variant_id=method_variant_id,
+                    doc_id=doc_id,
+                    target_model_ids=target_model_ids,
+                    filename=enriched.filename,
+                    runtime_diagnostics=runtime_diagnostics,
+                )
+
+        if not method_ids or not batch_documents_by_doc_id:
+            return
+
+        for context_by_doc_id in context_by_method_variant_id.values():
+            for context in context_by_doc_id.values():
+                runtime_diagnostics = context["runtime_diagnostics"]
+                runtime_diagnostics["batch_method_ids"] = list(method_ids)
+                runtime_diagnostics["total_methods"] = len(method_ids)
+
+        def _progress_callback(update: dict[str, Any]) -> None:
+            progress_update = dict(update)
+            progress_method_id = str(progress_update.get("method_id") or "")
+            affected_variant_ids = [
+                method_variant_id
+                for method_variant_id in method_variant_ids
+                if not progress_method_id
+                or str(
+                    (method_by_variant_id.get(method_variant_id) or {}).get("method_id", "")
+                )
+                == progress_method_id
+            ]
+            for method_variant_id in affected_variant_ids:
+                context_by_doc_id = context_by_method_variant_id.get(method_variant_id, {})
+                for doc_id, context in context_by_doc_id.items():
+                    runtime_diagnostics = context["runtime_diagnostics"]
+                    runtime_diagnostics.update(progress_update)
+                    runtime_diagnostics["batch_method_ids"] = list(method_ids)
+                    runtime_diagnostics["last_progress_at"] = srv._now_iso()
+                    _persist_methods_lab_document_runtime(
+                        run_id=run_id,
+                        session_id=session_id,
+                        method_variant_id=method_variant_id,
+                        doc_id=doc_id,
+                        target_model_ids=target_model_ids,
+                        filename=getattr(context["enriched"], "filename", None),
+                        runtime_diagnostics=runtime_diagnostics,
+                    )
+
+        try:
+            batch_results_by_method = srv.run_deid_pipeline_methods_batch_with_metadata(
+                documents=[
+                    batch_documents_by_doc_id[doc_id]
+                    for doc_id in normalized_doc_ids
+                    if doc_id in batch_documents_by_doc_id
+                ],
+                method_ids=method_ids,
+                system_prompt="",
+                method_verify_by_method_id=method_verify_by_method_id,
+                progress_callback=_progress_callback,
+                cancel_callback=(
+                    (lambda: bool(cancel_event is not None and cancel_event.is_set()))
+                    if cancel_event is not None
+                    else None
+                ),
+            )
+        except Exception as exc:
+            if cancel_event is not None and cancel_event.is_set():
+                _mark_methods_lab_run_cancelled(run_id, session_id)
+                return
+            message = str(exc).strip() or exc.__class__.__name__
+            if len(message) > 800:
+                message = f"{message[:800]}..."
+            for method_variant_id, context_by_doc_id in context_by_method_variant_id.items():
+                for doc_id, context in context_by_doc_id.items():
+                    enriched = context["enriched"]
+                    runtime_diagnostics = context["runtime_diagnostics"]
+                    _store_methods_lab_document_result(
+                        method_variant_id,
+                        doc_id,
+                        target_model_ids,
+                        {
+                            "status": "failed",
+                            "error": message,
+                            "error_family": srv._normalize_error_family(message),
+                            "runtime_diagnostics": runtime_diagnostics,
+                            "updated_at": srv._now_iso(),
+                            "filename": enriched.filename,
+                        },
+                    )
+            return
+
+        for method_variant_id, context_by_doc_id in context_by_method_variant_id.items():
+            method_variant = method_by_variant_id.get(method_variant_id)
+            method_id = str((method_variant or {}).get("method_id", ""))
+            method_results = batch_results_by_method.get(method_id, {})
+            for doc_id, context in context_by_doc_id.items():
+                enriched = context["enriched"]
+                resolved_reference_source = context["resolved_reference_source"]
+                reference_spans = context["reference_spans"]
+                runtime_diagnostics = context["runtime_diagnostics"]
+                method_result = method_results.get(doc_id)
+                if method_result is None:
+                    result = {
+                        "status": "failed",
+                        "error": "de-id pipeline batch did not return a result for this document",
+                        "error_family": "missing_output",
+                        "runtime_diagnostics": runtime_diagnostics,
+                        "updated_at": srv._now_iso(),
+                        "filename": enriched.filename,
+                    }
+                else:
+                    result = _completed_methods_lab_result(
+                        enriched=enriched,
+                        resolved_reference_source=resolved_reference_source,
+                        reference_spans=reference_spans,
+                        method_result=method_result,
+                        runtime_diagnostics=runtime_diagnostics,
+                    )
+                _store_methods_lab_document_result(
+                    method_variant_id,
+                    doc_id,
+                    target_model_ids,
+                    result,
+                )
+
+    for method_variant_id in single_deid_method_variant_ids:
         if cancel_event is not None and cancel_event.is_set():
             _mark_methods_lab_run_cancelled(run_id, session_id)
             return
         _execute_deid_pipeline_batch(method_variant_id)
+
+    if cancel_event is not None and cancel_event.is_set():
+        _mark_methods_lab_run_cancelled(run_id, session_id)
+        return
+    _execute_deid_pipeline_batch_group(batched_method_variant_ids)
+    if cancel_event is not None and cancel_event.is_set():
+        _mark_methods_lab_run_cancelled(run_id, session_id)
+        return
 
     max_workers = srv._resolve_experiment_worker_count(
         int(run.get("concurrency", srv.METHODS_LAB_DEFAULT_CONCURRENCY)),

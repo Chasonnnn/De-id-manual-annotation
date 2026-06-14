@@ -131,6 +131,8 @@ def _detect_format(data: dict) -> str:
         first = data["transcript"][0] if data["transcript"] else {}
         if "content" in first and "role" in first:
             return "jsonl"
+    if "sls_id" in data and isinstance(data.get("segments"), list):
+        return "saga_json"
     if "text" in data and "pii" in data:
         return "hips_v2"
     if "transcript" in data and "pii_occurrences" in data:
@@ -277,6 +279,64 @@ def parse_jsonl_record(data: dict, filename: str, doc_id: str) -> CanonicalDocum
         utterances=utterances,
         pre_annotations=deduped,
         label_set=_collect_label_set(labels_from_spans),
+    )
+
+
+def _saga_sort_value(value: object, fallback: int) -> tuple[int, float | int]:
+    if isinstance(value, (int, float)):
+        return (0, float(value))
+    if isinstance(value, str):
+        try:
+            return (0, float(value))
+        except ValueError:
+            return (1, fallback)
+    return (1, fallback)
+
+
+def _saga_speaker_label(segment: dict[str, Any]) -> str:
+    speaker_type = str(segment.get("speaker_type") or "").strip()
+    if speaker_type:
+        return " ".join(part.capitalize() for part in speaker_type.replace("_", " ").split())
+    speaker = str(segment.get("speaker") or "").strip()
+    return speaker or "unknown"
+
+
+def parse_saga_transcript_json(data: dict, filename: str, doc_id: str) -> CanonicalDocument:
+    segments = data.get("segments")
+    if not isinstance(segments, list):
+        raise ValueError("Saga transcript JSON must include 'segments' as a list")
+
+    ordered_segments: list[tuple[int, dict[str, Any]]] = []
+    for index, segment in enumerate(segments):
+        if not isinstance(segment, dict):
+            raise ValueError(f"Saga transcript segment {index} must be an object")
+        ordered_segments.append((index, segment))
+    ordered_segments.sort(
+        key=lambda item: (
+            _saga_sort_value(item[1].get("start"), item[0]),
+            _saga_sort_value(item[1].get("id"), item[0]),
+            item[0],
+        )
+    )
+
+    utterance_items: list[tuple[str, str]] = []
+    for index, segment in ordered_segments:
+        text = segment.get("text")
+        if not isinstance(text, str):
+            raise ValueError(f"Saga transcript segment {index} must include text as a string")
+        content = text.strip()
+        if not content:
+            continue
+        utterance_items.append((_saga_speaker_label(segment), content))
+
+    if not utterance_items:
+        raise ValueError("No Saga transcript segments with text found")
+
+    return _build_dialogue_document(
+        filename=filename,
+        doc_id=doc_id,
+        format_name="saga_json",
+        utterance_items=utterance_items,
     )
 
 
@@ -445,5 +505,7 @@ def parse_file(raw_bytes: bytes, filename: str, doc_id: str) -> list[CanonicalDo
             docs.append(parse_hips_v2(data, filename, doc_id))
         elif fmt == "jsonl":
             docs.append(parse_jsonl_record(data, filename, doc_id))
+        elif fmt == "saga_json":
+            docs.append(parse_saga_transcript_json(data, filename, doc_id))
 
     return docs

@@ -1590,6 +1590,7 @@ def test_run_deid_pipeline_method_batch_invokes_export_once_and_maps_outputs(
 ):
     _configure_deid_pipeline_runtime(monkeypatch, tmp_path)
     calls = []
+    progress_updates = []
     docs = [
         ("doc-one", "Tutor: Hi Anna"),
         ("doc-two", "Email alex@example.com"),
@@ -1648,6 +1649,107 @@ def test_run_deid_pipeline_method_batch_invokes_export_once_and_maps_outputs(
         CanonicalSpan(start=10, end=14, label="NAME", text="Anna")
     ]
     assert results["doc-two"].spans == [
+        CanonicalSpan(start=6, end=22, label="EMAIL", text="alex@example.com")
+    ]
+
+
+def test_run_deid_pipeline_methods_batch_invokes_shared_export_once_and_maps_outputs(
+    monkeypatch, tmp_path
+):
+    _configure_deid_pipeline_runtime(monkeypatch, tmp_path)
+    calls = []
+    progress_updates = []
+    docs = [
+        ("doc-one", "Tutor: Hi Anna"),
+        ("doc-two", "Email alex@example.com"),
+    ]
+
+    class FakeProcess:
+        returncode = 0
+
+        def __init__(self, command, cwd, stdout, stderr, text):
+            calls.append(command)
+            config_path = Path(command[command.index("--config") + 1])
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            input_dir = Path(config["input_dir"])
+            output_dir = Path(config["output_dir"])
+            Path(config["progress_path"]).write_text(
+                json.dumps(
+                    {
+                        "method_id": "deid_pipeline_cascade_gemma31b",
+                        "stage": "review",
+                        "completed_reviewer_rows": 1,
+                        "total_reviewer_rows": 2,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            assert [method["method_id"] for method in config["methods"]] == [
+                "deid_pipeline_cascade_gemma31b",
+                "deid_pipeline_cascade_gemma12b",
+            ]
+
+            for method in config["methods"]:
+                final_dir = output_dir / method["output_slot"]
+                final_dir.mkdir(parents=True, exist_ok=True)
+                for input_path in sorted(input_dir.glob("*.json")):
+                    payload = json.loads(input_path.read_text(encoding="utf-8"))
+                    transcript = payload["transcript"]
+                    span_text = "Anna" if payload["id"] == "doc-one" else "alex@example.com"
+                    start = transcript.index(span_text)
+                    (final_dir / input_path.name).write_text(
+                        json.dumps(
+                            {
+                                "id": payload["id"],
+                                "pii_occurrences": [
+                                    {
+                                        "start": start,
+                                        "end": start + len(span_text),
+                                        "text": span_text,
+                                        "entity_type": "NAME" if span_text == "Anna" else "EMAIL",
+                                    }
+                                ],
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+
+        def poll(self):
+            return self.returncode
+
+        def communicate(self):
+            return "", ""
+
+    monkeypatch.setattr(agent.subprocess, "Popen", FakeProcess)
+
+    results = agent.run_deid_pipeline_methods_batch_with_metadata(
+        documents=docs,
+        method_ids=[
+            "deid_pipeline_cascade_gemma31b",
+            "deid_pipeline_cascade_gemma12b",
+        ],
+        system_prompt="",
+        method_verify_by_method_id={},
+        progress_callback=progress_updates.append,
+    )
+
+    assert len(calls) == 1
+    assert progress_updates == [
+        {
+            "method_id": "deid_pipeline_cascade_gemma31b",
+            "stage": "review",
+            "completed_reviewer_rows": 1,
+            "total_reviewer_rows": 2,
+        }
+    ]
+    assert sorted(results) == [
+        "deid_pipeline_cascade_gemma12b",
+        "deid_pipeline_cascade_gemma31b",
+    ]
+    assert results["deid_pipeline_cascade_gemma31b"]["doc-one"].spans == [
+        CanonicalSpan(start=10, end=14, label="NAME", text="Anna")
+    ]
+    assert results["deid_pipeline_cascade_gemma12b"]["doc-two"].spans == [
         CanonicalSpan(start=6, end=22, label="EMAIL", text="alex@example.com")
     ]
 
@@ -2099,7 +2201,7 @@ def test_run_method_with_metadata_deid_pipeline_builds_expected_cascade_command_
     assert command[command.index("--reviewer-backend") + 1] == "mlx-lm"
     assert command[command.index("--reviewer-label-format") + 1] == "words"
     assert command[command.index("--reviewer-extra-system-rule-file") + 1] == str(runtime["reviewer_31b_rule_file"])
-    assert command[command.index("--reviewer-batch-size") + 1] == "1"
+    assert command[command.index("--reviewer-batch-size") + 1] == "2"
     # 31B now carries the words-phrased L3 direct-address guard too (apples-to-apples with 12B).
     assert "--reviewer-direct-address-guard" in command
     assert command[command.index("--output-slot") + 1] == "operational_union_gemma31b_reviewer"

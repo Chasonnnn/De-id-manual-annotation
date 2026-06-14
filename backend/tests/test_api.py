@@ -541,6 +541,65 @@ def _make_multi_record_jsonl() -> bytes:
     return "\n".join(json.dumps(record) for record in records).encode()
 
 
+def _make_saga_transcript_json() -> bytes:
+    return json.dumps(
+        {
+            "sls_id": "saga-session-1",
+            "metadata": {"versions": {"transcriber": "test"}},
+            "segments": [
+                {
+                    "id": 1,
+                    "start": 10.0,
+                    "end": 11.0,
+                    "speaker": "Tutor Name",
+                    "speaker_type": "tutor",
+                    "text": "Let's start.",
+                    "type": "speech",
+                },
+                {
+                    "id": 2,
+                    "start": 12.0,
+                    "end": 13.0,
+                    "speaker": "Student Name",
+                    "speaker_type": "student",
+                    "text": "I am ready.",
+                    "type": "speech",
+                },
+            ],
+        }
+    ).encode()
+
+
+def _make_saga_transcript_zip() -> bytes:
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "batch-01/session-a/transcript.json",
+            _make_saga_transcript_json(),
+        )
+        archive.writestr(
+            "batch-01/session-b/transcript.json",
+            json.dumps(
+                {
+                    "sls_id": "saga-session-2",
+                    "metadata": {},
+                    "segments": [
+                        {
+                            "id": 1,
+                            "start": 1.0,
+                            "end": 2.0,
+                            "speaker": "Tutor Name",
+                            "speaker_type": "tutor",
+                            "text": "Second transcript.",
+                            "type": "speech",
+                        }
+                    ],
+                }
+            ).encode(),
+        )
+    return buffer.getvalue()
+
+
 def _make_mixed_pre_multi_record_jsonl() -> bytes:
     records = [
         {
@@ -723,6 +782,28 @@ def test_upload_and_list(client):
     assert isinstance(docs, list)
     assert len(docs) == 1
     assert docs[0]["id"] == doc_id
+
+
+def test_upload_saga_transcript_json(client):
+    resp = _upload(client, data=_make_saga_transcript_json(), filename="transcript.json")
+
+    assert resp.status_code == 200
+    uploaded = resp.json()
+    assert uploaded["format"] == "saga_json"
+    assert uploaded["filename"] == "transcript.json"
+    assert uploaded["raw_text"] == "Tutor: Let's start.\nStudent: I am ready."
+    assert uploaded["pre_annotations"] == []
+    assert uploaded["label_set"] == []
+    assert uploaded["utterances"][0]["speaker"] == "Tutor"
+    assert uploaded["utterances"][0]["global_start"] == len("Tutor: ")
+    assert uploaded["utterances"][1]["speaker"] == "Student"
+    assert uploaded["raw_text"][
+        uploaded["utterances"][1]["global_start"] : uploaded["utterances"][1]["global_end"]
+    ] == "I am ready."
+
+    doc_resp = client.get(f"/api/documents/{uploaded['id']}")
+    assert doc_resp.status_code == 200
+    assert doc_resp.json()["raw_text"] == uploaded["raw_text"]
 
 
 def test_get_document(client):
@@ -5592,40 +5673,53 @@ def test_methods_lab_accepts_eight_method_variants_and_repeated_method_ids(clien
 
 
 def test_methods_lab_batches_deid_pipeline_methods_across_documents(client, monkeypatch):
-    calls: list[tuple[str, list[str]]] = []
+    calls: list[tuple[list[str], list[str]]] = []
 
     def fake_batch_run(**kwargs):
         documents = list(kwargs["documents"])
-        method_id = str(kwargs["method_id"])
-        calls.append((method_id, [doc_id for doc_id, _text in documents]))
-        return {
-            doc_id: SimpleNamespace(
-                spans=[
-                    CanonicalSpan(
-                        start=text.index("Anna"),
-                        end=text.index("Anna") + 4,
-                        label="NAME",
-                        text="Anna",
-                    )
-                ],
-                warnings=[],
-                llm_confidence=None,
-                response_debug=[],
-                raw_spans=[
-                    CanonicalSpan(
-                        start=text.index("Anna"),
-                        end=text.index("Anna") + 4,
-                        label="NAME",
-                        text="Anna",
-                    )
-                ],
-                resolution_events=[],
-                resolution_policy_version=None,
+        method_ids = [str(method_id) for method_id in kwargs["method_ids"]]
+        calls.append((method_ids, [doc_id for doc_id, _text in documents]))
+        progress_callback = kwargs.get("progress_callback")
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "method_id": "deid_pipeline_cascade_gemma31b",
+                    "stage": "review",
+                    "completed_methods": 0,
+                    "total_methods": 2,
+                }
             )
-            for doc_id, text in documents
+        return {
+            method_id: {
+                doc_id: SimpleNamespace(
+                    spans=[
+                        CanonicalSpan(
+                            start=text.index("Anna"),
+                            end=text.index("Anna") + 4,
+                            label="NAME",
+                            text="Anna",
+                        )
+                    ],
+                    warnings=[],
+                    llm_confidence=None,
+                    response_debug=[],
+                    raw_spans=[
+                        CanonicalSpan(
+                            start=text.index("Anna"),
+                            end=text.index("Anna") + 4,
+                            label="NAME",
+                            text="Anna",
+                        )
+                    ],
+                    resolution_events=[],
+                    resolution_policy_version=None,
+                )
+                for doc_id, text in documents
+            }
+            for method_id in method_ids
         }
 
-    monkeypatch.setattr("server.run_deid_pipeline_method_batch_with_metadata", fake_batch_run)
+    monkeypatch.setattr("server.run_deid_pipeline_methods_batch_with_metadata", fake_batch_run)
 
     first_upload = _upload(client, _make_hips_v1_custom("Hello Anna"), filename="method-a.json")
     second_upload = _upload(client, _make_hips_v1_custom("Bye Anna"), filename="method-b.json")
@@ -5687,12 +5781,24 @@ def test_methods_lab_batches_deid_pipeline_methods_across_documents(client, monk
 
     assert final["status"] == "completed"
     assert calls == [
-        ("deid_pipeline_cascade_gemma31b", doc_ids),
-        ("deid_pipeline_cascade_gemma12b", doc_ids),
+        (
+            [
+                "deid_pipeline_cascade_gemma31b",
+                "deid_pipeline_cascade_gemma12b",
+            ],
+            doc_ids,
+        ),
     ]
     for cell in final["matrix"]["cells"]:
         assert cell["completed_docs"] == 2
         assert cell["failed_docs"] == 0
+
+    detail = client.get(
+        f"/api/methods-lab/runs/{final['id']}/cells/model_1__m31/documents/{doc_ids[0]}"
+    ).json()
+    assert detail["runtime_diagnostics"]["stage"] == "review"
+    assert detail["runtime_diagnostics"]["completed_methods"] == 0
+    assert detail["runtime_diagnostics"]["total_methods"] == 2
 
 
 def test_methods_lab_cell_summary_includes_overlap_metrics_and_error_families(
@@ -8226,6 +8332,47 @@ def test_session_ingest_routes_timss_txt_payloads_to_document_upload(client):
     assert doc["filename"] == "Science JP1 transcript.txt"
     assert doc["raw_text"] == "SN: Please teach us well.\nT: Okay.\nSN: José is ready."
     assert doc["pre_annotations"] == []
+
+
+def test_session_ingest_routes_saga_transcript_zip_to_import_folder(client):
+    ingest_resp = client.post(
+        "/api/session/ingest",
+        files={"file": ("nto-transcripts-batch-01.zip", _make_saga_transcript_zip(), "application/zip")},
+    )
+
+    assert ingest_resp.status_code == 200
+    payload = ingest_resp.json()
+    assert payload["mode"] == "upload"
+    assert payload["uploaded_count"] == 2
+    assert payload["created_count"] == 2
+    assert payload["imported_count"] == 0
+    assert payload["total_in_bundle"] == 2
+    assert len(payload["created_ids"]) == 2
+
+    folders_resp = client.get("/api/folders")
+    assert folders_resp.status_code == 200
+    folders = folders_resp.json()
+    assert len(folders) == 1
+    assert folders[0]["name"] == "nto-transcripts-batch-01"
+    assert folders[0]["kind"] == "import"
+    assert folders[0]["doc_count"] == 2
+    assert folders[0]["source_filename"] == "nto-transcripts-batch-01.zip"
+
+    detail_resp = client.get(f"/api/folders/{folders[0]['id']}")
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert [item["display_name"] for item in detail["documents"]] == [
+        "session-a",
+        "session-b",
+    ]
+
+    first_doc_id = detail["documents"][0]["id"]
+    doc_resp = client.get(f"/api/documents/{first_doc_id}")
+    assert doc_resp.status_code == 200
+    doc = doc_resp.json()
+    assert doc["format"] == "saga_json"
+    assert doc["filename"] == "batch-01/session-a/transcript.json"
+    assert doc["raw_text"] == "Tutor: Let's start.\nStudent: I am ready."
 
 
 def test_session_ingest_routes_ground_truth_zip_to_import_processing(client):

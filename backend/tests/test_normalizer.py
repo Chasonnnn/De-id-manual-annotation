@@ -189,6 +189,50 @@ def test_jsonl_sorted_by_sequence_id():
     assert docs[0].raw_text.startswith("volunteer: First line\nstudent: Second line")
 
 
+def test_parse_saga_transcript_json_segments():
+    data = {
+        "sls_id": "saga-session-1",
+        "metadata": {"versions": {"transcriber": "test"}},
+        "segments": [
+            {
+                "id": 2,
+                "start": 5.0,
+                "end": 6.0,
+                "speaker": "Student Name",
+                "speaker_type": "student",
+                "text": "I need help with this step.",
+                "type": "speech",
+            },
+            {
+                "id": 1,
+                "start": 1.0,
+                "end": 2.0,
+                "speaker": "Tutor Name",
+                "speaker_type": "tutor",
+                "text": "Welcome back.",
+                "type": "speech",
+            },
+        ],
+    }
+
+    docs = parse_file(json.dumps(data).encode(), "transcript.json", "saga-doc")
+
+    assert len(docs) == 1
+    doc = docs[0]
+    assert doc.format == "saga_json"
+    assert doc.raw_text == "Tutor: Welcome back.\nStudent: I need help with this step."
+    assert doc.pre_annotations == []
+    assert doc.label_set == []
+    assert [(row.speaker, row.text) for row in doc.utterances] == [
+        ("Tutor", "Welcome back."),
+        ("Student", "I need help with this step."),
+    ]
+    assert doc.utterances[0].global_start == len("Tutor: ")
+    assert doc.raw_text[doc.utterances[1].global_start : doc.utterances[1].global_end] == (
+        "I need help with this step."
+    )
+
+
 def test_hips_v2_full():
     """HIPS v2 format: 'text' + 'pii' keys with {start, end, pii, type}."""
     data = {

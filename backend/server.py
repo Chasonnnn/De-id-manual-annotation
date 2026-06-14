@@ -15,7 +15,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Callable, Literal, cast
 from urllib.parse import urlparse
 
@@ -39,6 +39,7 @@ from models import (
 from normalizer import parse_file, parse_jsonl_file
 from agent import (
     METHOD_DEFINITION_BY_ID,
+    _is_deid_pipeline_cascade_method_id,
     _is_deid_pipeline_method_id,
     _bundle_preserves_native_labels,
     MODEL_PRESETS,
@@ -53,6 +54,7 @@ from agent import (
     merge_method_spans,
     normalize_method_spans,
     run_deid_pipeline_method_batch_with_metadata,
+    run_deid_pipeline_methods_batch_with_metadata,
     run_llm_with_metadata,
     run_method_with_metadata,
     run_regex,
@@ -6982,12 +6984,97 @@ def _looks_like_session_bundle_payload(payload: dict[str, object]) -> bool:
     )
 
 
+def _raw_transcript_archive_members(raw: bytes) -> list[str]:
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw), mode="r") as archive:
+            return sorted(
+                name
+                for name in archive.namelist()
+                if not name.endswith("/")
+                and PurePosixPath(name).name == "transcript.json"
+                and "__MACOSX" not in PurePosixPath(name).parts
+            )
+    except zipfile.BadZipFile:
+        return []
+
+
+def _upload_document_archive_payload(
+    raw: bytes,
+    filename: str,
+    session_id: str = "default",
+) -> dict[str, object]:
+    members = _raw_transcript_archive_members(raw)
+    if not members:
+        raise HTTPException(status_code=400, detail="Archive does not contain transcript.json files")
+
+    parsed_docs: list[tuple[CanonicalDocument, str]] = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw), mode="r") as archive:
+            for member_name in members:
+                doc_id = str(uuid.uuid4())[:8]
+                docs = parse_file(archive.read(member_name), member_name, doc_id)
+                if len(docs) != 1:
+                    raise ValueError(
+                        f"Archive member {member_name} produced {len(docs)} documents; expected 1"
+                    )
+                display_name = PurePosixPath(member_name).parent.name or docs[0].filename
+                parsed_docs.append((docs[0], display_name))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not parsed_docs:
+        raise HTTPException(status_code=400, detail="No documents parsed from archive")
+
+    for doc, _display_name in parsed_docs:
+        _save_hidden_doc(doc, session_id)
+
+    folder_id = str(uuid.uuid4())[:8]
+    while _load_folder(folder_id, session_id) is not None:
+        folder_id = str(uuid.uuid4())[:8]
+    folder = FolderRecord(
+        id=folder_id,
+        name=Path(filename).stem or filename,
+        kind="import",
+        merged_doc_id=None,
+        doc_ids=[doc.id for doc, _display_name in parsed_docs],
+        child_folder_ids=[],
+        source_filename=filename,
+        created_at=_now_iso(),
+        doc_display_names={
+            doc.id: display_name for doc, display_name in parsed_docs
+        },
+    )
+    folder_ids = _load_folder_index(session_id)
+    folder_ids.append(folder.id)
+    _save_folder(folder, session_id)
+    _save_folder_index(folder_ids, session_id)
+
+    created_ids = [doc.id for doc, _display_name in parsed_docs]
+    return {
+        "mode": "upload",
+        "created_count": len(created_ids),
+        "created_ids": created_ids,
+        "uploaded_count": len(created_ids),
+        "imported_count": 0,
+        "imported_ids": [],
+        "skipped_count": 0,
+        "skipped": [],
+        "warnings": [],
+        "imported_prompt_lab_runs": 0,
+        "imported_methods_lab_runs": 0,
+        "total_in_bundle": len(created_ids),
+        "folder_id": folder.id,
+    }
+
+
 def _resolve_ingest_mode(
     raw: bytes,
     filename: str,
-) -> tuple[Literal["upload", "import"], dict[str, object] | None]:
+) -> tuple[Literal["upload", "upload_archive", "import"], dict[str, object] | None]:
     lower_filename = filename.lower()
     if zipfile.is_zipfile(io.BytesIO(raw)):
+        if _raw_transcript_archive_members(raw):
+            return "upload_archive", None
         return "import", None
     if lower_filename.endswith(".jsonl") or lower_filename.endswith(".txt"):
         return "upload", None
@@ -7414,6 +7501,8 @@ async def ingest_session_file(
     raw = await file.read()
     filename = file.filename or "unknown"
     mode, payload = _resolve_ingest_mode(raw, filename)
+    if mode == "upload_archive":
+        return _upload_document_archive_payload(raw, filename, session_id)
     if mode == "import":
         result = _import_session_payload(
             raw,

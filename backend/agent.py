@@ -500,6 +500,7 @@ DEID_PIPELINE_METHOD_SPECS: dict[str, dict[str, Any]] = {
             "backend": "mlx-lm",
             "label_format": "words",
             "direct_address_guard": True,
+            "batch_size": 2,
             "model_id": DEID_PIPELINE_REVIEWER_MODEL_ID,
             "rule_file": DEID_PIPELINE_REVIEWER_31B_RULE_FILE,
             # model_path / adapter_path / prompt_variant / artifact_id stay env-overridable
@@ -4198,6 +4199,249 @@ def run_deid_pipeline_method_batch_with_metadata(
                 resolution_policy_version=None,
             )
     return results
+
+
+def _write_deid_pipeline_batch_inputs(
+    *,
+    documents: list[tuple[str, str]],
+    input_dir: Path,
+) -> tuple[dict[str, Path], dict[str, str]]:
+    input_files_by_doc_id: dict[str, Path] = {}
+    text_by_doc_id: dict[str, str] = {}
+    for index, (doc_id, doc_text) in enumerate(documents, start=1):
+        input_path = input_dir / _deid_pipeline_batch_filename(index, doc_id)
+        input_path.write_text(
+            json.dumps(
+                {
+                    "id": doc_id,
+                    "transcript": doc_text,
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        input_files_by_doc_id[doc_id] = input_path
+        text_by_doc_id[doc_id] = doc_text
+    return input_files_by_doc_id, text_by_doc_id
+
+
+def _deid_pipeline_method_warnings(
+    *,
+    system_prompt: str,
+    method_verify: bool | None,
+) -> list[str]:
+    warnings: list[str] = []
+    if system_prompt.strip():
+        warnings.append(
+            "de-id pipeline methods ignore additional system prompt constraints "
+            "to preserve the frozen local cascade."
+        )
+    if method_verify:
+        warnings.append(
+            "de-id pipeline methods do not attach a verifier; method_verify was ignored."
+        )
+    return warnings
+
+
+def run_deid_pipeline_methods_batch_with_metadata(
+    *,
+    documents: list[tuple[str, str]],
+    method_ids: list[str],
+    system_prompt: str,
+    method_verify_by_method_id: dict[str, bool | None] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    cancel_callback: Callable[[], bool] | None = None,
+) -> dict[str, dict[str, MethodRunResult]]:
+    unique_method_ids = list(dict.fromkeys(str(method_id) for method_id in method_ids))
+    if not unique_method_ids:
+        return {}
+
+    non_cascade_methods = [
+        method_id
+        for method_id in unique_method_ids
+        if not _is_deid_pipeline_cascade_method_id(method_id)
+    ]
+    if non_cascade_methods:
+        raise ValueError(
+            "shared de-id pipeline batch runner only supports cascade methods: "
+            + ", ".join(non_cascade_methods)
+        )
+
+    runtime_errors = [
+        _deid_pipeline_runtime_error(method_id)
+        for method_id in unique_method_ids
+    ]
+    runtime_error = next((error for error in runtime_errors if error is not None), None)
+    if runtime_error is not None:
+        raise ValueError(runtime_error)
+
+    repo_root = _resolve_deid_pipeline_repo_root()
+    workspace_root = _resolve_deid_pipeline_workspace_root(repo_root)
+    uv_bin = _resolve_deid_pipeline_uv_bin()
+    mlx_python = _resolve_deid_pipeline_mlx_python()
+    action_workspace_root = _resolve_deid_pipeline_action_workspace_root(repo_root)
+    if (
+        repo_root is None
+        or workspace_root is None
+        or uv_bin is None
+        or mlx_python is None
+        or action_workspace_root is None
+    ):
+        raise ValueError("de-id pipeline runtime configuration resolved incompletely")
+
+    normalized_documents = [(str(doc_id), str(text)) for doc_id, text in documents]
+    if not normalized_documents:
+        return {method_id: {} for method_id in unique_method_ids}
+
+    method_verify_by_method_id = dict(method_verify_by_method_id or {})
+
+    shared_script = BACKEND_DIR / "scripts" / "export_phase31_shared_cascade_predictions.py"
+    if not shared_script.is_file():
+        raise ValueError(f"Missing shared cascade export script at {shared_script}")
+
+    with tempfile.TemporaryDirectory(prefix="deid-pipeline-shared-") as temp_dir:
+        temp_root = Path(temp_dir)
+        input_dir = temp_root / "input"
+        output_dir = temp_root / "output"
+        input_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        input_files_by_doc_id, text_by_doc_id = _write_deid_pipeline_batch_inputs(
+            documents=normalized_documents,
+            input_dir=input_dir,
+        )
+
+        model_slots: list[str] = []
+        methods_config: list[dict[str, Any]] = []
+        for method_id in unique_method_ids:
+            spec = DEID_PIPELINE_METHOD_SPECS[method_id]
+            for slot in list(spec["model_slots"]):
+                slot_text = str(slot)
+                if slot_text not in model_slots:
+                    model_slots.append(slot_text)
+            reviewer = _deid_pipeline_reviewer_resolved(method_id, repo_root)
+            methods_config.append(
+                {
+                    "method_id": method_id,
+                    "output_slot": str(spec["export_slot"]),
+                    "reviewer": {
+                        "model_id": str(reviewer["model_id"]),
+                        "model_path": str(reviewer["model_path"]),
+                        "adapter_path": str(reviewer["adapter_path"]),
+                        "artifact_id": str(reviewer["artifact_id"]),
+                        "prompt_variant": str(reviewer["prompt_variant"]),
+                        "backend": str(reviewer["backend"]),
+                        "label_format": str(reviewer["label_format"]),
+                        "direct_address_guard": bool(reviewer["direct_address_guard"]),
+                        "rule_file": str(reviewer["rule_file"]),
+                        "batch_size": int(reviewer["batch_size"]),
+                    },
+                }
+            )
+
+        progress_path = temp_root / "progress.json"
+        config_path = temp_root / "shared-cascade-config.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "repo_root": str(repo_root),
+                    "workspace_root": str(workspace_root),
+                    "action_workspace_root": str(action_workspace_root),
+                    "uv_bin": uv_bin,
+                    "input_dir": str(input_dir),
+                    "output_dir": str(output_dir),
+                    "progress_path": str(progress_path),
+                    "span_field": "pii_occurrences",
+                    "subject": "math",
+                    "context_profile": "neighbor_v1",
+                    "id_field": "id",
+                    "transcript_field": "transcript",
+                    "model_slots": model_slots,
+                    "methods": methods_config,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        command = [
+            mlx_python,
+            str(shared_script),
+            "--config",
+            str(config_path),
+        ]
+
+        last_progress_text: str | None = None
+        stdout_path = temp_root / "shared-cascade.stdout.log"
+        stderr_path = temp_root / "shared-cascade.stderr.log"
+        with stdout_path.open("w+", encoding="utf-8") as stdout_file, stderr_path.open(
+            "w+",
+            encoding="utf-8",
+        ) as stderr_file:
+            process = subprocess.Popen(
+                command,
+                cwd=repo_root,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                text=True,
+            )
+            while process.poll() is None:
+                if cancel_callback is not None and cancel_callback():
+                    process.terminate()
+                    try:
+                        process.communicate(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.communicate()
+                    raise ValueError("de-id pipeline export cancelled")
+                if progress_callback is not None and progress_path.is_file():
+                    progress_text = progress_path.read_text(encoding="utf-8")
+                    if progress_text and progress_text != last_progress_text:
+                        last_progress_text = progress_text
+                        progress_callback(json.loads(progress_text))
+                time.sleep(1.0)
+
+            process.communicate()
+            if progress_callback is not None and progress_path.is_file():
+                progress_text = progress_path.read_text(encoding="utf-8")
+                if progress_text and progress_text != last_progress_text:
+                    progress_callback(json.loads(progress_text))
+
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            stdout_text = stdout_file.read()
+            stderr_text = stderr_file.read()
+
+        if process.returncode != 0:
+            error_text = (stderr_text or stdout_text or "").strip()
+            detail = error_text or f"export command exited with status {process.returncode}"
+            raise ValueError(f"de-id pipeline export failed: {detail}")
+
+        results_by_method_id: dict[str, dict[str, MethodRunResult]] = {}
+        for method_config in methods_config:
+            method_id = str(method_config["method_id"])
+            export_slot = str(method_config["output_slot"])
+            warnings = _deid_pipeline_method_warnings(
+                system_prompt=system_prompt,
+                method_verify=method_verify_by_method_id.get(method_id),
+            )
+            method_results: dict[str, MethodRunResult] = {}
+            for doc_id, input_path in input_files_by_doc_id.items():
+                spans = _load_deid_pipeline_spans(
+                    export_path=output_dir / export_slot / input_path.name,
+                    text=text_by_doc_id[doc_id],
+                )
+                method_results[doc_id] = MethodRunResult(
+                    spans=list(spans),
+                    warnings=list(warnings),
+                    llm_confidence=None,
+                    response_debug=[],
+                    raw_spans=list(spans),
+                    resolution_events=[],
+                    resolution_policy_version=None,
+                )
+            results_by_method_id[method_id] = method_results
+        return results_by_method_id
 
 
 def run_method_with_metadata(
