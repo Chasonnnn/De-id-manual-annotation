@@ -6819,6 +6819,9 @@ async def export_session_bundle(
         agent_methods = _load_method_sidecars(did, session_id)
         agent_llm_runs = _load_span_map_sidecar(did, LLM_RUNS_SIDECAR_KIND, session_id)
         agent_method_runs = _load_span_map_sidecar(did, METHOD_RUNS_SIDECAR_KIND, session_id)
+        for run_key, run_spans in agent_method_runs.items():
+            if run_key not in agent_methods:
+                agent_methods[run_key] = run_spans
         agent_llm_run_meta = _load_run_metadata_map_sidecar(
             did,
             LLM_RUNS_METADATA_SIDECAR_KIND,

@@ -21,6 +21,7 @@ from server import (
     _resolve_env_api_base,
     _resolve_env_api_key,
     _load_doc,
+    _save_span_map_sidecar,
     _run_method_for_document,
     _methods_lab_cancel_events,
     _methods_lab_runs,
@@ -41,6 +42,7 @@ from server import (
     _save_prompt_lab_index,
     _save_methods_lab_run,
     _save_methods_lab_index,
+    METHOD_RUNS_SIDECAR_KIND,
     ROOT_ENV_PATH,
 )
 from models import (
@@ -302,6 +304,38 @@ def test_session_export_folder_scope_filters_documents_folders_and_lab_runs(clie
     assert methods_run["doc_ids"] == [first_doc_id]
     assert methods_run["folder_ids"] == [first_folder.id]
     assert list(methods_run["cells"]["model_1__method_1"]["documents"]) == [first_doc_id]
+
+
+def test_session_export_includes_saved_method_runs_as_method_outputs(client):
+    upload = _upload(client, _make_hips_v1_custom("Hello Anna"), filename="method.json")
+    assert upload.status_code == 200
+    doc_id = upload.json()["id"]
+    run_key = "deid_pipeline_cascade_gemma31b::local-cascade::run-1"
+    span = CanonicalSpan(start=6, end=10, label="NAME", text="Anna")
+    _save_span_map_sidecar(
+        doc_id,
+        METHOD_RUNS_SIDECAR_KIND,
+        {run_key: [span]},
+    )
+    folder = FolderRecord(
+        id="folder-one",
+        name="Folder One",
+        kind="manual",
+        parent_folder_id=None,
+        doc_ids=[doc_id],
+        child_folder_ids=[],
+        created_at="2026-06-08T00:00:00Z",
+    )
+    _save_folder(folder)
+    _save_folder_index([folder.id])
+
+    resp = client.get(f"/api/session/export?scope=folder&folder_id={folder.id}")
+
+    assert resp.status_code == 200
+    exported_doc = resp.json()["documents"][0]
+    expected = [span.model_dump()]
+    assert exported_doc["agent_saved_outputs"]["method_runs"][run_key] == expected
+    assert exported_doc["agent_outputs"]["methods"][run_key] == expected
 
 
 def test_runtime_json_writes_are_atomic_and_leave_no_temp_files(client):
