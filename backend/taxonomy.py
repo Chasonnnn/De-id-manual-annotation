@@ -41,6 +41,11 @@ _TUTOR_PROVIDER_TEXTS = {
     "mathnasium",
     "sylvan",
     "wyzant",
+    "eedi",
+    "eedi learning",
+    "thirdspace",
+    "third space learning",
+    "tutorai",
 }
 
 _BROAD_GEO_TEXTS = {
