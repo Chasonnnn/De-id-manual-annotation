@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import MethodPane from "./MethodPane";
 import { getAgentCredentialStatus } from "../api/client";
@@ -11,8 +11,8 @@ vi.mock("../api/client", () => ({
 
 const methodOptions: AgentMethodOption[] = [
   {
-    id: "dual-split",
-    label: "Dual Split",
+    id: "dual",
+    label: "Dual",
     description: "Two-pass method",
     requires_presidio: false,
     uses_llm: true,
@@ -38,6 +38,18 @@ const localMethodOptions: AgentMethodOption[] = [
     unavailable_reason: null,
   },
 ];
+const storedRetiredMethod: AgentMethodOption = {
+  id: "deid_pipeline_cascade_gemma12b",
+  label: "Stored Gemma 12B",
+  description: "Saved method run output",
+  requires_presidio: false,
+  uses_llm: false,
+  supports_verify_override: false,
+  default_verify: false,
+  prompt_templates: [],
+  available: true,
+  unavailable_reason: null,
+};
 
 describe("MethodPane", () => {
   beforeEach(() => {
@@ -64,7 +76,8 @@ describe("MethodPane", () => {
         text="Example transcript"
         spans={[]}
         methods={methodOptions}
-        activeMethod="dual-split"
+        offeredMethods={methodOptions}
+        activeMethod="dual"
         onActiveMethodChange={vi.fn()}
         onRunMethod={onRunMethod}
         running={false}
@@ -103,7 +116,8 @@ describe("MethodPane", () => {
         text="Example transcript"
         spans={[]}
         methods={methodOptions}
-        activeMethod="dual-split"
+        offeredMethods={methodOptions}
+        activeMethod="dual"
         onActiveMethodChange={vi.fn()}
         onRunMethod={vi.fn()}
         running={false}
@@ -127,6 +141,7 @@ describe("MethodPane", () => {
         text="Example transcript"
         spans={[]}
         methods={localMethodOptions}
+        offeredMethods={localMethodOptions}
         activeMethod="deid_pipeline_cascade_gemma31b"
         onActiveMethodChange={vi.fn()}
         onRunMethod={vi.fn()}
@@ -148,5 +163,40 @@ describe("MethodPane", () => {
     ).toBeTruthy();
     expect(screen.queryByLabelText("Model")).toBeNull();
     expect(screen.queryByLabelText("API Key")).toBeNull();
+  });
+
+  it("keeps stored retired methods viewable but excludes them from new runs", async () => {
+    const onRunMethod = vi.fn().mockResolvedValue(undefined);
+    render(
+      <MethodPane
+        text="Example transcript"
+        spans={[]}
+        methods={[...methodOptions, storedRetiredMethod]}
+        offeredMethods={methodOptions}
+        activeMethod="deid_pipeline_cascade_gemma12b"
+        onActiveMethodChange={vi.fn()}
+        onRunMethod={onRunMethod}
+        running={false}
+        onScroll={vi.fn()}
+      />,
+    );
+
+    const viewSelect = screen.getByLabelText("View:") as HTMLSelectElement;
+    expect(within(viewSelect).getByRole("option", { name: "Stored Gemma 12B" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show Config" }));
+    const runSelect = screen.getByLabelText("Method") as HTMLSelectElement;
+    expect(within(runSelect).getAllByRole("option")).toHaveLength(1);
+    expect(within(runSelect).getByRole("option", { name: "Dual" })).toBeTruthy();
+    expect(within(runSelect).queryByRole("option", { name: "Stored Gemma 12B" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Run Method" }));
+    await waitFor(() => {
+      expect(onRunMethod).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method_id: "dual",
+        }),
+      );
+    });
   });
 });

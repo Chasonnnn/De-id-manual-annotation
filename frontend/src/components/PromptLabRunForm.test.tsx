@@ -1,8 +1,13 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { getAgentMethods } from "../api/client";
 import PromptLabRunForm from "./PromptLabRunForm";
-import type { DocumentSummary, FolderSummary } from "../types";
+import type { AgentMethodOption, DocumentSummary, FolderSummary } from "../types";
+
+vi.mock("../api/client", () => ({
+  getAgentMethods: vi.fn(),
+}));
 
 describe("PromptLabRunForm", () => {
   afterEach(() => {
@@ -28,6 +33,60 @@ describe("PromptLabRunForm", () => {
       created_at: "2026-03-09T12:00:00Z",
     },
   ];
+  const offeredMethods: AgentMethodOption[] = [
+    {
+      id: "dual",
+      label: "Dual",
+      description: "Legacy two-pass LLM method",
+      requires_presidio: false,
+      uses_llm: true,
+      supports_verify_override: true,
+      default_verify: false,
+      prompt_templates: [],
+      available: true,
+      unavailable_reason: null,
+    },
+    {
+      id: "deid_pipeline_cascade_gemma31b",
+      label: "de-id pipeline · Operational union + Gemma 31B reviewer",
+      description: "Local cascade method",
+      requires_presidio: false,
+      uses_llm: false,
+      supports_verify_override: false,
+      default_verify: false,
+      prompt_templates: [],
+      available: true,
+      unavailable_reason: null,
+    },
+  ];
+
+  beforeEach(() => {
+    vi.mocked(getAgentMethods).mockResolvedValue(offeredMethods);
+  });
+
+  it("does not seed retired preset options when the backend catalog is empty", async () => {
+    vi.mocked(getAgentMethods).mockResolvedValueOnce([]);
+    render(
+      <PromptLabRunForm
+        documents={documents}
+        folders={[]}
+        selectedDocumentId="doc-1"
+        methods={[]}
+        onRun={vi.fn()}
+        running={false}
+        concurrencyMax={12}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Variant"), {
+      target: { value: "preset" },
+    });
+    const presetSelect = screen.getByLabelText("Preset") as HTMLSelectElement;
+    await waitFor(() => {
+      expect(within(presetSelect).queryAllByRole("option")).toHaveLength(0);
+      expect(presetSelect.value).toBe("");
+    });
+  });
 
   it("uses the provided concurrency max for the input and validation", async () => {
     const onRun = vi.fn().mockResolvedValue(undefined);

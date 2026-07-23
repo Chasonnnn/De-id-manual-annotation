@@ -18,6 +18,7 @@ interface Props {
   spans: CanonicalSpan[];
   runProgress?: AgentRunProgress | null;
   methods: AgentMethodOption[];
+  offeredMethods: AgentMethodOption[];
   processedWithChunking?: boolean;
   chunkDiagnostics?: AgentChunkDiagnostic[];
   activeMethod: MethodView;
@@ -38,6 +39,7 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
       spans,
       runProgress = null,
       methods,
+      offeredMethods,
       processedWithChunking = false,
       chunkDiagnostics = [],
       activeMethod,
@@ -76,6 +78,7 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
     const [anthropicThinking, setAnthropicThinking] = useState(false);
     const [anthropicThinkingBudget, setAnthropicThinkingBudget] = useState(2048);
     const [methodVerify, setMethodVerify] = useState(false);
+    const [runMethodId, setRunMethodId] = useState("");
     const [apiKey, setApiKey] = useState(() => {
       try {
         return sessionStorage.getItem("agent_api_key") ?? "";
@@ -109,15 +112,28 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
     }, []);
 
     useEffect(() => {
-      const selected = methods.find((method) => method.id === activeMethod);
+      setRunMethodId((currentMethodId) => {
+        if (offeredMethods.some((method) => method.id === activeMethod)) {
+          return activeMethod;
+        }
+        if (offeredMethods.some((method) => method.id === currentMethodId)) {
+          return currentMethodId;
+        }
+        return offeredMethods[0]?.id ?? "";
+      });
+    }, [activeMethod, offeredMethods]);
+
+    useEffect(() => {
+      const selected = offeredMethods.find((method) => method.id === runMethodId);
       if (selected?.supports_verify_override) {
-        setMethodVerify(Boolean(selected.id === "verified"));
+        setMethodVerify(Boolean(selected.default_verify));
       } else {
         setMethodVerify(false);
       }
-    }, [activeMethod, methods]);
+    }, [offeredMethods, runMethodId]);
 
-    const selectedMethod = methods.find((method) => method.id === activeMethod) ?? null;
+    const selectedMethod =
+      offeredMethods.find((method) => method.id === runMethodId) ?? null;
     const methodAvailable = selectedMethod?.available ?? false;
     const methodUsesLlm = selectedMethod?.uses_llm ?? true;
     const supportsVerifyOverride = selectedMethod?.supports_verify_override ?? false;
@@ -222,10 +238,13 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
             <select
               id={methodSelectId}
               name="method_select"
-              value={activeMethod}
-              onChange={(e) => onActiveMethodChange(e.target.value)}
+              value={runMethodId}
+              onChange={(e) => {
+                setRunMethodId(e.target.value);
+                onActiveMethodChange(e.target.value);
+              }}
             >
-              {methods.map((method) => (
+              {offeredMethods.map((method) => (
                 <option key={method.id} value={method.id} disabled={!method.available}>
                   {method.label}
                   {!method.available ? " (setup required)" : ""}

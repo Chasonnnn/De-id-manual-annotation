@@ -51,16 +51,6 @@ type MethodsLabUiState = {
 type RuntimePatch = Partial<MethodsLabRuntimeState>;
 
 const REASONING_EFFORT_OPTIONS = ["none", "low", "medium", "high", "xhigh"] as const;
-const FALLBACK_METHOD_IDS = [
-  "default",
-  "extended",
-  "verified",
-  "dual",
-  "dual-split",
-  "presidio",
-  "presidio+default",
-  "presidio+llm-split",
-] as const;
 const MAX_METHOD_VARIANTS = 12;
 const LOCAL_RUNTIME_MODEL: PromptLabModelInput = {
   id: "local_runtime",
@@ -76,7 +66,7 @@ function makeMethod(index: number, methodOptions: AgentMethodOption[]): MethodsL
   return {
     id: `method_${index + 1}`,
     label: selected?.label ?? `Method ${index + 1}`,
-    method_id: selected?.id ?? "default",
+    method_id: selected?.id ?? "",
     method_verify_override:
       selected?.supports_verify_override && typeof selected.default_verify === "boolean"
         ? selected.default_verify
@@ -596,23 +586,7 @@ function useMethodsLabRunFormController({
     chunkSizeChars: 10000,
   });
   const [bundleMethods, setBundleMethods] = useState<AgentMethodOption[]>(methods);
-  const methodOptions = useMemo(
-    () =>
-      bundleMethods.length > 0
-        ? bundleMethods
-        : FALLBACK_METHOD_IDS.map((id) => ({
-            id,
-            label: id,
-            description: "",
-            requires_presidio: id.includes("presidio"),
-            uses_llm: id !== "presidio",
-            supports_verify_override: id !== "presidio",
-            default_verify: id === "verified",
-            available: true,
-            unavailable_reason: null,
-          })),
-    [bundleMethods],
-  );
+  const methodOptions = bundleMethods;
   const [formState, setFormState] = useState<MethodsLabFormState>({
     name: "",
     selectedDocIds: [],

@@ -52,16 +52,6 @@ type PromptLabUiState = {
 type RuntimePatch = Partial<PromptLabRuntimeState>;
 
 const REASONING_EFFORT_OPTIONS = ["none", "low", "medium", "high", "xhigh"] as const;
-const FALLBACK_PRESET_METHOD_IDS = [
-  "default",
-  "extended",
-  "verified",
-  "dual",
-  "dual-split",
-  "presidio",
-  "presidio+default",
-  "presidio+llm-split",
-] as const;
 
 const DEFAULT_PROMPT =
   'You are a PII annotation assistant. Return ONLY a JSON array of objects with start (0-based), end (exclusive), label, and text for each PII span.';
@@ -649,22 +639,7 @@ function usePromptLabRunFormController({
     }));
   }, [concurrencyMax]);
 
-  const presetMethodOptions = useMemo(
-    () =>
-      bundleMethods.length > 0
-        ? bundleMethods
-        : FALLBACK_PRESET_METHOD_IDS.map((id) => ({
-            id,
-            label: id,
-            description: "",
-            requires_presidio: id.includes("presidio"),
-            uses_llm: id !== "presidio",
-            supports_verify_override: id !== "presidio",
-            available: true,
-            unavailable_reason: null,
-          })),
-    [bundleMethods],
-  );
+  const presetMethodOptions = bundleMethods;
 
   useEffect(() => {
     setFormState((prev) => ({

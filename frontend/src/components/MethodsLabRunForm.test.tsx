@@ -1,8 +1,13 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { getAgentMethods } from "../api/client";
 import MethodsLabRunForm from "./MethodsLabRunForm";
 import type { AgentMethodOption, DocumentSummary, FolderSummary } from "../types";
+
+vi.mock("../api/client", () => ({
+  getAgentMethods: vi.fn(),
+}));
 
 describe("MethodsLabRunForm", () => {
   afterEach(() => {
@@ -42,6 +47,46 @@ describe("MethodsLabRunForm", () => {
       unavailable_reason: null,
     },
   ];
+  const offeredMethods: AgentMethodOption[] = [
+    {
+      id: "dual",
+      label: "Dual",
+      description: "Legacy two-pass LLM method",
+      requires_presidio: false,
+      uses_llm: true,
+      supports_verify_override: true,
+      default_verify: false,
+      prompt_templates: [],
+      available: true,
+      unavailable_reason: null,
+    },
+    ...localOnlyMethods,
+  ];
+
+  beforeEach(() => {
+    vi.mocked(getAgentMethods).mockResolvedValue(offeredMethods);
+  });
+
+  it("does not seed retired method options when the backend catalog is empty", async () => {
+    vi.mocked(getAgentMethods).mockResolvedValueOnce([]);
+    render(
+      <MethodsLabRunForm
+        documents={documents}
+        folders={[]}
+        selectedDocumentId="doc-1"
+        methods={[]}
+        onRun={vi.fn()}
+        running={false}
+        concurrencyMax={12}
+      />,
+    );
+
+    const methodSelect = screen.getByLabelText("Built-in Method") as HTMLSelectElement;
+    await waitFor(() => {
+      expect(within(methodSelect).queryAllByRole("option")).toHaveLength(0);
+      expect(methodSelect.value).toBe("");
+    });
+  });
 
   it("uses the provided concurrency max for the input and validation", async () => {
     const onRun = vi.fn().mockResolvedValue(undefined);
@@ -170,6 +215,9 @@ describe("MethodsLabRunForm", () => {
     );
     const scoped = within(view.container);
 
+    await waitFor(() => {
+      expect((scoped.getByLabelText("Built-in Method") as HTMLSelectElement).value).toBe("dual");
+    });
     fireEvent.click(scoped.getByLabelText("Imported sessions (3 docs)"));
     fireEvent.click(scoped.getByRole("button", { name: "Run Methods Lab" }));
 

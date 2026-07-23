@@ -9208,9 +9208,11 @@ def test_list_agent_methods_exposes_deid_pipeline_entries(client, monkeypatch, t
 
     assert response.status_code == 200
     methods = {item["id"]: item for item in response.json()["methods"]}
-    assert methods["deid_pipeline_deberta"]["label"] == "de-id pipeline · DeBERTa sidecar"
-    assert methods["deid_pipeline_modernbert"]["label"] == "de-id pipeline · ModernBERT C len384"
-    assert methods["deid_pipeline_union"]["label"] == "de-id pipeline · Operational union"
+    assert set(methods) == {"dual", "deid_pipeline_cascade_gemma31b"}
+    assert (
+        methods["deid_pipeline_cascade_gemma31b"]["label"]
+        == "de-id pipeline · Operational union + Gemma 31B reviewer"
+    )
 
 
 def test_run_method_for_document_v2_post_process_expands_repeated_occurrences(

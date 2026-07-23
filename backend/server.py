@@ -39,6 +39,7 @@ from models import (
 from normalizer import parse_file, parse_jsonl_file
 from agent import (
     METHOD_DEFINITION_BY_ID,
+    OFFERED_METHOD_IDS,
     _is_deid_pipeline_cascade_method_id,
     _is_deid_pipeline_method_id,
     _bundle_preserves_native_labels,
@@ -8018,7 +8019,8 @@ async def list_model_presets():
 
 @app.get("/api/agent/methods")
 async def list_agent_method_catalog(method_bundle: str = Query("audited")):
-    return {"methods": list_agent_methods(method_bundle=_normalize_method_bundle(method_bundle))}
+    methods = list_agent_methods(method_bundle=_normalize_method_bundle(method_bundle))
+    return {"methods": [method for method in methods if method["id"] in OFFERED_METHOD_IDS]}
 
 
 @app.get("/api/agent/credentials/status")

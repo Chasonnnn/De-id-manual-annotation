@@ -28,3 +28,4 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+backup_removed_method_runs_*.json

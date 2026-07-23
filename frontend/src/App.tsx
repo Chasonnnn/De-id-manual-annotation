@@ -1679,6 +1679,7 @@ function useAppContentController() {
     setAgentView,
     agentLlmRun,
     setAgentLlmRun,
+    offeredMethods: agentMethods,
     methodCatalog,
     methodView,
     setMethodView,
@@ -1772,6 +1773,7 @@ function renderAppContent(controller: AppContentController) {
     setAgentView,
     agentLlmRun,
     setAgentLlmRun,
+    offeredMethods,
     methodCatalog,
     methodView,
     setMethodView,
@@ -2039,6 +2041,7 @@ function renderAppContent(controller: AppContentController) {
                               spans={getMethodSpans(methodSource, pane.id)}
                               runProgress={methodRunning && !isMethodsLabPane ? agentRunProgress : null}
                               methods={methodCatalog}
+                              offeredMethods={offeredMethods}
                               processedWithChunking={
                                 !isMethodsLabPane &&
                                 (methodChunked || getChunkDiagnosticsCount(resolveMethodChunkDiagnostics(doc, activeMethod)) > 0)
