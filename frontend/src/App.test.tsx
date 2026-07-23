@@ -76,6 +76,9 @@ describe("App", () => {
     };
   }
 
+  const savedMethodRunKey =
+    "deid_pipeline_cascade_gemma31b::local-cascade::run-1";
+
   const methodFixture = {
     id: "doc-method",
     filename: "doc-method.json",
@@ -91,6 +94,9 @@ describe("App", () => {
       llm_runs: {},
       llm_run_metadata: {},
       methods: {
+        [savedMethodRunKey]: [
+          { start: 13, end: 18, label: "NAME", text: "Chloe" },
+        ],
         "presidio-lite+extended-v2::anthropic.claude-4.6-sonnet": [
           { start: 13, end: 18, label: "NAME", text: "Chloe" },
         ],
@@ -99,6 +105,12 @@ describe("App", () => {
         ],
       },
       method_run_metadata: {
+        [savedMethodRunKey]: {
+          mode: "method",
+          updated_at: "2026-03-17T18:30:00Z",
+          method_id: "deid_pipeline_cascade_gemma31b",
+          model: "local-cascade",
+        },
         "presidio-lite+extended-v2::anthropic.claude-4.6-sonnet": {
           mode: "method",
           updated_at: "2026-03-17T18:45:00Z",
@@ -220,6 +232,42 @@ describe("App", () => {
     expect(screen.getByText("Start with a transcript or session bundle")).toBeTruthy();
   });
 
+  it("shows fixed and document-stored layers without advertising empty methods", async () => {
+    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace({
+      documents: [
+        {
+          id: methodFixture.id,
+          filename: methodFixture.filename,
+          display_name: methodFixture.id,
+          status: "pending",
+        },
+      ],
+    }));
+    vi.mocked(getDocument).mockResolvedValue(methodFixture as never);
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByText(methodFixture.id));
+
+    const hypothesisPicker = await screen.findByLabelText("Hypothesis:");
+    const options = Array.from((hypothesisPicker as HTMLSelectElement).options);
+    const values = options.map((option) => option.value);
+
+    expect(values.slice(0, 5)).toEqual([
+      "pre",
+      "manual",
+      "agent",
+      "agent.rule",
+      "agent.llm",
+    ]);
+    expect(values).not.toContain("agent.method.default");
+    expect(values).toContain(`agent.method.${savedMethodRunKey}`);
+    expect(
+      options.find((option) => option.value === `agent.method.${savedMethodRunKey}`)
+        ?.textContent,
+    ).toContain("Method: deid_pipeline_cascade_gemma31b @ local-cascade");
+  });
+
   it("defaults the method pane to the latest saved method output when one exists", async () => {
     vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace({
       documents: [
@@ -254,6 +302,65 @@ describe("App", () => {
     const methodView = screen.getByLabelText("View:") as HTMLSelectElement;
     expect(methodView.value).toBe("presidio-lite+extended-v2::google.gemini-3.1-pro-preview");
     expect(screen.queryByText("No method annotations yet for the selected method.")).toBeNull();
+  });
+
+  it("falls back when the selected document-specific method view disappears", async () => {
+    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace({
+      documents: [
+        {
+          id: methodFixture.id,
+          filename: methodFixture.filename,
+          display_name: methodFixture.id,
+          status: "pending",
+        },
+        {
+          id: agentFixture.id,
+          filename: agentFixture.filename,
+          display_name: agentFixture.id,
+          status: "pending",
+        },
+      ],
+    }));
+    vi.mocked(getDocument).mockImplementation(async (docId) => (
+      docId === methodFixture.id ? methodFixture : agentFixture
+    ) as never);
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByText(methodFixture.id));
+    await waitFor(() => {
+      expect(getDocument).toHaveBeenCalledWith(methodFixture.id);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "+Methods" }));
+
+    const methodView = await screen.findByLabelText("View:") as HTMLSelectElement;
+    await waitFor(() => {
+      expect(methodView.value).toBe(
+        "presidio-lite+extended-v2::google.gemini-3.1-pro-preview",
+      );
+    });
+
+    fireEvent.click(screen.getByText(agentFixture.id));
+    await waitFor(() => {
+      expect(getDocument).toHaveBeenCalledWith(agentFixture.id);
+      expect(methodView.value).toBe("default");
+    });
+    expect(
+      Array.from(methodView.options).map((option) => option.value),
+    ).not.toContain("presidio-lite+extended-v2::google.gemini-3.1-pro-preview");
+
+    const hypothesisPicker = screen.getByLabelText("Hypothesis:") as HTMLSelectElement;
+    expect(
+      Array.from(hypothesisPicker.options).map((option) => option.value),
+    ).toEqual([
+      "pre",
+      "manual",
+      "agent",
+      "agent.rule",
+      "agent.llm",
+      "agent.llm_run.older_run",
+      "agent.llm_run.newer_run",
+    ]);
   });
 
   it("allows multiple methods panes for the same document", async () => {

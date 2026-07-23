@@ -1079,30 +1079,15 @@ function useAppContentController() {
         label: `Agent LLM: ${modelName}${detail ? ` • ${detail}` : ""}`,
       });
     }
-    const methodOptionsSeed =
-      methodCatalog.length > 0
-        ? methodCatalog
-        : ([
-            "default",
-            "extended",
-            "verified",
-            "dual",
-            "dual-split",
-            "presidio",
-            "presidio+default",
-            "presidio+llm-split",
-          ].map((id) => ({
-            id,
-            label: id,
-          })) as Array<{ id: string; label: string }>);
-    for (const method of methodOptionsSeed) {
+    for (const method of methodCatalog) {
+      if (!methodOutputIds.includes(method.id)) continue;
       options.push({
         value: `agent.method.${method.id}` as AnnotationSource,
         label: `Method: ${method.label}`,
       });
     }
     return options;
-  }, [doc, methodCatalog]);
+  }, [doc, methodCatalog, methodOutputIds]);
 
   const llmRunOptions = useMemo(() => {
     const runs = doc?.agent_outputs?.llm_runs ?? {};
