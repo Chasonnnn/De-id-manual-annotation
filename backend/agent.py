@@ -4003,6 +4003,8 @@ def _build_deid_pipeline_command(
         ]
         if reviewer["direct_address_guard"]:
             command.append("--reviewer-direct-address-guard")
+        else:
+            command.append("--no-reviewer-direct-address-guard")
     else:
         command = [
             uv_bin,
