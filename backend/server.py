@@ -2304,8 +2304,12 @@ def _import_ground_truth_payload(
     matched_doc_id = _find_existing_import_match(doc=imported_doc, session_id=session_id, ids=ids)
     if matched_doc_id is not None:
         existing_ids.add(matched_doc_id)
+        should_add_to_session_index = matched_doc_id not in ids and not _find_folders_for_doc(
+            matched_doc_id,
+            session_id,
+        )
         if conflict_policy == "keep_current":
-            if matched_doc_id not in ids:
+            if should_add_to_session_index:
                 ids.append(matched_doc_id)
             return ImportedDocumentCommitResult(
                 doc_id=matched_doc_id,
@@ -2313,7 +2317,7 @@ def _import_ground_truth_payload(
                 conflict_action="keep_current",
             )
         if conflict_policy == "replace":
-            if matched_doc_id not in ids:
+            if should_add_to_session_index:
                 ids.append(matched_doc_id)
             if manual_spans:
                 _save_sidecar(matched_doc_id, "manual", manual_spans, session_id)

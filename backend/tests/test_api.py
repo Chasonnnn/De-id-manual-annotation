@@ -8079,6 +8079,40 @@ def test_session_import_accepts_ground_truth_zip_without_existing_source(client)
     ]
 
 
+def test_ground_truth_import_keeps_folder_managed_documents_out_of_top_level(client):
+    upload_resp = _upload(
+        client,
+        data=_make_multi_record_jsonl(),
+        filename="sessions.jsonl",
+    )
+    assert upload_resp.status_code == 200
+    merged_doc_id = upload_resp.json()["id"]
+
+    folder = client.get("/api/folders").json()[0]
+    folder_id = folder["id"]
+    folder_detail = client.get(f"/api/folders/{folder_id}").json()
+    hidden_doc_ids = folder_detail["doc_ids"]
+
+    export_resp = client.get(
+        "/api/session/export-ground-truth",
+        params={"source": "manual", "scope": "folder", "folder_id": folder_id},
+    )
+    assert export_resp.status_code == 200
+
+    import_resp = client.post(
+        "/api/session/import",
+        data={"conflict_policy": "replace"},
+        files={"file": ("ground-truth-manual.zip", export_resp.content, "application/zip")},
+    )
+    assert import_resp.status_code == 200
+    assert import_resp.json()["imported_ids"] == hidden_doc_ids
+    assert import_resp.json()["created_count"] == 0
+    assert import_resp.json()["replaced_count"] == len(hidden_doc_ids)
+
+    top_level_docs = client.get("/api/documents").json()
+    assert [doc["id"] for doc in top_level_docs] == [merged_doc_id]
+
+
 def test_session_import_accepts_direct_ground_truth_json_payload(client):
     transcript = "Hello Anna, call Sue please."
     ground_truth_payload = {
