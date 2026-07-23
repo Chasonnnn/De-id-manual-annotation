@@ -26,6 +26,7 @@ interface Props {
   diffSpans?: { start: number; end: number; type: "added" | "removed" }[];
   onRunMethod: (config: AgentConfig) => Promise<void>;
   running: boolean;
+  onRemove: () => void;
   onScroll: (scrollTop: number) => void;
 }
 
@@ -47,6 +48,7 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
       diffSpans = [],
       onRunMethod,
       running,
+      onRemove,
       onScroll,
     },
     ref,
@@ -228,9 +230,24 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
               </select>
             </span>
           </div>
-          <button className="config-toggle" onClick={() => setConfigOpen(!configOpen)}>
-            {configOpen ? "Hide Config" : "Show Config"}
-          </button>
+          <div className="pane-header-actions">
+            <button
+              type="button"
+              className="config-toggle"
+              onClick={() => setConfigOpen(!configOpen)}
+            >
+              {configOpen ? "Hide Config" : "Show Config"}
+            </button>
+            <button
+              type="button"
+              className="pane-remove-button"
+              aria-label="Remove method pane"
+              title="Remove method pane"
+              onClick={onRemove}
+            >
+              ×
+            </button>
+          </div>
         </div>
         <div className={`agent-config ${configOpen ? "" : "collapsed"}`}>
           <div className="field">
@@ -301,7 +318,12 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
                             : ""}
                           {template.source === "saved" ? " • from saved run" : ""}
                         </span>
-                        <textarea value={template.system_prompt} readOnly rows={8} />
+                        <textarea
+                          aria-label={`Pass ${template.pass_index} system prompt`}
+                          value={template.system_prompt}
+                          readOnly
+                          rows={8}
+                        />
                       </div>
                     ))}
                   </details>
@@ -546,7 +568,12 @@ const MethodPane = forwardRef<HTMLDivElement, Props>(
               </div>
             </>
           )}
-          <button className="run-btn" onClick={handleRun} disabled={runDisabled}>
+          <button
+            type="button"
+            className="run-btn"
+            onClick={handleRun}
+            disabled={runDisabled}
+          >
             {running ? "Running..." : "Run Method"}
           </button>
           {running && runProgress && (

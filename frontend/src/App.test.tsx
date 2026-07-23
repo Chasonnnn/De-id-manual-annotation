@@ -396,6 +396,105 @@ describe("App", () => {
     });
   });
 
+  it("limits method panes to three and removes only the selected pane", async () => {
+    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace({
+      documents: [
+        {
+          id: methodFixture.id,
+          filename: methodFixture.filename,
+          display_name: methodFixture.id,
+          status: "pending",
+        },
+      ],
+    }));
+    vi.mocked(getDocument).mockResolvedValue(methodFixture as never);
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByText(methodFixture.id));
+    await waitFor(() => {
+      expect(getDocument).toHaveBeenCalledWith(methodFixture.id);
+    });
+
+    const addMethodsButton = screen.getByRole("button", { name: "+Methods" });
+    fireEvent.click(addMethodsButton);
+    fireEvent.click(addMethodsButton);
+    fireEvent.click(addMethodsButton);
+    fireEvent.click(addMethodsButton);
+
+    await waitFor(() => {
+      expect(screen.getAllByLabelText("View:")).toHaveLength(3);
+    });
+    expect((addMethodsButton as HTMLButtonElement).disabled).toBe(true);
+
+    const methodViews = screen.getAllByLabelText("View:") as HTMLSelectElement[];
+    const [firstMethodView, secondMethodView, thirdMethodView] = methodViews;
+    expect(firstMethodView).toBeTruthy();
+    expect(secondMethodView).toBeTruthy();
+    expect(thirdMethodView).toBeTruthy();
+    fireEvent.change(firstMethodView!, { target: { value: savedMethodRunKey } });
+    fireEvent.change(secondMethodView!, {
+      target: {
+        value: "presidio-lite+extended-v2::anthropic.claude-4.6-sonnet",
+      },
+    });
+    fireEvent.change(thirdMethodView!, {
+      target: {
+        value: "presidio-lite+extended-v2::google.gemini-3.1-pro-preview",
+      },
+    });
+
+    const removeButtons = screen.getAllByRole("button", { name: "Remove method pane" });
+    expect(removeButtons[1]).toBeTruthy();
+    fireEvent.click(removeButtons[1]!);
+
+    await waitFor(() => {
+      expect(screen.getAllByLabelText("View:")).toHaveLength(2);
+    });
+    expect(
+      (screen.getAllByLabelText("View:") as HTMLSelectElement[]).map((select) => select.value),
+    ).toEqual([
+      savedMethodRunKey,
+      "presidio-lite+extended-v2::google.gemini-3.1-pro-preview",
+    ]);
+    expect((addMethodsButton as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("trims persisted method panes to the three-pane maximum", async () => {
+    window.localStorage.setItem(
+      "annotation_tool_pane_instances_v1",
+      JSON.stringify([
+        { id: "raw", type: "raw", title: "Raw" },
+        { id: "methods-1", type: "methods", title: "Methods" },
+        { id: "methods-2", type: "methods", title: "Methods" },
+        { id: "methods-3", type: "methods", title: "Methods" },
+        { id: "methods-4", type: "methods", title: "Methods" },
+      ]),
+    );
+    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace({
+      documents: [
+        {
+          id: methodFixture.id,
+          filename: methodFixture.filename,
+          display_name: methodFixture.id,
+          status: "pending",
+        },
+      ],
+    }));
+    vi.mocked(getDocument).mockResolvedValue(methodFixture as never);
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByText(methodFixture.id));
+
+    await waitFor(() => {
+      expect(screen.getAllByLabelText("View:")).toHaveLength(3);
+    });
+    expect(
+      (screen.getByRole("button", { name: "+Methods" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
   it("renders the recall-first comparison dashboard and submits selected candidates", async () => {
     vi.mocked(getMetricsCandidates).mockResolvedValue([
       {

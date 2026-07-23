@@ -81,6 +81,7 @@ describe("MethodPane", () => {
         onActiveMethodChange={vi.fn()}
         onRunMethod={onRunMethod}
         running={false}
+        onRemove={vi.fn()}
         onScroll={vi.fn()}
       />,
     );
@@ -121,6 +122,7 @@ describe("MethodPane", () => {
         onActiveMethodChange={vi.fn()}
         onRunMethod={vi.fn()}
         running={false}
+        onRemove={vi.fn()}
         onScroll={vi.fn()}
       />,
     );
@@ -146,6 +148,7 @@ describe("MethodPane", () => {
         onActiveMethodChange={vi.fn()}
         onRunMethod={vi.fn()}
         running={false}
+        onRemove={vi.fn()}
         onScroll={vi.fn()}
       />,
     );
@@ -177,6 +180,7 @@ describe("MethodPane", () => {
         onActiveMethodChange={vi.fn()}
         onRunMethod={onRunMethod}
         running={false}
+        onRemove={vi.fn()}
         onScroll={vi.fn()}
       />,
     );

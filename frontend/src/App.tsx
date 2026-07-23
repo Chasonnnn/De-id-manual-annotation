@@ -106,6 +106,7 @@ class ErrorBoundary extends Component<
             {this.state.error?.message ?? "An unexpected error occurred."}
           </p>
           <button
+            type="button"
             onClick={() => this.setState({ hasError: false, error: null })}
             style={{
               padding: "8px 20px",
@@ -153,6 +154,7 @@ interface PendingConfirm {
 }
 
 const CANONICAL_PANE_ORDER: PaneType[] = ["raw", "pre", "manual", "agent", "methods"];
+const MAX_METHOD_PANES = 3;
 
 function makePaneInstance(type: PaneType, sourceRef?: MetricsCandidateSource): PaneInstance {
   const singletonId = type === "methods" ? `methods-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` : type;
@@ -175,9 +177,13 @@ function makePaneInstance(type: PaneType, sourceRef?: MetricsCandidateSource): P
 
 function normalizePaneInstances(panes: PaneInstance[]): PaneInstance[] {
   const seenSingletons = new Set<PaneType>();
+  let methodPaneCount = 0;
   return [...panes]
     .filter((pane) => {
-      if (pane.type === "methods") return true;
+      if (pane.type === "methods") {
+        methodPaneCount += 1;
+        return methodPaneCount <= MAX_METHOD_PANES;
+      }
       if (seenSingletons.has(pane.type)) return false;
       seenSingletons.add(pane.type);
       return true;
@@ -991,6 +997,9 @@ function useAppContentController() {
   const handleTogglePane = useCallback((pane: PaneType) => {
     setPaneInstances((prev) => {
       if (pane === "methods") {
+        if (prev.filter((item) => item.type === "methods").length >= MAX_METHOD_PANES) {
+          return prev;
+        }
         return normalizePaneInstances([...prev, makePaneInstance("methods")]);
       }
       const exists = prev.some((item) => item.type === pane);
@@ -998,6 +1007,21 @@ function useAppContentController() {
         return normalizePaneInstances(prev.filter((item) => item.type !== pane));
       }
       return normalizePaneInstances([...prev, makePaneInstance(pane)]);
+    });
+  }, []);
+
+  const handleRemovePane = useCallback((paneId: string) => {
+    setPaneInstances((prev) => prev.filter((pane) => pane.id !== paneId));
+    setMethodsLabPaneSpans((prev) =>
+      Object.fromEntries(
+        Object.entries(prev).filter(([key]) => !key.startsWith(`${paneId}:`)),
+      ),
+    );
+    setMethodsLabPaneLoading((prev) => {
+      if (!(paneId in prev)) return prev;
+      const next = { ...prev };
+      delete next[paneId];
+      return next;
     });
   }, []);
 
@@ -1266,6 +1290,10 @@ function useAppContentController() {
   }, [compareHypotheses, compareReference, matchMode, metricsCandidates, refreshMetricCandidates]);
 
   const addMethodPaneForSource = useCallback((source: MetricsCandidateSource) => {
+    if (paneInstances.filter((pane) => pane.type === "methods").length >= MAX_METHOD_PANES) {
+      setWarning(`Close a method pane before opening another one (maximum ${MAX_METHOD_PANES}).`);
+      return;
+    }
     setPaneInstances((prev) =>
       normalizePaneInstances([...prev, makePaneInstance("methods", source)]),
     );
@@ -1273,7 +1301,7 @@ function useAppContentController() {
     if (methodId) {
       setMethodView(methodId);
     }
-  }, []);
+  }, [paneInstances]);
 
   const handleOpenCompareDocument = useCallback(
     (source: MetricsCandidateSource, docId: string) => {
@@ -1716,6 +1744,7 @@ function useAppContentController() {
     handleCompareExportCsv,
     handleOpenCompareDocument,
     handleTogglePane,
+    handleRemovePane,
     handleManualChange,
     handleRunAgent,
     handleRunMethod,
@@ -1810,6 +1839,7 @@ function renderAppContent(controller: AppContentController) {
     handleCompareExportCsv,
     handleOpenCompareDocument,
     handleTogglePane,
+    handleRemovePane,
     handleManualChange,
     handleRunAgent,
     handleRunMethod,
@@ -1952,6 +1982,7 @@ function renderAppContent(controller: AppContentController) {
                 <Toolbar
                   visiblePanes={orderedVisiblePanes}
                   onTogglePane={handleTogglePane}
+                  maxMethodPanes={MAX_METHOD_PANES}
                   diffMode={diffMode}
                   onToggleDiff={() => setDiffMode(!diffMode)}
                   reference={reference}
@@ -2066,6 +2097,7 @@ function renderAppContent(controller: AppContentController) {
                               diffSpans={getDiffSpans(pane)}
                               onRunMethod={handleRunMethod}
                               running={methodRunning || Boolean(methodsLabPaneLoading[pane.id])}
+                              onRemove={() => handleRemovePane(pane.id)}
                               onScroll={handleScroll(idx)}
                             />
                           );

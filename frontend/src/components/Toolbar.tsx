@@ -9,6 +9,7 @@ type SaveStatus = "idle" | "saving" | "saved";
 interface Props {
   visiblePanes: PaneType[];
   onTogglePane: (pane: PaneType) => void;
+  maxMethodPanes: number;
   diffMode: boolean;
   onToggleDiff: () => void;
   reference: AnnotationSource;
@@ -24,6 +25,7 @@ interface Props {
 export default function Toolbar({
   visiblePanes,
   onTogglePane,
+  maxMethodPanes,
   diffMode,
   onToggleDiff,
   reference,
@@ -47,18 +49,27 @@ export default function Toolbar({
     <div className="toolbar">
       <div className="toolbar-group">
         <span className="toolbar-label">Panes:</span>
-        {paneButtons.map((p) => (
-          <button
-            key={p.type}
-            className={visiblePanes.includes(p.type) ? "active" : ""}
-            onClick={() => onTogglePane(p.type)}
-          >
-            {p.label}
-          </button>
-        ))}
+        {paneButtons.map((p) => {
+          const methodLimitReached =
+            p.type === "methods" &&
+            visiblePanes.filter((pane) => pane === "methods").length >= maxMethodPanes;
+          return (
+            <button
+              type="button"
+              key={p.type}
+              className={visiblePanes.includes(p.type) ? "active" : ""}
+              disabled={methodLimitReached}
+              title={methodLimitReached ? `Maximum ${maxMethodPanes} method panes` : undefined}
+              onClick={() => onTogglePane(p.type)}
+            >
+              {p.label}
+            </button>
+          );
+        })}
       </div>
       <div className="toolbar-group">
         <button
+          type="button"
           className={diffMode ? "active" : ""}
           onClick={onToggleDiff}
         >

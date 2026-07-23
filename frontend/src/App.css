@@ -494,6 +494,15 @@ textarea:focus-visible {
   background: #f0f0f0;
 }
 
+.toolbar button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.toolbar button:disabled:hover {
+  background: inherit;
+}
+
 .toolbar button.active {
   background: #4a6cf7;
   color: #fff;
@@ -1351,6 +1360,38 @@ textarea:focus-visible {
 .pane-header-agent-left > span:first-child {
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+.pane-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.pane-remove-button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #6b7280;
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.pane-remove-button:hover {
+  background: #f1f3f5;
+  color: #1f2937;
+}
+
+.pane-remove-button:focus-visible {
+  outline: 2px solid #4a6cf7;
+  outline-offset: 1px;
 }
 
 .agent-view-control {
