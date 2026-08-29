@@ -1,7 +1,7 @@
 locals {
-  name             = "deid-annotation-pilot"
-  service_name     = "deid-annotation-pilot"
-  express_hostname = "${local.service_name}.ecs.${var.aws_region}.on.aws"
+  name                 = "deid-annotation-pilot"
+  service_name         = "deid-annotation-pilot"
+  express_host_pattern = "*.ecs.${var.aws_region}.on.aws"
 
   tags = {
     Project     = local.name

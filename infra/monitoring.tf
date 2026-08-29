@@ -11,7 +11,10 @@ resource "aws_sns_topic_subscription" "email" {
 resource "aws_route53_health_check" "app" {
   count = var.enable_express_service ? 1 : 0
 
-  fqdn              = local.express_hostname
+  fqdn = trimprefix(
+    aws_ecs_express_gateway_service.app[0].ingress_paths[0].endpoint,
+    "https://",
+  )
   port              = 443
   type              = "HTTPS"
   resource_path     = "/api/health"

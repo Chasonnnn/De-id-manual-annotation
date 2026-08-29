@@ -296,8 +296,8 @@ s3://nto-contextshift-deid/governed/GT/<dataset>/<release-id>/
 ### Express URL contract
 
 1. Create the service once with an explicit name.
-2. Record the returned `https://<service-name>.ecs.<region>.on.aws/` URL.
-3. Set application host validation to that exact hostname.
+2. Record the returned `https://<generated-id>.ecs.<region>.on.aws/` URL.
+3. Restrict application host validation to `*.ecs.<region>.on.aws` and point monitoring at the exact returned hostname.
 4. Update images and configuration on the existing service.
 5. Prohibit service deletion or replacement until the pilot has ended and verified exports exist.
 6. Monitor the URL before and after every deployment.

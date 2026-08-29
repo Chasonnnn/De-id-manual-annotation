@@ -10,7 +10,7 @@ resource "aws_db_parameter_group" "pilot" {
   parameter {
     name         = "rds.force_ssl"
     value        = "1"
-    apply_method = "immediate"
+    apply_method = "pending-reboot"
   }
 }
 

@@ -26,6 +26,9 @@ output "express_service_arn" {
 }
 
 output "express_url" {
-  value       = var.enable_express_service ? "https://${local.express_hostname}/" : null
+  value = var.enable_express_service ? format(
+    "%s/",
+    trimsuffix(aws_ecs_express_gateway_service.app[0].ingress_paths[0].endpoint, "/"),
+  ) : null
   description = "Stable only while the protected Express service is retained."
 }

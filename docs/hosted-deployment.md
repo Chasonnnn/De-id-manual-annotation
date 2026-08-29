@@ -2,15 +2,15 @@
 
 ## AWS target
 
-Use Amazon ECS Express Mode with an explicit service name. AWS derives the managed HTTPS URL from that service name, and the service name cannot be changed after creation:
+Use Amazon ECS Express Mode with an explicit service name. Express returns a managed HTTPS endpoint after service creation:
 
 ```text
-https://<service-name>.ecs.<region>.on.aws/
+https://<generated-id>.ecs.<region>.on.aws/
 ```
 
 App Runner is not recommended for a new deployment because AWS has closed it to new customers and directs new workloads to ECS Express Mode.
 
-Keep the same Express service for the entire pilot and update it in place. Do not delete or recreate it until at least fourteen days after deployment and after all annotation exports have been verified. AWS documents the name-derived URL and immutable service name, but does not publish a minimum URL-retention SLA; the pilot therefore treats service retention as the URL-stability control.
+Keep the same Express service for the entire pilot and update it in place. Do not delete or recreate it until at least fourteen days after deployment and after all annotation exports have been verified. The pilot treats service retention as the URL-stability control.
 
 Use a dedicated prefix such as `deid-annotation-pilot` for every resource in the shared AWS account. Apply project, environment, owner, and expiration tags. Use dedicated IAM roles, security groups, database, secrets, ECR repository, log groups, and budget alarms.
 
@@ -20,7 +20,7 @@ Use a dedicated prefix such as `deid-annotation-pilot` for every resource in the
 - Container port: `8000`
 - Health path: `/api/health`
 - CPU and memory: set explicitly
-- Public host: `HOSTED_ALLOWED_HOSTS=<service-name>.ecs.<region>.on.aws`
+- Public hosts: `HOSTED_ALLOWED_HOSTS=*.ecs.<region>.on.aws`; Starlette restricts this wildcard to Express subdomains in that Region
 
 Required secret:
 
@@ -40,6 +40,15 @@ All three bootstrap values must be present together. Store the password in Secre
 
 `HOSTED_COOKIE_SECURE=true` and `HOSTED_STATIC_DIR=/app/frontend-dist` are set in the image.
 
+Build one immutable image index for both task architectures because Express may
+schedule either platform:
+
+```bash
+docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile.hosted -t <ecr-repository>:<immutable-tag> --push .
+```
+
+Record the registry digest and deploy the `@sha256` URI. Monitoring and operator links must use the actual endpoint returned in `ingress_paths`, not a hostname inferred from the service name.
+
 The service receives the governed read boundary explicitly:
 
 ```text
@@ -57,6 +66,12 @@ All three values are required together. The application fails startup on partial
 - Allow task traffic only from the load balancer security group.
 - Use encrypted storage, encrypted connections, backups, and point-in-time recovery.
 - The application creates its initial schema at startup, so the database user needs schema DDL privileges for this first pilot.
+
+The RDS-managed master secret supplies the username and password. Build the
+application `DATABASE_URL` with those credentials plus the Terraform
+`database_endpoint` output; do not expect the managed secret to contain host or
+port fields. Rotate the application secret, then force a new service deployment
+so replacement tasks read its current version.
 
 ## IAM and secrets
 

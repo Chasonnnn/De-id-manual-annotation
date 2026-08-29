@@ -46,7 +46,7 @@ resource "aws_ecs_express_gateway_service" "app" {
 
     environment {
       name  = "HOSTED_ALLOWED_HOSTS"
-      value = local.express_hostname
+      value = local.express_host_pattern
     }
 
     environment {

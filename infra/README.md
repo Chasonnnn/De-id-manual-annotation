@@ -1,6 +1,6 @@
 # AWS pilot infrastructure
 
-This directory is a plan-only Terraform scaffold for an isolated `deid-annotation-pilot` deployment. It has not been authenticated, planned against an AWS account, or applied.
+This directory defines the isolated `deid-annotation-pilot` deployment.
 
 ## Provider boundary
 
@@ -32,9 +32,9 @@ The safe default is `enable_express_service=false`.
 
 Phase one creates networking, RDS, ECR, secret containers, IAM, monitoring, and the budget. An authorized operator then:
 
-1. Pushes the tested container to the emitted ECR repository and records its `@sha256` URI.
-2. Retrieves the RDS-managed password through an approved secure channel.
-3. Writes a complete `postgresql+psycopg://...?...sslmode=require` value into the emitted database URL secret.
+1. Builds one tested `linux/amd64,linux/arm64` image index, pushes it to the emitted ECR repository, and records its `@sha256` URI.
+2. Retrieves the RDS-managed username and password through an approved secure channel.
+3. Combines those credentials with the emitted `database_endpoint` output and writes a complete `postgresql+psycopg://...?...sslmode=require` value into the database URL secret. The RDS-managed secret does not supply host or port fields.
 4. If bootstrapping, writes a unique password of at least twelve characters into the initial-admin secret.
 5. Sets the immutable image URI, optional bootstrap identity, and `enable_express_service=true` for phase two.
 6. Logs in as the bootstrap admin, then removes all three bootstrap settings from the service while retaining the human admin account.
