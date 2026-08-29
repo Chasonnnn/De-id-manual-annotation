@@ -540,9 +540,11 @@ function AnnotatorAccounts({
 }
 
 function AdminView({
+  currentAdmin,
   sessions,
   onAssigned,
 }: {
+  currentAdmin: HostedUser;
   sessions: SessionSummary[];
   onAssigned: () => Promise<void>;
 }) {
@@ -559,6 +561,7 @@ function AdminView({
   const [creatingUser, setCreatingUser] = useState(false);
 
   const activeAnnotators = annotators.filter((user) => user.state === "active");
+  const assignmentCandidates = [currentAdmin, ...activeAnnotators];
 
   const loadAdminData = useCallback(async () => {
     try {
@@ -650,10 +653,14 @@ function AdminView({
             <option value="">Select a session</option>
             {sessions.map((session) => <option key={session.id} value={session.id}>{session.external_id}</option>)}
           </select>
-          <label htmlFor="assignment-annotator">Annotator</label>
+          <label htmlFor="assignment-annotator">Assignee</label>
           <select id="assignment-annotator" required value={assigneeId} onChange={(event) => setAssigneeId(event.target.value)}>
-            <option value="">Select an annotator</option>
-            {activeAnnotators.map((annotator) => <option key={annotator.id} value={annotator.id}>{annotator.display_name}</option>)}
+            <option value="">Select an assignee</option>
+            {assignmentCandidates.map((candidate) => (
+              <option key={candidate.id} value={candidate.id}>
+                {candidate.id === currentAdmin.id ? `${candidate.display_name} (you)` : candidate.display_name}
+              </option>
+            ))}
           </select>
           <Button className="primary-button" type="submit" disabled={submitting}>
             {submitting ? "Assigning…" : "Assign session"}
@@ -903,8 +910,9 @@ export default function App() {
     }
   }
 
+  const canEditDocument = user !== null && document?.assignment?.assignee_id === user.id;
   const pendingRecovery = pendingSaveRef.current;
-  const recoveryJson = saveStatus === "conflict" && user?.role === "annotator" && document && pendingRecovery
+  const recoveryJson = saveStatus === "conflict" && canEditDocument && document && pendingRecovery
     ? JSON.stringify({
         document_id: pendingRecovery.documentId,
         expected_revision: pendingRecovery.expected_revision,
@@ -958,7 +966,7 @@ export default function App() {
       <div className="hosted-main">
         {appError && <div className="app-error" role="alert">{appError}</div>}
         {adminOpen && user.role === "admin" ? (
-          <AdminView sessions={sessions} onAssigned={loadWorkspace} />
+          <AdminView currentAdmin={user} sessions={sessions} onAssigned={loadWorkspace} />
         ) : documentLoadState === "loading" ? (
           <div className="app-loading" role="status">Loading session…</div>
         ) : document ? (
@@ -968,7 +976,7 @@ export default function App() {
             saveStatus={saveStatus}
             saveError={saveError}
             completing={completing}
-            readOnly={user.role === "admin"}
+            readOnly={!canEditDocument}
             recoveryJson={recoveryJson}
             recoveryCopyState={recoveryCopyState}
             onSpansChange={handleSpansChange}

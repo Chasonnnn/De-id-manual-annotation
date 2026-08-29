@@ -642,10 +642,15 @@ class HostedRepository:
             assignee = session.get(User, assignee_id)
             if (
                 assignee is None
-                or assignee.role != Role.ANNOTATOR
                 or assignee.state != UserState.ACTIVE
+                or not (
+                    assignee.role == Role.ANNOTATOR
+                    or (assignee.role == Role.ADMIN and assignee.id == assigned_by_id)
+                )
             ):
-                raise InvalidAssignee("assignee must be an active annotator")
+                raise InvalidAssignee(
+                    "assignee must be an active annotator or self-assigning admin"
+                )
             assignment = session.exec(
                 self._assignment_for_update(document_id=document_id)
             ).one_or_none()
@@ -892,11 +897,12 @@ class HostedRepository:
             self._require_admin(session, admin_id)
             documents = list(session.exec(select(Document)).all())
             assignments = list(session.exec(select(Assignment)).all())
+            assigned_user_ids = {assignment.assignee_id for assignment in assignments}
             users = {
                 user.id: user
-                for user in session.exec(
-                    select(User).where(User.role == Role.ANNOTATOR)
-                ).all()
+                for user in session.exec(select(User)).all()
+                if user.role == Role.ANNOTATOR
+                or (user.role == Role.ADMIN and user.id in assigned_user_ids)
             }
             counts_by_user: dict[str, dict[str, Any]] = {
                 user.id: {

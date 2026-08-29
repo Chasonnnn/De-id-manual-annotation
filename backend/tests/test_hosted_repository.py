@@ -12,6 +12,7 @@ from hosted_app.domain import (
     DocumentImport,
     DuplicateExternalId,
     Forbidden,
+    InvalidAssignee,
     InvalidReference,
     LoginSessionRecord,
     RevisionConflict,
@@ -156,6 +157,67 @@ def test_assignment_is_idempotent_and_reassigns_the_existing_record(
             assigned_by_id=grace.id,
         )
     assert repository.list_assignments(admin_id=admin.id)[0].assignee_id == grace.id
+
+
+def test_admin_can_self_assign_but_cannot_assign_another_admin(
+    repository: HostedRepository,
+) -> None:
+    admin = repository.create_user(
+        email="admin@example.edu", password_hash="hash-admin", role=Role.ADMIN
+    )
+    other_admin = repository.create_user(
+        email="other-admin@example.edu",
+        password_hash="hash-other-admin",
+        role=Role.ADMIN,
+    )
+    document = import_documents(
+        repository,
+        admin_id=admin.id,
+        documents=[
+            DocumentImport(
+                external_id="session-001",
+                filename="session-001.json",
+                raw_text="raw",
+                label_set=["NAME"],
+                reference_spans=None,
+            )
+        ],
+    )[0]
+
+    assignment = repository.assign_document(
+        document_id=document.id,
+        assignee_id=admin.id,
+        assigned_by_id=admin.id,
+    )
+
+    assert assignment.assignee_id == admin.id
+    with pytest.raises(
+        InvalidAssignee, match="active annotator or self-assigning admin"
+    ):
+        repository.assign_document(
+            document_id=document.id,
+            assignee_id=other_admin.id,
+            assigned_by_id=admin.id,
+        )
+    saved = repository.save_annotations(
+        document_id=document.id,
+        user_id=admin.id,
+        spans=[],
+        expected_revision=0,
+        mutation_id="admin-self-save",
+    )
+    assert saved.revision == 1
+    assert repository.progress(admin_id=admin.id).by_annotator == [
+        {
+            "user_id": admin.id,
+            "email": "admin@example.edu",
+            "display_name": "admin",
+            "assigned": 0,
+            "in_progress": 1,
+            "completed": 0,
+            "total": 1,
+        }
+    ]
 
 
 def test_saves_are_revisioned_idempotent_and_preserve_imported_content(

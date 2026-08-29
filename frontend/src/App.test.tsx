@@ -175,6 +175,28 @@ describe("hosted annotation app", () => {
     expect(screen.queryByRole("button", { name: "Copy recovery JSON" })).toBeNull();
   });
 
+  it("lets an admin edit a session assigned to their own account", async () => {
+    mockAuthenticated(admin);
+    vi.mocked(api.getWorkspace).mockResolvedValue({
+      sessions: [{ ...sessions[0]!, assignee_id: admin.id, assignee_name: admin.display_name }],
+    });
+    vi.mocked(api.getDocument).mockResolvedValue({
+      ...document,
+      assignment: {
+        ...document.assignment,
+        assignee_id: admin.id,
+        assignee_name: admin.display_name,
+      },
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("Session 001"));
+
+    expect(await screen.findByLabelText("Manual annotation editor")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Mark complete" })).toBeTruthy();
+    expect(screen.queryByText("Admin view is read-only.")).toBeNull();
+  });
+
   it("saves every annotation snapshot with a revision and mutation id", async () => {
     mockAuthenticated();
     let resolveSave: ((value: Awaited<ReturnType<typeof api.saveAnnotations>>) => void) | undefined;
@@ -391,8 +413,10 @@ describe("hosted annotation app", () => {
     expect(within(progress).getByText("8")).toBeTruthy();
     expect(within(progress).getByText("4")).toBeTruthy();
 
+    expect(screen.getByRole("option", { name: "Admin User (you)" })).toBeTruthy();
+
     fireEvent.change(screen.getByLabelText("Session"), { target: { value: "doc-1" } });
-    fireEvent.change(screen.getByLabelText("Annotator"), { target: { value: annotator.id } });
+    fireEvent.change(screen.getByLabelText("Assignee"), { target: { value: annotator.id } });
     fireEvent.click(screen.getByRole("button", { name: "Assign session" }));
 
     await waitFor(() => expect(api.assignSession).toHaveBeenCalledWith({
