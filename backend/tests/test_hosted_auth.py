@@ -4,9 +4,6 @@ from hashlib import sha256
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, create_engine
-
 from hosted_app.auth import (
     AuthenticationRequired,
     AuthManager,
@@ -18,6 +15,8 @@ from hosted_app.auth import (
 from hosted_app.database import create_schema
 from hosted_app.domain import UserState
 from hosted_app.repository import HostedRepository
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, create_engine
 
 
 def test_first_admin_can_be_bootstrapped_with_argon2id_password() -> None:

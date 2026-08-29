@@ -165,9 +165,7 @@ class MacOSKeychainCredentialStore:
         if profile_key is None:
             return
         for field in SESSION_FIELDS:
-            self._delete(
-                service=f"{SESSION_SERVICE}.{field}", account=profile_key
-            )
+            self._delete(service=f"{SESSION_SERVICE}.{field}", account=profile_key)
         self._delete(service=ACTIVE_SERVICE, account=ACTIVE_ACCOUNT)
 
     def _require_macos(self) -> None:

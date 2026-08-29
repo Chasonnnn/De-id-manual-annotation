@@ -5,10 +5,6 @@ from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy.dialects import postgresql
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, create_engine
-
 from hosted_app.database import Assignment, create_schema
 from hosted_app.domain import (
     AssignmentState,
@@ -22,6 +18,9 @@ from hosted_app.domain import (
     Role,
 )
 from hosted_app.repository import HostedRepository
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, create_engine
 
 
 @pytest.fixture

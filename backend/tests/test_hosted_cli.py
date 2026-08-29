@@ -2,7 +2,6 @@ import json
 from io import StringIO
 
 import httpx2
-
 from hosted_app.cli import run_cli
 from hosted_app.cli_credentials import Credential, InMemoryCredentialStore
 
@@ -328,10 +327,14 @@ def test_bulk_assignment_preview_and_apply_use_the_server_plan_contract() -> Non
         )
 
     common = [
-        "--document-id", "document-2",
-        "--document-id", "document-1",
-        "--annotator-id", "annotator-2",
-        "--annotator-id", "annotator-1",
+        "--document-id",
+        "document-2",
+        "--document-id",
+        "document-1",
+        "--annotator-id",
+        "annotator-2",
+        "--annotator-id",
+        "annotator-1",
     ]
     preview = invoke(
         ["assignments", "preview", *common, "--json"],
@@ -343,8 +346,10 @@ def test_bulk_assignment_preview_and_apply_use_the_server_plan_contract() -> Non
             "assignments",
             "apply",
             *common,
-            "--plan-digest", plan_digest,
-            "--mutation-id", "bulk-001",
+            "--plan-digest",
+            plan_digest,
+            "--mutation-id",
+            "bulk-001",
             "--json",
         ],
         handler,
@@ -433,10 +438,14 @@ def test_s3_batch_plan_and_apply_use_manifest_and_exact_plan_files(tmp_path) -> 
     )
     applied = invoke(
         [
-            "batches", "apply-import",
-            "--manifest", str(manifest_path),
-            "--plan", str(plan_path),
-            "--mutation-id", "import-001",
+            "batches",
+            "apply-import",
+            "--manifest",
+            str(manifest_path),
+            "--plan",
+            str(plan_path),
+            "--mutation-id",
+            "import-001",
             "--json",
         ],
         handler,
@@ -481,14 +490,22 @@ def test_audit_list_passes_filters_and_supports_stable_json() -> None:
 
     code, stdout, stderr, _, _ = invoke(
         [
-            "audit", "list",
-            "--actor-id", "admin-1",
-            "--action", "assignment.bulk_applied",
-            "--target-type", "assignment_plan",
-            "--target-id", "digest-1",
-            "--mutation-id", "bulk-001",
-            "--result", "success",
-            "--limit", "25",
+            "audit",
+            "list",
+            "--actor-id",
+            "admin-1",
+            "--action",
+            "assignment.bulk_applied",
+            "--target-type",
+            "assignment_plan",
+            "--target-id",
+            "digest-1",
+            "--mutation-id",
+            "bulk-001",
+            "--result",
+            "success",
+            "--limit",
+            "25",
             "--json",
         ],
         handler,

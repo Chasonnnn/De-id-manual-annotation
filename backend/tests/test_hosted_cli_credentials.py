@@ -1,7 +1,6 @@
 import subprocess
 
 import pytest
-
 from hosted_app.cli_credentials import (
     Credential,
     CredentialStoreError,

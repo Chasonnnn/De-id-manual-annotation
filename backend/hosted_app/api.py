@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -99,7 +99,7 @@ class CanonicalSpan(RequestModel):
     text: str
 
     @model_validator(mode="after")
-    def validate_range(self) -> CanonicalSpan:
+    def validate_range(self) -> Self:
         if self.end <= self.start:
             raise ValueError("span end must be greater than start")
         return self

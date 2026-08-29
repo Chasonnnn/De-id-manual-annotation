@@ -5,12 +5,11 @@ from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import text
-from sqlmodel import Session, create_engine
-
 from hosted_app.database import create_schema
 from hosted_app.domain import DocumentImport, RevisionConflict, Role
 from hosted_app.repository import HostedRepository
+from sqlalchemy import text
+from sqlmodel import Session, create_engine
 
 
 def test_postgresql_serializes_same_revision_saves() -> None:

@@ -4,10 +4,6 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy.dialects import postgresql
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, create_engine
-
 from hosted_app.api import create_hosted_app
 from hosted_app.auth import AuthenticatedPrincipal, AuthManager
 from hosted_app.bulk_audit_api import create_bulk_audit_router
@@ -23,6 +19,9 @@ from hosted_app.domain import (
     Role,
 )
 from hosted_app.repository import HostedRepository
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, create_engine
 
 
 def make_repository() -> HostedRepository:

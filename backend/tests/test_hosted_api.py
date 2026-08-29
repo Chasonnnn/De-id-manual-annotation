@@ -4,14 +4,13 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, create_engine
-
 from hosted_app.api import create_hosted_app
 from hosted_app.auth import AuthManager
 from hosted_app.database import create_schema
 from hosted_app.domain import DocumentImport, Role
 from hosted_app.repository import HostedRepository
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, create_engine
 
 
 def csrf_headers(client: TestClient) -> dict[str, str]:
