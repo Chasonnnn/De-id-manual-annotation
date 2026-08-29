@@ -1,313 +1,60 @@
-# De-id-manual-annotation
+# De-ID Manual Annotation
 
-## Start frontend + backend together
+Hosted annotation application for assigning transcript sessions, creating manual PII annotations, viewing supplied reference annotations, and tracking completion.
 
-From repo root:
+## Scope
+
+- Admin-created email/password accounts
+- Admin visibility across all sessions
+- Annotator visibility limited to assigned sessions
+- Raw Transcript, Manual Annotation, and Reference panels
+- Revisioned PostgreSQL saves with conflict detection and retry
+- Assignment, progress, import, export, completion, and reopen controls
+
+Experiment execution, model inference, evaluation dashboards, local-file sessions, public registration, and Cornell SSO are not included.
+
+## Local development
+
+Requirements: PostgreSQL and Mise. Repository-local tool versions are pinned in `mise.toml` and `mise.lock` for macOS ARM64 and Linux x64.
+
+For an isolated, disposable local database bound only to loopback:
 
 ```bash
-./run.sh
+docker compose -f compose.dev.yaml up -d --wait
 ```
 
-First-time setup (installs dependencies, then starts both):
+The development container uses PostgreSQL trust authentication only on `127.0.0.1:55433`, stores its database in memory, and must never be used for hosted data.
 
 ```bash
+mise install
+DATABASE_URL='postgresql+psycopg://annotation@127.0.0.1:55433/annotation' \
+HOSTED_COOKIE_SECURE=false \
+HOSTED_ALLOWED_HOSTS=localhost,127.0.0.1 \
 ./run.sh --install
 ```
 
-Normal startup uses the already-installed backend `.venv` and frontend
-`node_modules`; it does not sync or fetch dependencies. If dependencies are
-missing or stale, rerun `./run.sh --install`.
+Subsequent runs can omit `--install`. The frontend is served at `http://localhost:5173` and proxies `/api` to `http://localhost:8000`.
 
-You can override ports:
+## Command-line administration
 
-```bash
-BACKEND_PORT=8001 FRONTEND_PORT=5174 ./run.sh
-```
-
-If a root `.env.local` file exists, `run.sh` auto-loads it.
-
-## LiteLLM gateway/proxy config
-
-You can set key and base URL in two ways:
-
-1. In UI (Agent panel):
-- `API Key`
-- `LiteLLM Base URL`
-
-2. Environment fallback:
-- `LITELLM_API_KEY`
-- `LITELLM_BASE_URL`
-- provider keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`)
-
-## Where results are saved (DB or files?)
-
-Current implementation is **file-based**, not a database.
-
-Storage root:
-
-```text
-backend/.annotation_tool/
-```
-
-Important files:
-- `backend/.annotation_tool/config.json` (saved config defaults)
-- `backend/.annotation_tool/sessions/default/_index.json` (document index)
-- `backend/.annotation_tool/sessions/default/<doc_id>.source.json` (parsed source doc)
-- `backend/.annotation_tool/sessions/default/<doc_id>.manual.json` (manual annotations)
-- `backend/.annotation_tool/sessions/default/<doc_id>.agent.rule.json` (rule-agent output)
-- `backend/.annotation_tool/sessions/default/<doc_id>.agent.llm.json` (LLM-agent output)
-
-So right now persistence is local JSON sidecars per document/session.
-
-For colleague sharing through GitHub, export a full session bundle and commit
-that intentional bundle file to the private repo. Do not share
-`backend/.annotation_tool/` directly. See
-[docs/session-sharing.md](docs/session-sharing.md).
-
-Prompt Lab and Methods Lab runs are also session-backed sidecars:
-- `backend/.annotation_tool/sessions/default/prompt_lab/_index.json`
-- `backend/.annotation_tool/sessions/default/prompt_lab/<run_id>.json`
-- `backend/.annotation_tool/sessions/default/methods_lab/_index.json`
-- `backend/.annotation_tool/sessions/default/methods_lab/<run_id>.json`
-
-## Experiment CLI
-
-Run the backend CLI from `backend/`:
+Run the CLI from `backend/`. Login prompts for the password without echo and stores the resulting human session in macOS Keychain.
 
 ```bash
-cd backend
-uv sync
-uv run annotation-experiments list-docs
+uv run annotationctl login --url http://localhost:8000 --email admin@cornell.edu
+uv run annotationctl whoami
+uv run annotationctl users create --email annotator@cornell.edu --display-name "Annotator"
+uv run annotationctl sessions list
+uv run annotationctl status
 ```
 
-Available commands:
+User creation prints one single-use activation URL. Account, assignment, and reset commands are listed by `uv run annotationctl --help`.
+
+## Verification
 
 ```bash
-uv run annotation-experiments run manifest.yaml
-uv run annotation-experiments prompt ...
-uv run annotation-experiments methods ...
-uv run annotation-experiments list-docs --session default
-uv run annotation-experiments list-models
-uv run annotation-experiments list-methods
+cd backend && uv run pytest
+cd frontend && npm test && npm run build
+docker build -f Dockerfile.hosted -t deid-annotation-hosted .
 ```
 
-Behavior:
-- runs read documents from `.annotation_tool/sessions/<session>/`
-- prompt runs default to all docs in the session when `doc_ids` are omitted
-- methods runs default to docs with manual annotations when `doc_ids` are omitted
-- run artifacts are persisted to the same Prompt Lab / Methods Lab JSON files used by the UI
-- `AGENTS.md` and `SKILL.md` are supported only as prompt text sources for LiteLLM runs
-- `SKILL.md` strips optional YAML frontmatter before use
-- `Skills.md` is not supported; use the actual file name `SKILL.md`
-
-Optional outputs:
-
-```bash
-uv run annotation-experiments run manifest.yaml \
-  --output-json /tmp/run.json \
-  --output-csv /tmp/run.csv
-```
-
-### Prompt Flags
-
-Inline prompt variants:
-
-```bash
-uv run annotation-experiments prompt \
-  --session default \
-  --prompt 'Baseline=Extract PII spans as strict JSON.' \
-  --model 'Codex=openai.gpt-5.3-codex' \
-  --api-key "$LITELLM_API_KEY" \
-  --api-base "$LITELLM_BASE_URL"
-```
-
-Prompt files:
-
-```bash
-uv run annotation-experiments prompt \
-  --session default \
-  --prompt-file 'Agents=../prompts/AGENTS.md' \
-  --model 'Codex=openai.gpt-5.3-codex' \
-  --api-key "$LITELLM_API_KEY" \
-  --api-base "$LITELLM_BASE_URL"
-```
-
-Preset prompt variants backed by an existing method definition:
-
-```bash
-uv run annotation-experiments prompt \
-  --session default \
-  --preset 'Default Prompt=default' \
-  --model 'Codex=openai.gpt-5.3-codex' \
-  --api-key "$LITELLM_API_KEY" \
-  --api-base "$LITELLM_BASE_URL"
-```
-
-### Methods Flags
-
-```bash
-uv run annotation-experiments methods \
-  --session default \
-  --method 'Default=default' \
-  --method 'Reasoning=reasoning' \
-  --model 'Codex=openai.gpt-5.3-codex' \
-  --api-key "$LITELLM_API_KEY" \
-  --api-base "$LITELLM_BASE_URL"
-```
-
-### Manifest Schema
-
-Prompt Lab manifests use `kind: prompt_lab` and include `prompts` plus `models`:
-
-```yaml
-kind: prompt_lab
-session: default
-name: inline-prompt-sweep
-doc_ids:
-  - doc_1
-prompts:
-  - id: baseline
-    label: Baseline
-    system_prompt: Extract PII spans as strict JSON.
-models:
-  - id: codex
-    label: Codex
-    model: openai.gpt-5.3-codex
-    reasoning_effort: xhigh
-runtime:
-  api_key: ${LITELLM_API_KEY}
-  api_base: ${LITELLM_BASE_URL}
-  temperature: 0.0
-  match_mode: exact
-  reference_source: manual
-  fallback_reference_source: pre
-concurrency: 12
-```
-
-`AGENTS.md` prompt file example:
-
-```yaml
-kind: prompt_lab
-session: default
-name: agents-file-prompt
-prompts:
-  - id: agents
-    label: Agents Instructions
-    prompt_file: ../prompts/AGENTS.md
-models:
-  - id: codex
-    label: Codex
-    model: openai.gpt-5.3-codex
-runtime:
-  api_key: ${LITELLM_API_KEY}
-  api_base: ${LITELLM_BASE_URL}
-```
-
-`SKILL.md` prompt file example:
-
-```yaml
-kind: prompt_lab
-session: default
-name: skill-file-prompt
-prompts:
-  - id: skill
-    label: Skill Instructions
-    prompt_file: ../skills/example/SKILL.md
-models:
-  - id: codex
-    label: Codex
-    model: openai.gpt-5.3-codex
-runtime:
-  api_key: ${LITELLM_API_KEY}
-  api_base: ${LITELLM_BASE_URL}
-```
-
-Methods Lab manifests use `kind: methods_lab` and include `methods` plus `models`:
-
-```yaml
-kind: methods_lab
-session: default
-name: method-sweep
-methods:
-  - id: default_method
-    label: Default
-    method_id: default
-  - id: reasoning_method
-    label: Reasoning
-    method_id: reasoning
-models:
-  - id: codex
-    label: Codex
-    model: openai.gpt-5.3-codex
-    reasoning_effort: xhigh
-runtime:
-  api_key: ${LITELLM_API_KEY}
-  api_base: ${LITELLM_BASE_URL}
-  temperature: 0.0
-  match_mode: exact
-concurrency: 8
-```
-
-Concurrency notes:
-- Prompt Lab and Methods Lab default to `4` workers.
-- The server-configurable max defaults to `16` and is hard-capped at `32`.
-- Higher concurrency mainly helps LLM-backed sweeps. Local Presidio-heavy runs benefit less.
-
-### Cornell concurrency benchmark
-
-Verify the gateway catalog through the same code path the app uses:
-
-```bash
-cd /Users/chason/De-id-manual-annotation/backend
-set -a
-source /Users/chason/De-id-manual-annotation/.env.local
-set +a
-.venv/bin/python -c "import os; from server import _fetch_gateway_model_ids; models=_fetch_gateway_model_ids(os.environ['LITELLM_BASE_URL'], os.environ['LITELLM_API_KEY']); print(len(models)); print('openai.gpt-4.1-nano' in models)"
-```
-
-Then run a 16-task Prompt Lab benchmark against the Cornell gateway:
-
-```bash
-cd /Users/chason/De-id-manual-annotation/backend
-uv run annotation-experiments list-docs --session default
-
-uv run annotation-experiments prompt \
-  --session default \
-  --name 'cornell-concurrency-16' \
-  --doc-id <doc_id> \
-  --prompt 'P1=Extract PII spans as strict JSON.' \
-  --prompt 'P2=Extract PII spans as strict JSON.' \
-  --prompt 'P3=Extract PII spans as strict JSON.' \
-  --prompt 'P4=Extract PII spans as strict JSON.' \
-  --model 'M1=openai.gpt-4.1-nano' \
-  --model 'M2=openai.gpt-4.1-nano' \
-  --model 'M3=openai.gpt-4.1-nano' \
-  --model 'M4=openai.gpt-4.1-nano' \
-  --api-key "$LITELLM_API_KEY" \
-  --api-base "$LITELLM_BASE_URL" \
-  --concurrency 16 \
-  --output-json /tmp/cornell-concurrency-16.json
-```
-
-Repeat the same run with `--concurrency 1`, `4`, `8`, and `16`. If the diagnostics card reports `effective_worker_count=16` but runtime stops improving, the bottleneck is the Cornell LiteLLM gateway or its upstream provider rather than this app.
-
-## Qwen3.5 9B local runner
-
-If you want to run the local `Qwen3.5-9B` MLX-VLM checkpoint from this repo,
-use:
-
-```bash
-python3 backend/scripts/qwen35_9b_generate.py \
-  --prompt 'Return exactly this JSON and nothing else: {"status":"ok"}'
-```
-
-Notes:
-- The script defaults to `mlx-community/Qwen3.5-9B-MLX-4bit`.
-- Thinking mode is disabled by default. Add `--enable-thinking` to turn it on.
-- If you hit memory pressure on the M2 Max, retry with `--prefill-step-size 512`.
-- Required dependency:
-
-```bash
-cd backend
-uv add "mlx-vlm[torch]"
-```
+The CLI-first implementation plan is documented in [docs/hosted-mvp-plan.md](docs/hosted-mvp-plan.md). AWS Express deployment and S3 import contracts are documented in [docs/hosted-deployment.md](docs/hosted-deployment.md).

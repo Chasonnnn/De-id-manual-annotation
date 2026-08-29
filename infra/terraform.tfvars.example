@@ -1,0 +1,14 @@
+expected_account_id   = "123456789012"
+owner                 = "hz782@cornell.edu"
+expiration_date       = "2026-09-15"
+governed_bucket_name  = "replace-with-governed-bucket"
+alert_email            = "hz782@cornell.edu"
+monthly_budget_usd     = 100
+
+# Phase two only, after pushing the image and populating both secret values.
+enable_express_service = false
+container_image        = ""
+
+# Optional one-time bootstrap. Remove these and update the service after login.
+bootstrap_admin_email        = null
+bootstrap_admin_display_name = null

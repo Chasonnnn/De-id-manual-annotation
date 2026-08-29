@@ -1,0 +1,19 @@
+name: deid-annotation-dev
+
+services:
+  postgres:
+    image: postgres:18.6-trixie
+    container_name: deid-annotation-dev-db
+    environment:
+      POSTGRES_DB: annotation
+      POSTGRES_USER: annotation
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "127.0.0.1:55433:5432"
+    tmpfs:
+      - /var/lib/postgresql/18/docker
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U annotation -d annotation"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
