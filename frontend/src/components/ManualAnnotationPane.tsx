@@ -1,5 +1,5 @@
-import { forwardRef, useCallback, useEffect, useRef, useState } from "react";
-import type { CanonicalSpan } from "../types";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { CanonicalSpan } from "../hosted/types";
 import AnnotatedText from "./AnnotatedText";
 import AnnotationPopup from "./AnnotationPopup";
 import {
@@ -7,14 +7,13 @@ import {
   getCodePointLength,
   sliceByCodePointOffsets,
 } from "../textOffsets";
+import { buildNewSpansFromSelection } from "../annotationSelection";
 
 interface Props {
   text: string;
   spans: CanonicalSpan[];
   labels: string[];
-  diffSpans?: { start: number; end: number; type: "added" | "removed" }[];
   onSpansChange: (spans: CanonicalSpan[]) => void;
-  onScroll: (scrollTop: number) => void;
 }
 
 interface PopupState {
@@ -127,8 +126,12 @@ function trimBoundarySelection(
   };
 }
 
-const ManualAnnotationPane = forwardRef<HTMLDivElement, Props>(
-  ({ text, spans, labels, diffSpans = [], onSpansChange, onScroll }, ref) => {
+export default function ManualAnnotationPane({
+  text,
+  spans,
+  labels,
+  onSpansChange,
+}: Props) {
     const [popup, setPopup] = useState<PopupState | null>(null);
     const [trimBoundaries, setTrimBoundaries] = useState(() => {
       try {
@@ -138,7 +141,6 @@ const ManualAnnotationPane = forwardRef<HTMLDivElement, Props>(
         return true;
       }
     });
-    // Internal ref for DOM access -- merged with forwarded ref
     const localRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -148,19 +150,6 @@ const ManualAnnotationPane = forwardRef<HTMLDivElement, Props>(
         // Best-effort persistence only.
       }
     }, [trimBoundaries]);
-
-    // Merge callback: sets both our local ref and the forwarded ref
-    const mergedRefCallback = useCallback(
-      (el: HTMLDivElement | null) => {
-        localRef.current = el;
-        if (typeof ref === "function") {
-          ref(el);
-        } else if (ref) {
-          (ref as React.MutableRefObject<HTMLDivElement | null>).current = el;
-        }
-      },
-      [ref],
-    );
 
     const handleMouseUp = useCallback(() => {
       const sel = window.getSelection();
@@ -213,7 +202,7 @@ const ManualAnnotationPane = forwardRef<HTMLDivElement, Props>(
 
     const handleSpanClick = useCallback(
       (index: number, e: React.MouseEvent | React.KeyboardEvent) => {
-        const sorted = [...spans].sort((a, b) => a.start - b.start);
+        const sorted = spans.toSorted((a, b) => a.start - b.start);
         const span = sorted[index];
         if (!span) return;
         const originalIndex = spans.indexOf(span);
@@ -241,17 +230,19 @@ const ManualAnnotationPane = forwardRef<HTMLDivElement, Props>(
           );
           onSpansChange(updated);
         } else {
-          const newSpan: CanonicalSpan = {
-            start: popup.selStart,
-            end: popup.selEnd,
-            label,
-            text: popup.selText,
-          };
-          onSpansChange([...spans, newSpan]);
+          onSpansChange([
+            ...spans,
+            ...buildNewSpansFromSelection(
+              text,
+              popup.selStart,
+              popup.selEnd,
+              label,
+            ),
+          ]);
         }
         setPopup(null);
       },
-      [popup, spans, onSpansChange],
+      [popup, spans, onSpansChange, text],
     );
 
     const handleDelete = useCallback(() => {
@@ -275,17 +266,15 @@ const ManualAnnotationPane = forwardRef<HTMLDivElement, Props>(
         </div>
         <div
           className="pane-body"
-          ref={mergedRefCallback}
-          onScroll={(e) => onScroll((e.target as HTMLDivElement).scrollTop)}
+          ref={localRef}
           onMouseUp={handleMouseUp}
           role="presentation"
         >
           <AnnotatedText
             text={text}
-            spans={[...spans].sort((a, b) => a.start - b.start)}
+            spans={spans.toSorted((a, b) => a.start - b.start)}
             clickable
             onSpanClick={handleSpanClick}
-            diffSpans={diffSpans}
           />
         </div>
         {popup && (
@@ -300,8 +289,4 @@ const ManualAnnotationPane = forwardRef<HTMLDivElement, Props>(
         )}
       </div>
     );
-  },
-);
-
-ManualAnnotationPane.displayName = "ManualAnnotationPane";
-export default ManualAnnotationPane;
+}

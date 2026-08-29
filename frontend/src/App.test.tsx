@@ -1,773 +1,537 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
 import App from "./App";
-import {
-  compareMetrics,
-  deleteFolderDocument,
-  getAgentCredentialStatus,
-  getAgentMethods,
-  getDocument,
-  getFolder,
-  getMetricsCandidates,
-  getMethodsLabDocResult,
-  getWorkspace,
-} from "./api/client";
-import type { ReadinessHealth, WorkspaceState } from "./types";
+import * as api from "./hosted/api";
 
-vi.mock("./api/client", () => ({
-  createFolder: vi.fn(),
-  createFolderSample: vi.fn(),
-  deleteFolder: vi.fn(),
-  deleteFolderDocument: vi.fn(),
-  deleteDocument: vi.fn(),
-  exportGroundTruth: vi.fn(),
-  exportSession: vi.fn(),
-  getAgentCredentialStatus: vi.fn(),
-  getFolder: vi.fn(),
-  getAgentProgress: vi.fn(),
-  getAgentMethods: vi.fn().mockResolvedValue([]),
-  getDocument: vi.fn(),
-  getMetricsCandidates: vi.fn(),
-  getMethodsLabDocResult: vi.fn(),
-  compareMetrics: vi.fn(),
-  getMetrics: vi.fn(),
-  getWorkspace: vi.fn(),
-  ingestSessionFile: vi.fn(),
-  pruneEmptyFolderDocs: vi.fn(),
-  runAgent: vi.fn(),
-  updateManualAnnotations: vi.fn(),
+vi.mock("./hosted/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./hosted/api")>();
+  return {
+    ...actual,
+    getCurrentUser: vi.fn(),
+    login: vi.fn(),
+    logout: vi.fn(),
+    getWorkspace: vi.fn(),
+    getDocument: vi.fn(),
+    saveAnnotations: vi.fn(),
+    completeAssignment: vi.fn(),
+    getAdminProgress: vi.fn(),
+    getAdminUsers: vi.fn(),
+    assignSession: vi.fn(),
+    createAdminUser: vi.fn(),
+    deactivateAdminUser: vi.fn(),
+    reactivateAdminUser: vi.fn(),
+    resetAdminUserPassword: vi.fn(),
+  };
+});
+
+vi.mock("./components/ManualAnnotationPane", () => ({
+  default: ({ onSpansChange }: { onSpansChange: (spans: Array<Record<string, unknown>>) => void }) => (
+    <div aria-label="Manual annotation editor">
+      <button type="button" onClick={() => onSpansChange([{ start: 0, end: 5, label: "NAME", text: "Alice" }])}>
+        Add test annotation
+      </button>
+      <button type="button" onClick={() => onSpansChange([
+        { start: 0, end: 5, label: "NAME", text: "Alice" },
+        { start: 10, end: 13, label: "NAME", text: "Bob" },
+      ])}>
+        Add another annotation
+      </button>
+    </div>
+  ),
 }));
 
-describe("App", () => {
-  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-  const defaultHealth: ReadinessHealth = {
-    status: "ok",
-    tool_version: "0.1.0",
-    storage: {
-      root: "/tmp/annotation-tool",
-      session_dir: "/tmp/annotation-tool/sessions/default",
-      exists: true,
-    },
-    counts: {
-      documents: 0,
-      folders: 0,
-      prompt_lab_runs: 0,
-      methods_lab_runs: 0,
-    },
-    credentials: {
-      has_api_key: true,
-      api_key_sources: ["LITELLM_API_KEY"],
-      has_api_base: true,
-      api_base_sources: ["LITELLM_API_BASE"],
-    },
-    method_availability_warnings: [],
-    config_warnings: [],
-    dependency_warnings: [],
-  };
+const annotator = {
+  id: "user-1",
+  email: "annotator@cornell.edu",
+  display_name: "Ada Annotator",
+  role: "annotator" as const,
+  state: "active" as const,
+};
 
-  function makeWorkspace(overrides: Partial<WorkspaceState> = {}): WorkspaceState {
-    return {
-      documents: [],
-      folders: [],
-      folder_details: {},
-      health: defaultHealth,
-      ...overrides,
-    };
-  }
+const admin = {
+  id: "admin-1",
+  email: "admin@cornell.edu",
+  display_name: "Admin User",
+  role: "admin" as const,
+  state: "active" as const,
+};
 
-  const savedMethodRunKey =
-    "deid_pipeline_cascade_gemma31b::local-cascade::run-1";
+const sessions = [
+  {
+    id: "doc-1",
+    external_id: "Session 001",
+    filename: "session-001.json",
+    assignment_id: "assignment-1",
+    assignment_state: "assigned" as const,
+    assignee_id: annotator.id,
+    assignee_name: annotator.display_name,
+  },
+  {
+    id: "doc-2",
+    external_id: "Session 002",
+    filename: "session-002.json",
+    assignment_id: "assignment-2",
+    assignment_state: "completed" as const,
+    assignee_id: annotator.id,
+    assignee_name: annotator.display_name,
+  },
+];
 
-  const methodFixture = {
-    id: "doc-method",
-    filename: "doc-method.json",
-    raw_text: "Tutor: Hello Chloe.",
-    utterances: [],
-    pre_annotations: [],
-    label_set: ["NAME"],
-    manual_annotations: [],
-    agent_annotations: [],
-    agent_outputs: {
-      rule: [],
-      llm: [],
-      llm_runs: {},
-      llm_run_metadata: {},
-      methods: {
-        [savedMethodRunKey]: [
-          { start: 13, end: 18, label: "NAME", text: "Chloe" },
-        ],
-        "presidio-lite+extended-v2::anthropic.claude-4.6-sonnet": [
-          { start: 13, end: 18, label: "NAME", text: "Chloe" },
-        ],
-        "presidio-lite+extended-v2::google.gemini-3.1-pro-preview": [
-          { start: 13, end: 18, label: "NAME", text: "Chloe" },
-        ],
-      },
-      method_run_metadata: {
-        [savedMethodRunKey]: {
-          mode: "method",
-          updated_at: "2026-03-17T18:30:00Z",
-          method_id: "deid_pipeline_cascade_gemma31b",
-          model: "local-cascade",
-        },
-        "presidio-lite+extended-v2::anthropic.claude-4.6-sonnet": {
-          mode: "method",
-          updated_at: "2026-03-17T18:45:00Z",
-          method_id: "presidio-lite+extended-v2",
-          model: "anthropic.claude-4.6-sonnet",
-        },
-        "presidio-lite+extended-v2::google.gemini-3.1-pro-preview": {
-          mode: "method",
-          updated_at: "2026-03-17T18:57:00Z",
-          method_id: "presidio-lite+extended-v2",
-          model: "google.gemini-3.1-pro-preview",
-        },
-      },
-    },
-    agent_run_warnings: [],
-    agent_run_metrics: {
-      llm_confidence: null,
-      chunk_diagnostics: [],
-    },
-    status: "pending",
-  };
+const document = {
+  id: "doc-1",
+  external_id: "Session 001",
+  filename: "session-001.json",
+  raw_text: "Alice met Bob.",
+  label_set: ["NAME"],
+  reference_annotations: null,
+  manual_annotations: [],
+  annotation_revision: 0,
+  assignment: {
+    id: "assignment-1",
+    assignee_id: annotator.id,
+    assignee_name: annotator.display_name,
+    state: "assigned" as const,
+  },
+};
 
-  const agentFixture = {
-    id: "doc-agent",
-    filename: "doc-agent.json",
-    raw_text: "Tutor: Hi Chloe.",
-    utterances: [],
-    pre_annotations: [],
-    label_set: ["NAME"],
-    manual_annotations: [],
-    agent_annotations: [],
-    agent_outputs: {
-      rule: [],
-      llm: [],
-      llm_runs: {
-        older_run: [{ start: 10, end: 15, label: "NAME", text: "Chloe" }],
-        newer_run: [{ start: 10, end: 15, label: "NAME", text: "Chloe" }],
-      },
-      llm_run_metadata: {
-        older_run: {
-          mode: "llm",
-          updated_at: "2026-03-17T18:45:00Z",
-          model: "anthropic.claude-4.6-sonnet",
-        },
-        newer_run: {
-          mode: "llm",
-          updated_at: "2026-03-17T18:57:00Z",
-          model: "google.gemini-3.1-pro-preview",
-        },
-      },
-      methods: {},
-      method_run_metadata: {},
-    },
-    agent_run_warnings: [],
-    agent_run_metrics: {
-      llm_confidence: null,
-      chunk_diagnostics: [],
-    },
-    status: "pending",
-  };
+function mockAuthenticated(user: typeof annotator | typeof admin = annotator) {
+  vi.mocked(api.getCurrentUser).mockResolvedValue(user);
+  vi.mocked(api.getWorkspace).mockResolvedValue({ sessions });
+  vi.mocked(api.getDocument).mockResolvedValue(document);
+  vi.mocked(api.logout).mockResolvedValue(undefined);
+  vi.mocked(api.completeAssignment).mockResolvedValue({ assignment_id: "assignment-1", state: "completed" });
+}
 
+describe("hosted annotation app", () => {
   beforeEach(() => {
-    window.localStorage.clear();
-    consoleError.mockClear();
-    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace());
-    vi.mocked(getAgentCredentialStatus).mockResolvedValue({
-      has_api_key: true,
-      api_key_sources: ["LITELLM_API_KEY"],
-      has_api_base: true,
-      api_base_sources: ["LITELLM_API_BASE"],
-    });
-    vi.mocked(getMetricsCandidates).mockResolvedValue([
-      {
-        id: "manual",
-        source: "manual",
-        kind: "manual",
-        label: "Manual annotations",
-        document_count: 0,
-        method_bundle: "audited",
-      },
-    ]);
-    vi.mocked(compareMetrics).mockResolvedValue({
-      reference: "manual",
-      match_mode: "overlap",
-      primary_metric: "recall",
-      total_documents: 0,
-      hypotheses: [],
-    } as never);
-    vi.mocked(getMethodsLabDocResult).mockRejectedValue(new Error("not configured"));
-    vi.mocked(getDocument).mockRejectedValue(new Error("not configured"));
-    vi.mocked(getFolder).mockReset();
-    vi.mocked(getAgentMethods).mockResolvedValue([
-      {
-        id: "default",
-        label: "Default",
-        description: "Default method",
-        requires_presidio: false,
-        uses_llm: true,
-        supports_verify_override: false,
-        prompt_templates: [],
-        available: true,
-        unavailable_reason: null,
-      },
-    ]);
+    vi.clearAllMocks();
+    vi.mocked(api.getCurrentUser).mockRejectedValue(new api.ApiError(401, "Not authenticated"));
   });
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
-  it("renders the workspace without hitting the error boundary", async () => {
-    render(<App />);
-
-    await waitFor(() => {
-      expect(screen.getByText("Workspace")).toBeTruthy();
-    });
-
-    expect(screen.queryByText("Something went wrong")).toBeNull();
-    expect(screen.getByText("Start with a transcript or session bundle")).toBeTruthy();
-  });
-
-  it("shows fixed and document-stored layers without advertising empty methods", async () => {
-    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace({
-      documents: [
-        {
-          id: methodFixture.id,
-          filename: methodFixture.filename,
-          display_name: methodFixture.id,
-          status: "pending",
-        },
-      ],
-    }));
-    vi.mocked(getDocument).mockResolvedValue(methodFixture as never);
+  it("logs in with email and password", async () => {
+    vi.mocked(api.login).mockResolvedValue(annotator);
+    vi.mocked(api.getWorkspace).mockResolvedValue({ sessions });
 
     render(<App />);
 
-    fireEvent.click(await screen.findByText(methodFixture.id));
+    await screen.findByRole("heading", { name: "Sign in" });
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: annotator.email } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "correct horse battery staple" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
-    const hypothesisPicker = await screen.findByLabelText("Hypothesis:");
-    const options = Array.from((hypothesisPicker as HTMLSelectElement).options);
-    const values = options.map((option) => option.value);
-
-    expect(values.slice(0, 5)).toEqual([
-      "pre",
-      "manual",
-      "agent",
-      "agent.rule",
-      "agent.llm",
-    ]);
-    expect(values).not.toContain("agent.method.default");
-    expect(values).toContain(`agent.method.${savedMethodRunKey}`);
-    expect(
-      options.find((option) => option.value === `agent.method.${savedMethodRunKey}`)
-        ?.textContent,
-    ).toContain("Method: deid_pipeline_cascade_gemma31b @ local-cascade");
+    await screen.findByText("Session 001");
+    expect(api.login).toHaveBeenCalledWith(annotator.email, "correct horse battery staple");
+    expect(screen.queryByText("Experiments")).toBeNull();
+    expect(screen.queryByText("Models")).toBeNull();
+    expect(screen.queryByText("Evaluation")).toBeNull();
+    expect(screen.queryByText("Prompt Lab")).toBeNull();
+    expect(screen.queryByText("Methods Lab")).toBeNull();
   });
 
-  it("defaults the method pane to the latest saved method output when one exists", async () => {
-    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace({
-      documents: [
-        {
-          id: methodFixture.id,
-          filename: methodFixture.filename,
-          display_name: methodFixture.id,
-          status: "pending",
-        },
-      ],
-    }));
-    vi.mocked(getDocument).mockResolvedValue(methodFixture as never);
+  it("keeps the authenticated workspace when logout cannot be confirmed", async () => {
+    mockAuthenticated();
+    vi.mocked(api.logout).mockRejectedValue(new api.ApiError(503, "The server did not confirm logout."));
 
     render(<App />);
+    await screen.findByText("Session 001");
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
 
-    await waitFor(() => {
-      expect(screen.getByText(methodFixture.id)).toBeTruthy();
-    });
-
-    fireEvent.click(screen.getByText(methodFixture.id));
-
-    await waitFor(() => {
-      expect(getDocument).toHaveBeenCalledWith(methodFixture.id);
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "+Methods" }));
-
-    await waitFor(() => {
-      expect(screen.getByLabelText("View:")).toBeTruthy();
-    });
-
-    const methodView = screen.getByLabelText("View:") as HTMLSelectElement;
-    expect(methodView.value).toBe("presidio-lite+extended-v2::google.gemini-3.1-pro-preview");
-    expect(screen.queryByText("No method annotations yet for the selected method.")).toBeNull();
+    expect((await screen.findByRole("alert")).textContent).toContain("Your session is still active");
+    expect(screen.getByText("Session 001")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
   });
 
-  it("falls back when the selected document-specific method view disappears", async () => {
-    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace({
-      documents: [
-        {
-          id: methodFixture.id,
-          filename: methodFixture.filename,
-          display_name: methodFixture.id,
-          status: "pending",
-        },
-        {
-          id: agentFixture.id,
-          filename: agentFixture.filename,
-          display_name: agentFixture.id,
-          status: "pending",
-        },
-      ],
-    }));
-    vi.mocked(getDocument).mockImplementation(async (docId) => (
-      docId === methodFixture.id ? methodFixture : agentFixture
-    ) as never);
+  it("shows the assigned sessions and renders the three panels", async () => {
+    mockAuthenticated();
 
     render(<App />);
+    fireEvent.click(await screen.findByText("Session 001"));
 
-    fireEvent.click(await screen.findByText(methodFixture.id));
-    await waitFor(() => {
-      expect(getDocument).toHaveBeenCalledWith(methodFixture.id);
-    });
-    fireEvent.click(screen.getByRole("button", { name: "+Methods" }));
-
-    const methodView = await screen.findByLabelText("View:") as HTMLSelectElement;
-    await waitFor(() => {
-      expect(methodView.value).toBe(
-        "presidio-lite+extended-v2::google.gemini-3.1-pro-preview",
-      );
-    });
-
-    fireEvent.click(screen.getByText(agentFixture.id));
-    await waitFor(() => {
-      expect(getDocument).toHaveBeenCalledWith(agentFixture.id);
-      expect(methodView.value).toBe("default");
-    });
-    expect(
-      Array.from(methodView.options).map((option) => option.value),
-    ).not.toContain("presidio-lite+extended-v2::google.gemini-3.1-pro-preview");
-
-    const hypothesisPicker = screen.getByLabelText("Hypothesis:") as HTMLSelectElement;
-    expect(
-      Array.from(hypothesisPicker.options).map((option) => option.value),
-    ).toEqual([
-      "pre",
-      "manual",
-      "agent",
-      "agent.rule",
-      "agent.llm",
-      "agent.llm_run.older_run",
-      "agent.llm_run.newer_run",
-    ]);
+    expect(await screen.findByText("Alice met Bob.")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Raw Transcript" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Manual Annotation" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Reference" })).toBeTruthy();
+    expect(screen.getByText("Reference annotations are not available for this session.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Manage assignments" })).toBeNull();
   });
 
-  it("allows multiple methods panes for the same document", async () => {
-    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace({
-      documents: [
-        {
-          id: methodFixture.id,
-          filename: methodFixture.filename,
-          display_name: methodFixture.id,
-          status: "pending",
-        },
-      ],
-    }));
-    vi.mocked(getDocument).mockResolvedValue(methodFixture as never);
+  it("renders admin session inspection as read-only", async () => {
+    mockAuthenticated(admin);
 
     render(<App />);
+    fireEvent.click(await screen.findByText("Session 001"));
 
-    await waitFor(() => {
-      expect(screen.getByText(methodFixture.id)).toBeTruthy();
-    });
-
-    fireEvent.click(screen.getByText(methodFixture.id));
-
-    await waitFor(() => {
-      expect(getDocument).toHaveBeenCalledWith(methodFixture.id);
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "+Methods" }));
-    fireEvent.click(screen.getByRole("button", { name: "+Methods" }));
-
-    await waitFor(() => {
-      expect(screen.getAllByLabelText("View:").length).toBe(2);
-    });
+    expect(await screen.findByText("Admin view is read-only.")).toBeTruthy();
+    expect(screen.queryByLabelText("Manual annotation editor")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Mark complete" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry save" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy recovery JSON" })).toBeNull();
   });
 
-  it("limits method panes to three and removes only the selected pane", async () => {
-    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace({
-      documents: [
-        {
-          id: methodFixture.id,
-          filename: methodFixture.filename,
-          display_name: methodFixture.id,
-          status: "pending",
-        },
-      ],
-    }));
-    vi.mocked(getDocument).mockResolvedValue(methodFixture as never);
+  it("saves every annotation snapshot with a revision and mutation id", async () => {
+    mockAuthenticated();
+    let resolveSave: ((value: Awaited<ReturnType<typeof api.saveAnnotations>>) => void) | undefined;
+    vi.mocked(api.saveAnnotations).mockImplementation(() => new Promise((resolve) => { resolveSave = resolve; }));
 
     render(<App />);
+    fireEvent.click(await screen.findByText("Session 001"));
+    fireEvent.click(await screen.findByRole("button", { name: "Add test annotation" }));
 
-    fireEvent.click(await screen.findByText(methodFixture.id));
-    await waitFor(() => {
-      expect(getDocument).toHaveBeenCalledWith(methodFixture.id);
-    });
-
-    const addMethodsButton = screen.getByRole("button", { name: "+Methods" });
-    fireEvent.click(addMethodsButton);
-    fireEvent.click(addMethodsButton);
-    fireEvent.click(addMethodsButton);
-    fireEvent.click(addMethodsButton);
-
-    await waitFor(() => {
-      expect(screen.getAllByLabelText("View:")).toHaveLength(3);
-    });
-    expect((addMethodsButton as HTMLButtonElement).disabled).toBe(true);
-
-    const methodViews = screen.getAllByLabelText("View:") as HTMLSelectElement[];
-    const [firstMethodView, secondMethodView, thirdMethodView] = methodViews;
-    expect(firstMethodView).toBeTruthy();
-    expect(secondMethodView).toBeTruthy();
-    expect(thirdMethodView).toBeTruthy();
-    fireEvent.change(firstMethodView!, { target: { value: savedMethodRunKey } });
-    fireEvent.change(secondMethodView!, {
-      target: {
-        value: "presidio-lite+extended-v2::anthropic.claude-4.6-sonnet",
-      },
-    });
-    fireEvent.change(thirdMethodView!, {
-      target: {
-        value: "presidio-lite+extended-v2::google.gemini-3.1-pro-preview",
-      },
-    });
-
-    const removeButtons = screen.getAllByRole("button", { name: "Remove method pane" });
-    expect(removeButtons[1]).toBeTruthy();
-    fireEvent.click(removeButtons[1]!);
-
-    await waitFor(() => {
-      expect(screen.getAllByLabelText("View:")).toHaveLength(2);
-    });
-    expect(
-      (screen.getAllByLabelText("View:") as HTMLSelectElement[]).map((select) => select.value),
-    ).toEqual([
-      savedMethodRunKey,
-      "presidio-lite+extended-v2::google.gemini-3.1-pro-preview",
-    ]);
-    expect((addMethodsButton as HTMLButtonElement).disabled).toBe(false);
-  });
-
-  it("trims persisted method panes to the three-pane maximum", async () => {
-    window.localStorage.setItem(
-      "annotation_tool_pane_instances_v1",
-      JSON.stringify([
-        { id: "raw", type: "raw", title: "Raw" },
-        { id: "methods-1", type: "methods", title: "Methods" },
-        { id: "methods-2", type: "methods", title: "Methods" },
-        { id: "methods-3", type: "methods", title: "Methods" },
-        { id: "methods-4", type: "methods", title: "Methods" },
-      ]),
+    expect(screen.getByRole("status").textContent).toContain("Saving");
+    expect(api.saveAnnotations).toHaveBeenCalledWith(
+      "doc-1",
+      expect.objectContaining({
+        expected_revision: 0,
+        mutation_id: expect.any(String),
+        spans: [{ start: 0, end: 5, label: "NAME", text: "Alice" }],
+      }),
     );
-    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace({
-      documents: [
-        {
-          id: methodFixture.id,
-          filename: methodFixture.filename,
-          display_name: methodFixture.id,
-          status: "pending",
-        },
-      ],
-    }));
-    vi.mocked(getDocument).mockResolvedValue(methodFixture as never);
 
-    render(<App />);
-
-    fireEvent.click(await screen.findByText(methodFixture.id));
-
-    await waitFor(() => {
-      expect(screen.getAllByLabelText("View:")).toHaveLength(3);
-    });
-    expect(
-      (screen.getByRole("button", { name: "+Methods" }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    resolveSave?.({ revision: 1, spans: [{ start: 0, end: 5, label: "NAME", text: "Alice" }] });
+    expect(await screen.findByText("Saved")).toBeTruthy();
   });
 
-  it("renders the recall-first comparison dashboard and submits selected candidates", async () => {
-    vi.mocked(getMetricsCandidates).mockResolvedValue([
-      {
-        id: "manual",
-        source: "manual",
-        kind: "manual",
-        label: "Manual annotations",
-        document_count: 2,
-        method_bundle: "audited",
-      },
-      {
-        id: "agent.method.default::model-a",
-        source: "agent.method.default::model-a",
-        kind: "method_run",
-        label: "Default / model-a",
-        document_count: 2,
-        method_bundle: "deidentify-v2",
-      },
+  it("guards browser unload only while annotation changes are unsaved", async () => {
+    mockAuthenticated();
+    let resolveSave: ((value: Awaited<ReturnType<typeof api.saveAnnotations>>) => void) | undefined;
+    vi.mocked(api.saveAnnotations).mockImplementation(() => new Promise((resolve) => { resolveSave = resolve; }));
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("Session 001"));
+
+    const savedUnload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(savedUnload);
+    expect(savedUnload.defaultPrevented).toBe(false);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add test annotation" }));
+    await screen.findByText("Saving");
+    const unsavedUnload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(unsavedUnload);
+    expect(unsavedUnload.defaultPrevented).toBe(true);
+
+    resolveSave?.({ revision: 1, spans: [{ start: 0, end: 5, label: "NAME", text: "Alice" }] });
+    await screen.findByText("Saved");
+    const acknowledgedUnload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(acknowledgedUnload);
+    expect(acknowledgedUnload.defaultPrevented).toBe(false);
+  });
+
+  it("shows a conflict and blocks completion after a stale save", async () => {
+    mockAuthenticated();
+    vi.mocked(api.saveAnnotations).mockRejectedValue(new api.ApiError(409, "This session was updated elsewhere."));
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("Session 001"));
+    fireEvent.click(await screen.findByRole("button", { name: "Add test annotation" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Conflict");
+    expect((screen.getByRole("button", { name: "Mark complete" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("copies compact local recovery data without overwriting a conflicting server revision", async () => {
+    mockAuthenticated();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    vi.mocked(api.saveAnnotations).mockRejectedValue(
+      new api.ApiError(409, "expected revision is stale; current revision is 4"),
+    );
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("Session 001"));
+    fireEvent.click(await screen.findByRole("button", { name: "Add test annotation" }));
+
+    expect(await screen.findByText("Server data was not overwritten.")).toBeTruthy();
+    const conflictUnload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(conflictUnload);
+    expect(conflictUnload.defaultPrevented).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Copy recovery JSON" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(JSON.stringify({
+      document_id: "doc-1",
+      expected_revision: 0,
+      current_revision: 4,
+      spans: [{ start: 0, end: 5, label: "NAME", text: "Alice" }],
+    })));
+    expect(await screen.findByText("Recovery JSON copied.")).toBeTruthy();
+    expect(api.saveAnnotations).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports clipboard denial without claiming recovery data was copied", async () => {
+    mockAuthenticated();
+    const writeText = vi.fn().mockRejectedValue(new Error("Clipboard permission denied."));
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    vi.mocked(api.saveAnnotations).mockRejectedValue(
+      new api.ApiError(409, "expected revision is stale; current revision is 2"),
+    );
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("Session 001"));
+    fireEvent.click(await screen.findByRole("button", { name: "Add test annotation" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Copy recovery JSON" }));
+
+    expect(await screen.findByText("Recovery JSON was not copied. Clipboard permission denied.")).toBeTruthy();
+    expect(screen.queryByText("Recovery JSON copied.")).toBeNull();
+  });
+
+  it("does not claim a stale recovery payload was copied after local annotations change", async () => {
+    mockAuthenticated();
+    let resolveCopy: (() => void) | undefined;
+    const writeText = vi.fn().mockImplementation(() => new Promise<void>((resolve) => { resolveCopy = resolve; }));
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    vi.mocked(api.saveAnnotations).mockRejectedValue(
+      new api.ApiError(409, "expected revision is stale; current revision is 2"),
+    );
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("Session 001"));
+    fireEvent.click(await screen.findByRole("button", { name: "Add test annotation" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Copy recovery JSON" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledOnce());
+
+    fireEvent.click(screen.getByRole("button", { name: "Add another annotation" }));
+    await act(async () => { resolveCopy?.(); });
+
+    expect(screen.queryByText("Recovery JSON copied.")).toBeNull();
+    expect(screen.getByRole("button", { name: "Copy recovery JSON" })).toBeTruthy();
+  });
+
+  it("replays the exact failed save before allowing completion", async () => {
+    mockAuthenticated();
+    vi.mocked(api.saveAnnotations)
+      .mockRejectedValueOnce(new api.ApiError(503, "The save response was lost."))
+      .mockResolvedValueOnce({
+        revision: 1,
+        spans: [{ start: 0, end: 5, label: "NAME", text: "Alice" }],
+      });
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("Session 001"));
+    fireEvent.click(await screen.findByRole("button", { name: "Add test annotation" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Save failed");
+    const completion = screen.getByRole("button", { name: "Mark complete" }) as HTMLButtonElement;
+    expect(completion.disabled).toBe(true);
+
+    const firstRequest = vi.mocked(api.saveAnnotations).mock.calls[0];
+    fireEvent.click(screen.getByRole("button", { name: "Retry save" }));
+
+    await waitFor(() => expect(api.saveAnnotations).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(api.saveAnnotations).mock.calls[1]).toEqual(firstRequest);
+    expect(await screen.findByText("Saved")).toBeTruthy();
+    expect(completion.disabled).toBe(false);
+  });
+
+  it("keeps newer edits queued behind an explicitly retried save", async () => {
+    mockAuthenticated();
+    const firstSpans = [{ start: 0, end: 5, label: "NAME", text: "Alice" }];
+    const latestSpans = [
+      ...firstSpans,
+      { start: 10, end: 13, label: "NAME", text: "Bob" },
+    ];
+    vi.mocked(api.saveAnnotations)
+      .mockRejectedValueOnce(new api.ApiError(503, "The save response was lost."))
+      .mockResolvedValueOnce({ revision: 1, spans: firstSpans })
+      .mockResolvedValueOnce({ revision: 2, spans: latestSpans });
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("Session 001"));
+    fireEvent.click(await screen.findByRole("button", { name: "Add test annotation" }));
+    await screen.findByRole("button", { name: "Retry save" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Add another annotation" }));
+    expect(api.saveAnnotations).toHaveBeenCalledTimes(1);
+    const failedRequest = vi.mocked(api.saveAnnotations).mock.calls[0]!;
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry save" }));
+
+    await waitFor(() => expect(api.saveAnnotations).toHaveBeenCalledTimes(3));
+    expect(vi.mocked(api.saveAnnotations).mock.calls[1]).toEqual(failedRequest);
+    expect(vi.mocked(api.saveAnnotations).mock.calls[2]).toEqual([
+      "doc-1",
+      expect.objectContaining({
+        expected_revision: 1,
+        mutation_id: expect.not.stringMatching(failedRequest[1].mutation_id),
+        spans: latestSpans,
+      }),
     ]);
-    vi.mocked(compareMetrics).mockResolvedValue({
-      reference: "manual",
-      match_mode: "overlap",
-      primary_metric: "recall",
-      total_documents: 2,
-      hypotheses: [
-        {
-          id: "agent.method.default::model-a",
-          source: "agent.method.default::model-a",
-          kind: "method_run",
-          label: "Default / model-a",
-          document_count: 2,
-          method_bundle: "deidentify-v2",
-          match_mode: "overlap",
-          micro: { precision: 0.8, recall: 0.6, f1: 0.686, tp: 6, fp: 2, fn: 4 },
-          avg_document_micro: { precision: 0.8, recall: 0.6, f1: 0.686 },
-          avg_document_macro: { precision: 0.8, recall: 0.6, f1: 0.686 },
-          per_label: {},
-          missed_label_counts: { NAME: 4 },
-          exact_micro: { precision: 0.5, recall: 0.4, f1: 0.444, tp: 4, fp: 4, fn: 6 },
-          overlap_micro: { precision: 0.8, recall: 0.6, f1: 0.686, tp: 6, fp: 2, fn: 4 },
-          exact_overlap_gap_f1: 0.242,
-          coverage: { total_documents: 2, compared_documents: 2, skipped_documents: 0, skipped: [] },
-          llm_confidence_summary: {
-            documents_with_confidence: 0,
-            mean_confidence: null,
-            band_counts: { high: 0, medium: 0, low: 0, na: 0 },
-          },
-          documents: [
-            {
-              id: "doc-a",
-              filename: "doc-a.json",
-              reference_count: 10,
-              hypothesis_count: 8,
-              micro: { precision: 0.8, recall: 0.6, f1: 0.686, tp: 6, fp: 2, fn: 4 },
-              macro: { precision: 0.8, recall: 0.6, f1: 0.686 },
-              exact_micro: { precision: 0.5, recall: 0.4, f1: 0.444, tp: 4, fp: 4, fn: 6 },
-              overlap_micro: { precision: 0.8, recall: 0.6, f1: 0.686, tp: 6, fp: 2, fn: 4 },
-              cohens_kappa: 0.7,
-              matched_span_mean_iou: 0.75,
-            },
-          ],
-        },
-      ],
-    } as never);
-
-    render(<App />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Dashboard" }));
-
-    await waitFor(() => {
-      expect(screen.getAllByText("Default / model-a").length).toBeGreaterThan(0);
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Refresh Comparison" }));
-
-    await waitFor(() => {
-      expect(compareMetrics).toHaveBeenCalledWith(
-        "manual",
-        ["agent.method.default::model-a"],
-        "overlap",
-        "recall",
-      );
-    });
-    await waitFor(() => {
-      expect(screen.getAllByText("60.0%").length).toBeGreaterThan(0);
-    });
-    expect(screen.getByText(/Missed labels NAME:4/)).toBeTruthy();
+    expect(await screen.findByText("Saved")).toBeTruthy();
   });
 
-  it("defaults the agent pane to the latest saved llm run when one exists", async () => {
-    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace({
-      documents: [
-        {
-          id: agentFixture.id,
-          filename: agentFixture.filename,
-          display_name: agentFixture.id,
-          status: "pending",
-        },
-      ],
-    }));
-    vi.mocked(getDocument).mockResolvedValue(agentFixture as never);
+  it("marks an acknowledged assignment complete", async () => {
+    mockAuthenticated();
 
     render(<App />);
+    fireEvent.click(await screen.findByText("Session 001"));
+    fireEvent.click(await screen.findByRole("button", { name: "Mark complete" }));
 
-    await waitFor(() => {
-      expect(screen.getByText(agentFixture.id)).toBeTruthy();
-    });
-
-    fireEvent.click(screen.getByText(agentFixture.id));
-
-    await waitFor(() => {
-      expect(getDocument).toHaveBeenCalledWith(agentFixture.id);
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "+Agent" }));
-
-    await waitFor(() => {
-      expect(screen.getByLabelText("Run:")).toBeTruthy();
-    });
-
-    const agentView = screen.getByLabelText("View:") as HTMLSelectElement;
-    const agentRun = screen.getByLabelText("Run:") as HTMLSelectElement;
-    expect(agentView.value).toBe("llm");
-    expect(agentRun.value).toBe("newer_run");
+    await waitFor(() => expect(api.completeAssignment).toHaveBeenCalledWith("assignment-1"));
+    expect(await screen.findByText("Completed")).toBeTruthy();
   });
 
-  it("deletes a folder transcript through the dedicated folder-doc flow", async () => {
-    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace({
-      folders: [
-        {
-          id: "folder-1",
-          name: "Folder 1",
-          kind: "manual",
-          parent_folder_id: null,
-          merged_doc_id: null,
-          doc_count: 1,
-          child_folder_count: 0,
-          source_filename: null,
-          source_folder_id: null,
-          sample_size: null,
-          sample_seed: null,
-          created_at: "2026-04-08T00:00:00Z",
-        },
-      ],
-    }));
-    vi.mocked(getFolder).mockResolvedValue({
-      id: "folder-1",
-      name: "Folder 1",
-      kind: "manual",
-      parent_folder_id: null,
-      merged_doc_id: null,
-      doc_count: 1,
-      child_folder_count: 0,
-      source_filename: null,
-      source_folder_id: null,
-      sample_size: null,
-      sample_seed: null,
-      created_at: "2026-04-08T00:00:00Z",
-      doc_ids: ["child-1"],
-      child_folder_ids: [],
-      documents: [
-        {
-          id: "child-1",
-          filename: "child-1.json",
-          display_name: "child-1",
-          status: "pending",
-        },
-      ],
-      child_folders: [],
-    } as never);
-    vi.mocked(deleteFolderDocument).mockResolvedValue({
-      deleted: true,
-      folder_id: "folder-1",
-      doc_id: "child-1",
-      updated_folder_ids: ["folder-1"],
+  it("lets an admin track progress and reassign a session", async () => {
+    mockAuthenticated(admin);
+    vi.mocked(api.getAdminProgress).mockResolvedValue({
+      totals: { unassigned: 1, assigned: 1, in_progress: 2, completed: 4, total: 8 },
+      annotators: [{ user_id: annotator.id, display_name: annotator.display_name, email: annotator.email, assigned: 1, in_progress: 2, completed: 4 }],
     });
+    vi.mocked(api.getAdminUsers).mockResolvedValue([annotator]);
+    vi.mocked(api.assignSession).mockResolvedValue({ assignment_id: "assignment-1" });
 
     render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Manage assignments" }));
 
-    await waitFor(() => {
-      expect(screen.getByText("Folder 1")).toBeTruthy();
-    });
+    const progress = await screen.findByLabelText("Progress overview");
+    expect(within(progress).getByText("8")).toBeTruthy();
+    expect(within(progress).getByText("4")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Expand folder" }));
+    fireEvent.change(screen.getByLabelText("Session"), { target: { value: "doc-1" } });
+    fireEvent.change(screen.getByLabelText("Annotator"), { target: { value: annotator.id } });
+    fireEvent.click(screen.getByRole("button", { name: "Assign session" }));
 
-    await waitFor(() => {
-      expect(screen.getByText("child-1")).toBeTruthy();
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Delete transcript child-1" }));
-
-    await waitFor(() => {
-      expect(screen.getByRole("dialog")).toBeTruthy();
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Delete Transcript" }));
-
-    await waitFor(() => {
-      expect(deleteFolderDocument).toHaveBeenCalledWith("folder-1", "child-1");
-    });
+    await waitFor(() => expect(api.assignSession).toHaveBeenCalledWith({
+      document_id: "doc-1",
+      assignee_id: annotator.id,
+    }));
   });
 
-  it("does not load folder details until a folder is expanded", async () => {
-    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace({
-      folders: [
-        {
-          id: "folder-1",
-          name: "Folder 1",
-          kind: "manual",
-          parent_folder_id: null,
-          merged_doc_id: null,
-          doc_count: 1,
-          child_folder_count: 0,
-          source_filename: null,
-          source_folder_id: null,
-          sample_size: null,
-          sample_seed: null,
-          created_at: "2026-04-08T00:00:00Z",
-        },
-      ],
-    }));
-    vi.mocked(getFolder).mockResolvedValue({
-      id: "folder-1",
-      name: "Folder 1",
-      kind: "manual",
-      parent_folder_id: null,
-      merged_doc_id: null,
-      doc_count: 1,
-      child_folder_count: 0,
-      source_filename: null,
-      source_folder_id: null,
-      sample_size: null,
-      sample_seed: null,
-      created_at: "2026-04-08T00:00:00Z",
-      doc_ids: [],
-      child_folder_ids: [],
-      documents: [],
-      child_folders: [],
-    } as never);
+  it("lets an admin create an annotator while batch operations stay CLI-only", async () => {
+    mockAuthenticated(admin);
+    vi.mocked(api.getAdminProgress).mockResolvedValue({
+      totals: { unassigned: 0, assigned: 1, in_progress: 0, completed: 0, total: 1 },
+      annotators: [],
+    });
+    vi.mocked(api.getAdminUsers).mockResolvedValue([]);
+    vi.mocked(api.createAdminUser).mockResolvedValue({
+      user: { ...annotator, state: "pending_activation" },
+      activation_url: "/activate#token=one-time-token",
+      activation_expires_at: "2026-08-29T20:00:00Z",
+    });
 
     render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Manage assignments" }));
+    await screen.findByRole("heading", { name: "Add annotator" });
 
-    await waitFor(() => {
-      expect(screen.getByText("Folder 1")).toBeTruthy();
-    });
-    expect(getFolder).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: annotator.email } });
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: annotator.display_name } });
+    fireEvent.click(screen.getByRole("button", { name: "Create annotator" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Expand folder" }));
-
-    await waitFor(() => {
-      expect(getFolder).toHaveBeenCalledWith("folder-1");
-    });
+    await waitFor(() => expect(api.createAdminUser).toHaveBeenCalledWith({
+      email: annotator.email,
+      display_name: annotator.display_name,
+      role: "annotator",
+    }));
+    expect((await screen.findByRole("link", { name: "Activation link" })).getAttribute("href"))
+      .toBe("/activate#token=one-time-token");
+    expect(screen.queryByLabelText("Initial password")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Import sessions" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Export annotations" })).toBeNull();
   });
 
-  it("surfaces readiness warnings before labs run", async () => {
-    vi.mocked(getWorkspace).mockResolvedValue(makeWorkspace({
-      health: {
-        ...defaultHealth,
-        status: "warning",
-        config_warnings: ["No LiteLLM or provider API key is configured."],
-        method_availability_warnings: [
-          {
-            id: "presidio",
-            label: "Presidio",
-            reason: "Presidio package is not installed.",
-          },
-        ],
-      },
-    }));
+  it("shows account states and exposes a password-reset link only after success", async () => {
+    mockAuthenticated(admin);
+    const pending = { ...annotator, id: "user-2", email: "pending@cornell.edu", display_name: "Pat Pending", state: "pending_activation" as const };
+    const deactivated = { ...annotator, id: "user-3", email: "former@cornell.edu", display_name: "Dee Activated", state: "deactivated" as const };
+    vi.mocked(api.getAdminProgress).mockResolvedValue({
+      totals: { unassigned: 0, assigned: 0, in_progress: 0, completed: 0, total: 0 },
+      annotators: [],
+    });
+    vi.mocked(api.getAdminUsers).mockResolvedValue([admin, annotator, pending, deactivated]);
+    vi.mocked(api.resetAdminUserPassword).mockResolvedValue({
+      user: { ...annotator, state: "pending_activation" },
+      activation_url: "/activate#token=reset-token",
+      activation_expires_at: "2026-08-29T20:00:00Z",
+    });
 
     render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Manage assignments" }));
 
-    expect(await screen.findByText("Readiness warnings")).toBeTruthy();
-    expect(screen.getByText("No LiteLLM or provider API key is configured.")).toBeTruthy();
-    expect(screen.getByText("Presidio: Presidio package is not installed.")).toBeTruthy();
+    const accounts = await screen.findByRole("region", { name: "Annotator accounts" });
+    expect(within(accounts).getByText("Active")).toBeTruthy();
+    expect(within(accounts).getByText("Pending activation")).toBeTruthy();
+    expect(within(accounts).getByText("Deactivated")).toBeTruthy();
+    expect(within(accounts).queryByText(admin.email)).toBeNull();
+    expect(screen.queryByRole("link", { name: /password reset link/i })).toBeNull();
+
+    fireEvent.click(within(accounts).getByRole("button", { name: "Reset password for Ada Annotator" }));
+
+    expect((await screen.findByRole("link", { name: "Password reset link for Ada Annotator" })).getAttribute("href"))
+      .toBe("/activate#token=reset-token");
+    expect(api.resetAdminUserPassword).toHaveBeenCalledWith(annotator.id);
+  });
+
+  it("requires an explicit unfinished-work choice before deactivating an annotator", async () => {
+    mockAuthenticated(admin);
+    const grace = { ...annotator, id: "user-2", email: "grace@cornell.edu", display_name: "Grace Annotator" };
+    vi.mocked(api.getAdminProgress).mockResolvedValue({
+      totals: { unassigned: 0, assigned: 2, in_progress: 0, completed: 0, total: 2 },
+      annotators: [],
+    });
+    vi.mocked(api.getAdminUsers).mockResolvedValue([annotator, grace]);
+    vi.mocked(api.deactivateAdminUser).mockResolvedValue({ ...annotator, state: "deactivated" });
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Manage assignments" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Deactivate Ada Annotator" }));
+
+    const confirm = screen.getByRole("button", { name: "Confirm deactivation" });
+    expect((confirm as HTMLButtonElement).disabled).toBe(true);
+    expect(api.deactivateAdminUser).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("radio", { name: "Reassign unfinished work" }));
+    expect((confirm as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Reassign to"), { target: { value: grace.id } });
+    expect((confirm as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(api.deactivateAdminUser).toHaveBeenCalledWith(annotator.id, {
+      action: "reassign",
+      assignee_id: grace.id,
+    }));
+    expect(await screen.findByText("Ada Annotator was deactivated.")).toBeTruthy();
+  });
+
+  it("can explicitly unassign unfinished work when deactivating an annotator", async () => {
+    mockAuthenticated(admin);
+    vi.mocked(api.getAdminProgress).mockResolvedValue({
+      totals: { unassigned: 0, assigned: 1, in_progress: 0, completed: 0, total: 1 },
+      annotators: [],
+    });
+    vi.mocked(api.getAdminUsers).mockResolvedValue([annotator]);
+    vi.mocked(api.deactivateAdminUser).mockResolvedValue({ ...annotator, state: "deactivated" });
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Manage assignments" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Deactivate Ada Annotator" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Unassign unfinished work" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm deactivation" }));
+
+    await waitFor(() => expect(api.deactivateAdminUser).toHaveBeenCalledWith(annotator.id, {
+      action: "unassign",
+    }));
+  });
+
+  it("reactivates a deactivated annotator and reports account-action failures", async () => {
+    mockAuthenticated(admin);
+    const deactivated = { ...annotator, state: "deactivated" as const };
+    vi.mocked(api.getAdminProgress).mockResolvedValue({
+      totals: { unassigned: 0, assigned: 0, in_progress: 0, completed: 0, total: 0 },
+      annotators: [],
+    });
+    vi.mocked(api.getAdminUsers).mockResolvedValue([deactivated]);
+    vi.mocked(api.reactivateAdminUser).mockRejectedValue(new api.ApiError(409, "Account cannot be reactivated."));
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Manage assignments" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Reactivate Ada Annotator" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Account cannot be reactivated.");
+    expect(screen.queryByRole("link", { name: /activation|password reset/i })).toBeNull();
   });
 });
