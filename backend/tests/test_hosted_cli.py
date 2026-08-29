@@ -18,6 +18,7 @@ def invoke(
     *,
     store: InMemoryCredentialStore | None = None,
     password: str = "correct horse battery staple",
+    stdin_text: str = "",
 ):
     stdout = StringIO()
     stderr = StringIO()
@@ -34,6 +35,7 @@ def invoke(
         stderr=stderr,
         credential_store=credential_store,
         password_prompt=lambda _: password,
+        stdin=StringIO(stdin_text),
         transport=httpx2.MockTransport(recording_handler),
     )
     return code, stdout.getvalue(), stderr.getvalue(), credential_store, requests
@@ -96,6 +98,46 @@ def test_login_prompts_for_password_and_saves_only_successful_session() -> None:
     assert password not in stdout + stderr
     assert SESSION not in stdout + stderr
     assert CSRF not in stdout + stderr
+    assert store.load() == Credential(BASE_URL, EMAIL, SESSION, CSRF)
+
+
+def test_login_can_read_password_from_stdin_without_prompting_or_printing_it() -> None:
+    password = "stdin-only-bootstrap-password"
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert json.loads(request.content) == {"email": EMAIL, "password": password}
+        return httpx2.Response(
+            200,
+            json={
+                "id": "admin-1",
+                "email": EMAIL,
+                "display_name": "Admin",
+                "role": "admin",
+                "state": "active",
+            },
+            headers=[
+                ("set-cookie", f"annotation_session={SESSION}; Path=/; HttpOnly"),
+                ("set-cookie", f"annotation_csrf={CSRF}; Path=/"),
+            ],
+        )
+
+    code, stdout, stderr, store, requests = invoke(
+        [
+            "login",
+            "--url",
+            BASE_URL,
+            "--email",
+            EMAIL,
+            "--password-stdin",
+        ],
+        handler,
+        stdin_text=password + "\n",
+        password="prompt-must-not-be-used",
+    )
+
+    assert code == 0
+    assert len(requests) == 1
+    assert password not in stdout + stderr
     assert store.load() == Credential(BASE_URL, EMAIL, SESSION, CSRF)
 
 

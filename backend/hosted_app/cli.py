@@ -31,6 +31,7 @@ def _build_parser() -> argparse.ArgumentParser:
     login = commands.add_parser("login")
     login.add_argument("--url", required=True)
     login.add_argument("--email", required=True)
+    login.add_argument("--password-stdin", action="store_true")
 
     whoami = commands.add_parser("whoami")
     whoami.add_argument("--json", action="store_true")
@@ -229,12 +230,19 @@ def _run_login(
     args: argparse.Namespace,
     *,
     stdout: TextIO,
+    stdin: TextIO,
     store: CredentialStore,
     password_prompt: Callable[[str], str],
     transport: httpx2.BaseTransport | None,
 ) -> None:
     base_url = args.url.rstrip("/")
-    password = password_prompt("Password: ")
+    password = (
+        stdin.readline().removesuffix("\n").removesuffix("\r")
+        if args.password_stdin
+        else password_prompt("Password: ")
+    )
+    if not password:
+        raise CliError("password is required")
     with httpx2.Client(base_url=base_url, transport=transport, timeout=15) as client:
         response = client.post(
             "/api/auth/login",
@@ -501,6 +509,7 @@ def run_cli(
     *,
     stdout: TextIO,
     stderr: TextIO,
+    stdin: TextIO,
     credential_store: CredentialStore,
     password_prompt: Callable[[str], str] = getpass.getpass,
     transport: httpx2.BaseTransport | None = None,
@@ -511,6 +520,7 @@ def run_cli(
             _run_login(
                 args,
                 stdout=stdout,
+                stdin=stdin,
                 store=credential_store,
                 password_prompt=password_prompt,
                 transport=transport,
@@ -601,6 +611,7 @@ def main() -> None:
             sys.argv[1:],
             stdout=sys.stdout,
             stderr=sys.stderr,
+            stdin=sys.stdin,
             credential_store=MacOSKeychainCredentialStore(),
         )
     )
