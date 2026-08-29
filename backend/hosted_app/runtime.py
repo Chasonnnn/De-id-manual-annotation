@@ -83,6 +83,13 @@ def _parse_bool(value: str, *, name: str) -> bool:
     raise RuntimeConfigurationError(f"{name} must be true or false")
 
 
+def _is_allowed_host_pattern(host: str) -> bool:
+    if "*" not in host:
+        return True
+    suffix = host.removeprefix("*.")
+    return host.startswith("*.") and host.count("*") == 1 and suffix.count(".") >= 3
+
+
 @dataclass(frozen=True)
 class RuntimeSettings:
     database_url: str
@@ -123,9 +130,12 @@ class RuntimeSettings:
             ).split(",")
             if host.strip()
         )
-        if not allowed_hosts or any("*" in host for host in allowed_hosts):
+        if not allowed_hosts or any(
+            not _is_allowed_host_pattern(host) for host in allowed_hosts
+        ):
             raise RuntimeConfigurationError(
-                "HOSTED_ALLOWED_HOSTS must contain explicit comma-separated hostnames"
+                "HOSTED_ALLOWED_HOSTS must contain explicit hostnames or scoped "
+                "leading wildcards"
             )
 
         s3_values = {

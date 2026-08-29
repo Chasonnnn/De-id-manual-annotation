@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from hosted_app.runtime import (
     RuntimeConfigurationError,
     RuntimeSettings,
@@ -95,7 +94,7 @@ def test_runtime_rejects_partial_bootstrap_configuration() -> None:
 
 
 def test_runtime_rejects_an_unrestricted_or_empty_host_allowlist() -> None:
-    for allowed_hosts in ("*", ", ,"):
+    for allowed_hosts in ("*", "foo.*.example.edu", "*.example.edu", ", ,"):
         with pytest.raises(RuntimeConfigurationError, match="HOSTED_ALLOWED_HOSTS"):
             RuntimeSettings.from_environment(
                 {
@@ -103,6 +102,17 @@ def test_runtime_rejects_an_unrestricted_or_empty_host_allowlist() -> None:
                     "HOSTED_ALLOWED_HOSTS": allowed_hosts,
                 }
             )
+
+
+def test_runtime_accepts_a_scoped_leading_host_wildcard() -> None:
+    settings = RuntimeSettings.from_environment(
+        {
+            "DATABASE_URL": "postgresql+psycopg://app:secret@db/annotations",
+            "HOSTED_ALLOWED_HOSTS": "*.ecs.us-east-1.on.aws",
+        }
+    )
+
+    assert settings.allowed_hosts == ("*.ecs.us-east-1.on.aws",)
 
 
 def test_alb_health_check_bypasses_host_validation_only_for_health_probe() -> None:
