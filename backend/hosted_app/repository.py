@@ -196,8 +196,11 @@ class HostedRepository:
         with self._session_factory() as session:
             self._require_admin(session, admin_id)
             user = session.get(User, user_id)
-            if user is None or user.role != Role.ANNOTATOR:
-                raise NotFound("annotator not found")
+            if user is None or not (
+                user.role == Role.ANNOTATOR
+                or (user.role == Role.ADMIN and user.id == admin_id)
+            ):
+                raise NotFound("account not found")
             session.exec(
                 delete(ActivationToken).where(ActivationToken.user_id == user_id)
             )

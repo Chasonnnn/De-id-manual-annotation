@@ -898,7 +898,65 @@ def test_deactivation_leaves_completed_assignments_attached_for_provenance(
     assert repository.get_user_by_id(ada_id).state == "deactivated"
 
 
-def test_annotator_lifecycle_endpoints_reject_the_admin_account(
+def test_admin_can_reset_own_password_but_not_another_admin(
+    hosted_client: tuple[TestClient, HostedRepository, AuthManager],
+) -> None:
+    client, repository, auth = hosted_client
+    other_admin = repository.create_user(
+        email="other-admin@example.edu",
+        display_name="Other Admin",
+        password_hash=auth.create_password_hash("other admin password"),
+        role=Role.ADMIN,
+    )
+    login = client.post(
+        "/api/auth/login",
+        json={
+            "email": "admin@example.edu",
+            "password": "correct horse battery staple",
+        },
+    )
+    admin_id = login.json()["id"]
+
+    other_reset = client.post(
+        f"/api/admin/users/{other_admin.id}/reset-password",
+        json={},
+        headers=csrf_headers(client),
+    )
+    own_reset = client.post(
+        f"/api/admin/users/{admin_id}/reset-password",
+        json={},
+        headers=csrf_headers(client),
+    )
+
+    assert other_reset.status_code == 404
+    assert other_reset.json() == {"detail": "account not found"}
+    assert own_reset.status_code == 200
+    assert own_reset.json()["user"]["role"] == "admin"
+    assert own_reset.json()["user"]["state"] == "pending_activation"
+    assert client.get("/api/auth/me").status_code == 401
+
+    token = own_reset.json()["activation_url"].split("#token=", 1)[1]
+    activation_client = TestClient(client.app)
+    activation = activation_client.post(
+        "/api/auth/activate",
+        json={"token": token, "password": "replacement admin password"},
+    )
+    assert activation.status_code == 200
+    assert activation.json()["role"] == "admin"
+    assert activation.json()["state"] == "active"
+    assert (
+        activation_client.post(
+            "/api/auth/login",
+            json={
+                "email": "admin@example.edu",
+                "password": "replacement admin password",
+            },
+        ).status_code
+        == 200
+    )
+
+
+def test_annotator_management_endpoints_reject_the_admin_account(
     hosted_client: tuple[TestClient, HostedRepository, AuthManager],
 ) -> None:
     client, _, _ = hosted_client
@@ -913,11 +971,6 @@ def test_annotator_lifecycle_endpoints_reject_the_admin_account(
 
     responses = [
         client.post(
-            f"/api/admin/users/{admin_id}/reset-password",
-            json={},
-            headers=csrf_headers(client),
-        ),
-        client.post(
             f"/api/admin/users/{admin_id}/deactivate",
             json={"incomplete_assignments": {"action": "unassign"}},
             headers=csrf_headers(client),
@@ -929,7 +982,7 @@ def test_annotator_lifecycle_endpoints_reject_the_admin_account(
         ),
     ]
 
-    assert [response.status_code for response in responses] == [404, 404, 404]
+    assert [response.status_code for response in responses] == [404, 404]
     assert {response.json()["detail"] for response in responses} == {
         "annotator not found"
     }
