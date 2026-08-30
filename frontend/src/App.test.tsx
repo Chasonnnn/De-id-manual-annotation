@@ -603,7 +603,7 @@ describe("hosted annotation app", () => {
 
     const folderList = screen.getByRole("navigation", { name: "Session folders" });
     expect(within(folderList).getByRole("button", { name: "August intake, 2 sessions" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: `${admin.email} (you)` })).toBeTruthy();
+    expect(await screen.findByRole("option", { name: `${admin.email} (you)` })).toBeTruthy();
 
     fireEvent.change(screen.getByLabelText("Folder assignee"), { target: { value: annotator.id } });
     fireEvent.click(screen.getByRole("button", { name: "Assign folder" }));
