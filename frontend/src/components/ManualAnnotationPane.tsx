@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CanonicalSpan } from "../hosted/types";
-import AnnotatedText from "./AnnotatedText";
+import TranscriptRows from "./TranscriptRows";
 import AnnotationPopup from "./AnnotationPopup";
 import {
   codeUnitOffsetToCodePointOffset,
@@ -13,6 +13,10 @@ interface Props {
   text: string;
   spans: CanonicalSpan[];
   labels: string[];
+  comparisonMode?: boolean;
+  referenceSpans?: CanonicalSpan[];
+  scrollRef?: React.RefObject<HTMLDivElement | null>;
+  onScroll?: React.UIEventHandler<HTMLDivElement>;
   onSpansChange: (spans: CanonicalSpan[]) => void;
 }
 
@@ -24,6 +28,8 @@ interface PopupState {
   selText: string;
   editIndex: number | null;
 }
+
+const EMPTY_SPANS: CanonicalSpan[] = [];
 
 const BOUNDARY_IGNORABLE_RE = /[\p{P}\s]/u;
 
@@ -130,6 +136,10 @@ export default function ManualAnnotationPane({
   text,
   spans,
   labels,
+  comparisonMode = false,
+  referenceSpans = EMPTY_SPANS,
+  scrollRef,
+  onScroll,
   onSpansChange,
 }: Props) {
     const [popup, setPopup] = useState<PopupState | null>(null);
@@ -266,13 +276,19 @@ export default function ManualAnnotationPane({
         </div>
         <div
           className="pane-body"
-          ref={localRef}
+          ref={(node) => {
+            localRef.current = node;
+            if (scrollRef) scrollRef.current = node;
+          }}
+          onScroll={onScroll}
           onMouseUp={handleMouseUp}
           role="presentation"
         >
-          <AnnotatedText
+          <TranscriptRows
             text={text}
             spans={spans.toSorted((a, b) => a.start - b.start)}
+            comparisonSpans={referenceSpans}
+            comparisonMode={comparisonMode}
             clickable
             onSpanClick={handleSpanClick}
           />

@@ -73,4 +73,46 @@ describe("AnnotatedText", () => {
     expect(onSpanClick).toHaveBeenCalledTimes(1);
     expect(onSpanClick).toHaveBeenCalledWith(0, expect.any(Object));
   });
+
+  it("uses entity colors normally and binary colors in comparison mode", () => {
+    const manual = [
+      { start: 0, end: 5, label: "NAME", text: "Alice" },
+      { start: 10, end: 13, label: "NAME", text: "Bob" },
+    ];
+    const reference = [
+      { start: 0, end: 5, label: "NAME", text: "Alice" },
+      { start: 10, end: 13, label: "SCHOOL", text: "Bob" },
+    ];
+    const { container, rerender } = render(
+      <AnnotatedText text="Alice met Bob" spans={manual} comparisonSpans={reference} />,
+    );
+
+    expect(container.querySelectorAll(".comparison-match")).toHaveLength(0);
+    expect(container.querySelectorAll(".comparison-difference")).toHaveLength(0);
+
+    rerender(
+      <AnnotatedText
+        text="Alice met Bob"
+        spans={manual}
+        comparisonSpans={reference}
+        comparisonMode
+      />,
+    );
+
+    expect(container.querySelectorAll(".comparison-match")).toHaveLength(1);
+    expect(container.querySelectorAll(".comparison-difference")).toHaveLength(1);
+  });
+
+  it("shows a missing annotation as a difference on the unannotated side", () => {
+    const { container } = render(
+      <AnnotatedText
+        text="Alice met Bob"
+        spans={[]}
+        comparisonSpans={[{ start: 10, end: 13, label: "NAME", text: "Bob" }]}
+        comparisonMode
+      />,
+    );
+
+    expect(container.querySelector(".comparison-difference")?.textContent).toBe("Bob");
+  });
 });

@@ -4,6 +4,7 @@ import type {
   HostedUser,
   SaveAnnotationsRequest,
   SaveAnnotationsResponse,
+  SessionFolder,
   WorkspaceResponse,
 } from "./types";
 
@@ -117,13 +118,43 @@ export function getAdminProgress(): Promise<AdminProgress> {
   return request("/api/admin/progress");
 }
 
+export function getAdminFolders(): Promise<SessionFolder[]> {
+  return request("/api/admin/folders");
+}
+
+export function createAdminFolder(name: string): Promise<SessionFolder> {
+  return request("/api/admin/folders", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function moveSessionsToFolder(
+  folderId: string,
+  documentIds: string[],
+): Promise<SessionFolder> {
+  return request(`/api/admin/folders/${encodeURIComponent(folderId)}/sessions`, {
+    method: "PUT",
+    body: JSON.stringify({ document_ids: documentIds }),
+  });
+}
+
+export function assignFolder(
+  folderId: string,
+  assigneeId: string,
+): Promise<{ folder_id: string; assignment_ids: string[] }> {
+  return request(`/api/admin/folders/${encodeURIComponent(folderId)}/assignment`, {
+    method: "PUT",
+    body: JSON.stringify({ assignee_id: assigneeId }),
+  });
+}
+
 export function getAdminUsers(): Promise<HostedUser[]> {
   return request("/api/admin/users");
 }
 
 export function createAdminUser(payload: {
   email: string;
-  display_name: string;
   role: "annotator";
 }): Promise<ActivationResponse> {
   return request("/api/admin/users", {

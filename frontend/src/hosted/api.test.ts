@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   activate,
+  assignFolder,
   assignSession,
+  createAdminFolder,
   createAdminUser,
   deactivateAdminUser,
   login,
+  moveSessionsToFolder,
   reactivateAdminUser,
   resetAdminUserPassword,
   saveAnnotations,
@@ -107,6 +110,31 @@ describe("hosted API client", () => {
     }));
   });
 
+  it("creates folders, moves sessions, and assigns the folder", async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => jsonResponse({ id: "folder-1" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createAdminFolder("August intake");
+    await moveSessionsToFolder("folder/1", ["doc-2", "doc-1"]);
+    await assignFolder("folder/1", "user-1");
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/admin/folders");
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ name: "August intake" }),
+    }));
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/admin/folders/folder%2F1/sessions");
+    expect(fetchMock.mock.calls[1]?.[1]).toEqual(expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify({ document_ids: ["doc-2", "doc-1"] }),
+    }));
+    expect(fetchMock.mock.calls[2]?.[0]).toBe("/api/admin/folders/folder%2F1/assignment");
+    expect(fetchMock.mock.calls[2]?.[1]).toEqual(expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify({ assignee_id: "user-1" }),
+    }));
+  });
+
   it("preserves explicit HTTP failures for conflict handling", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ detail: "Stale revision" }, 409)));
 
@@ -126,7 +154,6 @@ describe("hosted API client", () => {
 
     await createAdminUser({
       email: "annotator@cornell.edu",
-      display_name: "Ada Annotator",
       role: "annotator",
     });
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/admin/users");
@@ -134,7 +161,6 @@ describe("hosted API client", () => {
       method: "POST",
       body: JSON.stringify({
         email: "annotator@cornell.edu",
-        display_name: "Ada Annotator",
         role: "annotator",
       }),
     }));

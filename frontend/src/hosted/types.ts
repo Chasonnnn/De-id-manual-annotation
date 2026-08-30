@@ -5,26 +5,48 @@ export interface CanonicalSpan {
   text: string;
 }
 
+export const ENTITY_TYPES = [
+  "NAME",
+  "ADDRESS",
+  "DATE",
+  "PHONE_NUMBER",
+  "FAX_NUMBER",
+  "EMAIL",
+  "SSN",
+  "ACCOUNT_NUMBER",
+  "DEVICE_IDENTIFIER",
+  "URL",
+  "IP_ADDRESS",
+  "BIOMETRIC_IDENTIFIER",
+  "IMAGE",
+  "IDENTIFYING_NUMBER",
+  "AGE",
+  "SCHOOL",
+  "TUTOR_PROVIDER",
+  "CUSTOMIZED_FIELD",
+  "OTHER_LOCATIONS_IDENTIFIED",
+] as const;
+
 const LABEL_COLORS: Record<string, string> = {
-  NAME: "#FFD700",
-  ADDRESS: "#87CEEB",
-  DATE: "#DDA0DD",
-  PHONE_NUMBER: "#FA8072",
-  FAX_NUMBER: "#FF8C69",
-  EMAIL: "#4682B4",
-  SSN: "#B0C4DE",
-  ACCOUNT_NUMBER: "#C0C0C0",
-  DEVICE_IDENTIFIER: "#9ACD32",
-  URL: "#D2B48C",
-  IP_ADDRESS: "#6A5ACD",
-  BIOMETRIC_IDENTIFIER: "#CD5C5C",
-  IMAGE: "#778899",
-  IDENTIFYING_NUMBER: "#C0C0C0",
-  AGE: "#F0E68C",
-  SCHOOL: "#90EE90",
-  TUTOR_PROVIDER: "#20B2AA",
-  CUSTOMIZED_FIELD: "#FFB347",
-  OTHER_LOCATIONS_IDENTIFIED: "#7FFFD4",
+  NAME: "#ffe36e",
+  ADDRESS: "#a8d8f0",
+  DATE: "#e3b7eb",
+  PHONE_NUMBER: "#f5a08f",
+  FAX_NUMBER: "#f7b29f",
+  EMAIL: "#9bbbea",
+  SSN: "#c3cce0",
+  ACCOUNT_NUMBER: "#d1d5db",
+  DEVICE_IDENTIFIER: "#f5c27b",
+  URL: "#d9c19f",
+  IP_ADDRESS: "#b9a9e8",
+  BIOMETRIC_IDENTIFIER: "#e5aaa7",
+  IMAGE: "#b8c1cc",
+  IDENTIFYING_NUMBER: "#f5c27b",
+  AGE: "#efe49b",
+  SCHOOL: "#9ee6ad",
+  TUTOR_PROVIDER: "#8fd7ce",
+  CUSTOMIZED_FIELD: "#f4bd82",
+  OTHER_LOCATIONS_IDENTIFIED: "#94e4d6",
 };
 
 export function getLabelColor(label: string): string {
@@ -55,8 +77,11 @@ export interface SessionSummary {
   id: string;
   external_id: string;
   filename: string;
+  folder_id: string | null;
+  folder_name: string | null;
   assignment_id: string | null;
   assignment_state: AssignmentState | null;
+  manual_annotation_count: number;
   assignee_id: string | null;
   assignee_name: string | null;
 }
@@ -111,4 +136,15 @@ export interface AdminProgress {
     in_progress: number;
     completed: number;
   }>;
+  folders: SessionFolder[];
+}
+
+export interface SessionFolder {
+  id: string;
+  name: string;
+  session_count: number;
+  unassigned: number;
+  assigned: number;
+  in_progress: number;
+  completed: number;
 }

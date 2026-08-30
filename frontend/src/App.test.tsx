@@ -15,7 +15,11 @@ vi.mock("./hosted/api", async (importOriginal) => {
     saveAnnotations: vi.fn(),
     completeAssignment: vi.fn(),
     getAdminProgress: vi.fn(),
+    getAdminFolders: vi.fn(),
     getAdminUsers: vi.fn(),
+    createAdminFolder: vi.fn(),
+    moveSessionsToFolder: vi.fn(),
+    assignFolder: vi.fn(),
     assignSession: vi.fn(),
     createAdminUser: vi.fn(),
     deactivateAdminUser: vi.fn(),
@@ -61,8 +65,11 @@ const sessions = [
     id: "doc-1",
     external_id: "Session 001",
     filename: "session-001.json",
+    folder_id: "folder-1",
+    folder_name: "August intake",
     assignment_id: "assignment-1",
     assignment_state: "assigned" as const,
+    manual_annotation_count: 0,
     assignee_id: annotator.id,
     assignee_name: annotator.display_name,
   },
@@ -70,12 +77,25 @@ const sessions = [
     id: "doc-2",
     external_id: "Session 002",
     filename: "session-002.json",
+    folder_id: "folder-1",
+    folder_name: "August intake",
     assignment_id: "assignment-2",
     assignment_state: "completed" as const,
+    manual_annotation_count: 0,
     assignee_id: annotator.id,
     assignee_name: annotator.display_name,
   },
 ];
+
+const folder = {
+  id: "folder-1",
+  name: "August intake",
+  session_count: 2,
+  unassigned: 0,
+  assigned: 1,
+  in_progress: 0,
+  completed: 1,
+};
 
 const document = {
   id: "doc-1",
@@ -105,6 +125,7 @@ function mockAuthenticated(user: typeof annotator | typeof admin = annotator) {
 describe("hosted annotation app", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
     vi.mocked(api.getCurrentUser).mockRejectedValue(new api.ApiError(401, "Not authenticated"));
   });
 
@@ -148,18 +169,79 @@ describe("hosted annotation app", () => {
     expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
   });
 
-  it("shows the assigned sessions and renders the three panels", async () => {
+  it("combines the raw transcript and manual annotation into a two-panel workspace", async () => {
     mockAuthenticated();
 
     render(<App />);
     fireEvent.click(await screen.findByText("Session 001"));
 
-    expect(await screen.findByText("Alice met Bob.")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Raw Transcript" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Manual Annotation" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Manual annotation" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Reference" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Raw Transcript" })).toBeNull();
     expect(screen.getByText("Reference annotations are not available for this session.")).toBeTruthy();
+    expect(screen.getByRole("checkbox", { name: "Comparison" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Manage assignments" })).toBeNull();
+  });
+
+  it("uses blue New, yellow Started, and green Complete session states", async () => {
+    mockAuthenticated();
+    vi.mocked(api.getWorkspace).mockResolvedValue({
+      sessions: [
+        sessions[0]!,
+        { ...sessions[0]!, id: "doc-started", external_id: "Session Started", manual_annotation_count: 2 },
+        sessions[1]!,
+      ],
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("New")).toBeTruthy();
+    expect(screen.getByText("Started")).toBeTruthy();
+    expect(screen.getByText("Complete")).toBeTruthy();
+    expect(window.document.querySelector(".state-dot.new")).toBeTruthy();
+    expect(window.document.querySelector(".state-dot.started")).toBeTruthy();
+    expect(window.document.querySelector(".state-dot.complete")).toBeTruthy();
+  });
+
+  it("lets users collapse and reopen session folders in the workspace sidebar", async () => {
+    mockAuthenticated();
+
+    render(<App />);
+
+    const folder = await screen.findByRole("button", { name: "August intake, 2 sessions" });
+    expect(folder.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Session 001")).toBeTruthy();
+    expect(screen.getByText("Session 002")).toBeTruthy();
+
+    fireEvent.click(folder);
+
+    expect(folder.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Session 001")).toBeNull();
+    expect(screen.queryByText("Session 002")).toBeNull();
+
+    fireEvent.click(folder);
+    expect(screen.getByText("Session 001")).toBeTruthy();
+    expect(screen.getByText("Session 002")).toBeTruthy();
+  });
+
+  it("opens the next session without redundant header metadata", async () => {
+    mockAuthenticated();
+    vi.mocked(api.getDocument).mockImplementation(async (id) => ({
+      ...document,
+      id,
+      external_id: id === "doc-2" ? "Session 002" : "Session 001",
+    }));
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("Session 001"));
+    expect(await screen.findByRole("heading", { name: "Session 001" })).toBeTruthy();
+    expect(screen.queryByText("1 of 2 assigned")).toBeNull();
+    expect(window.document.querySelector(".session-heading .eyebrow")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Next session" }));
+
+    await waitFor(() => expect(api.getDocument).toHaveBeenLastCalledWith("doc-2"));
+    expect(await screen.findByRole("heading", { name: "Session 002" })).toBeTruthy();
   });
 
   it("lets an admin edit a session assigned to an annotator", async () => {
@@ -169,10 +251,59 @@ describe("hosted annotation app", () => {
     fireEvent.click(await screen.findByText("Session 001"));
 
     expect(await screen.findByLabelText("Manual annotation editor")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Mark complete" })).toBeTruthy();
-    expect(screen.queryByText("Admin view is read-only.")).toBeNull();
+    expect(screen.getByRole("button", { name: "Review & complete" })).toBeTruthy();
+    expect(screen.queryByText(/Read-only/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Retry save" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Copy recovery JSON" })).toBeNull();
+  });
+
+  it("lets an admin annotate an unassigned session without showing completion", async () => {
+    mockAuthenticated(admin);
+    vi.mocked(api.getWorkspace).mockResolvedValue({
+      sessions: [{
+        ...sessions[0]!,
+        assignment_id: null,
+        assignment_state: null,
+        assignee_id: null,
+        assignee_name: null,
+      }],
+    });
+    vi.mocked(api.getDocument).mockResolvedValue({ ...document, assignment: null });
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("Session 001"));
+
+    expect(await screen.findByLabelText("Manual annotation editor")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Review & complete" })).toBeNull();
+  });
+
+  it("never turns a visible session into a read-only workspace", async () => {
+    mockAuthenticated();
+    vi.mocked(api.getWorkspace).mockResolvedValue({
+      sessions: [{
+        ...sessions[0]!,
+        assignee_id: "user-2",
+        assignee_name: "Other Annotator",
+      }],
+    });
+    vi.mocked(api.getDocument).mockResolvedValue({
+      ...document,
+      reference_annotations: [
+        { start: 0, end: 5, label: "NAME", text: "Alice" },
+      ],
+      assignment: {
+        ...document.assignment,
+        assignee_id: "user-2",
+        assignee_name: "Other Annotator",
+      },
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("Session 001"));
+
+    expect(await screen.findByLabelText("Manual annotation editor")).toBeTruthy();
+    expect(screen.queryByText(/Read-only/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "NAME: Alice" })).toBeNull();
   });
 
   it("lets an admin edit a session assigned to their own account", async () => {
@@ -193,8 +324,8 @@ describe("hosted annotation app", () => {
     fireEvent.click(await screen.findByText("Session 001"));
 
     expect(await screen.findByLabelText("Manual annotation editor")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Mark complete" })).toBeTruthy();
-    expect(screen.queryByText("Admin view is read-only.")).toBeNull();
+    expect(screen.getByRole("button", { name: "Review & complete" })).toBeTruthy();
+    expect(screen.queryByText(/Read-only/)).toBeNull();
   });
 
   it("saves every annotation snapshot with a revision and mutation id", async () => {
@@ -233,7 +364,7 @@ describe("hosted annotation app", () => {
     expect(savedUnload.defaultPrevented).toBe(false);
 
     fireEvent.click(await screen.findByRole("button", { name: "Add test annotation" }));
-    await screen.findByText("Saving");
+    await screen.findByText("Saving…");
     const unsavedUnload = new Event("beforeunload", { cancelable: true });
     window.dispatchEvent(unsavedUnload);
     expect(unsavedUnload.defaultPrevented).toBe(true);
@@ -245,6 +376,22 @@ describe("hosted annotation app", () => {
     expect(acknowledgedUnload.defaultPrevented).toBe(false);
   });
 
+  it("keeps a local draft until the server confirms the save", async () => {
+    mockAuthenticated();
+    let resolveSave: ((value: Awaited<ReturnType<typeof api.saveAnnotations>>) => void) | undefined;
+    vi.mocked(api.saveAnnotations).mockImplementation(() => new Promise((resolve) => { resolveSave = resolve; }));
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("Session 001"));
+    fireEvent.click(await screen.findByRole("button", { name: "Add test annotation" }));
+
+    expect(localStorage.getItem("deid_annotation_draft:doc-1")).toContain('"label":"NAME"');
+
+    resolveSave?.({ revision: 1, spans: [{ start: 0, end: 5, label: "NAME", text: "Alice" }] });
+    await screen.findByText("Saved");
+    expect(localStorage.getItem("deid_annotation_draft:doc-1")).toBeNull();
+  });
+
   it("shows a conflict and blocks completion after a stale save", async () => {
     mockAuthenticated();
     vi.mocked(api.saveAnnotations).mockRejectedValue(new api.ApiError(409, "This session was updated elsewhere."));
@@ -254,7 +401,7 @@ describe("hosted annotation app", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Add test annotation" }));
 
     expect((await screen.findByRole("alert")).textContent).toContain("Conflict");
-    expect((screen.getByRole("button", { name: "Mark complete" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Review & complete" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("copies compact local recovery data without overwriting a conflicting server revision", async () => {
@@ -338,7 +485,7 @@ describe("hosted annotation app", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Add test annotation" }));
 
     expect((await screen.findByRole("alert")).textContent).toContain("Save failed");
-    const completion = screen.getByRole("button", { name: "Mark complete" }) as HTMLButtonElement;
+    const completion = screen.getByRole("button", { name: "Review & complete" }) as HTMLButtonElement;
     expect(completion.disabled).toBe(true);
 
     const firstRequest = vi.mocked(api.saveAnnotations).mock.calls[0];
@@ -386,25 +533,66 @@ describe("hosted annotation app", () => {
     expect(await screen.findByText("Saved")).toBeTruthy();
   });
 
-  it("marks an acknowledged assignment complete", async () => {
+  it("requires a review checkpoint before completing an assignment", async () => {
     mockAuthenticated();
 
     render(<App />);
     fireEvent.click(await screen.findByText("Session 001"));
-    fireEvent.click(await screen.findByRole("button", { name: "Mark complete" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review & complete" }));
+
+    expect(api.completeAssignment).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Complete this session?" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Complete session" }));
 
     await waitFor(() => expect(api.completeAssignment).toHaveBeenCalledWith("assignment-1"));
     expect(await screen.findByText("Completed")).toBeTruthy();
   });
 
-  it("lets an admin track progress and reassign a session", async () => {
+  it("keeps a completed session editable and completed after saving", async () => {
+    mockAuthenticated();
+    vi.mocked(api.getDocument).mockResolvedValue({
+      ...document,
+      id: "doc-2",
+      external_id: "Session 002",
+      assignment: {
+        ...document.assignment,
+        id: "assignment-2",
+        state: "completed",
+      },
+    });
+    vi.mocked(api.saveAnnotations).mockResolvedValue({
+      revision: 1,
+      spans: [{ start: 0, end: 5, label: "NAME", text: "Alice" }],
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("Session 002"));
+
+    expect(await screen.findByLabelText("Manual annotation editor")).toBeTruthy();
+    expect(screen.queryByText(/Read-only/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Completed" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add test annotation" }));
+
+    await waitFor(() => expect(api.saveAnnotations).toHaveBeenCalledWith(
+      "doc-2",
+      expect.objectContaining({
+        expected_revision: 0,
+        spans: [{ start: 0, end: 5, label: "NAME", text: "Alice" }],
+      }),
+    ));
+    expect(window.document.querySelector(".state-dot.complete")).toBeTruthy();
+  });
+
+  it("lets an admin track progress and assign a complete folder", async () => {
     mockAuthenticated(admin);
     vi.mocked(api.getAdminProgress).mockResolvedValue({
       totals: { unassigned: 1, assigned: 1, in_progress: 2, completed: 4, total: 8 },
       annotators: [{ user_id: annotator.id, display_name: annotator.display_name, email: annotator.email, assigned: 1, in_progress: 2, completed: 4 }],
+      folders: [folder],
     });
     vi.mocked(api.getAdminUsers).mockResolvedValue([annotator]);
-    vi.mocked(api.assignSession).mockResolvedValue({ assignment_id: "assignment-1" });
+    vi.mocked(api.assignFolder).mockResolvedValue({ folder_id: folder.id, assignment_ids: ["assignment-1", "assignment-2"] });
 
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Manage assignments" }));
@@ -413,16 +601,37 @@ describe("hosted annotation app", () => {
     expect(within(progress).getByText("8")).toBeTruthy();
     expect(within(progress).getByText("4")).toBeTruthy();
 
-    expect(screen.getByRole("option", { name: "Admin User (you)" })).toBeTruthy();
+    const folderList = screen.getByRole("navigation", { name: "Session folders" });
+    expect(within(folderList).getByRole("button", { name: "August intake, 2 sessions" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: `${admin.email} (you)` })).toBeTruthy();
 
-    fireEvent.change(screen.getByLabelText("Session"), { target: { value: "doc-1" } });
-    fireEvent.change(screen.getByLabelText("Assignee"), { target: { value: annotator.id } });
-    fireEvent.click(screen.getByRole("button", { name: "Assign session" }));
+    fireEvent.change(screen.getByLabelText("Folder assignee"), { target: { value: annotator.id } });
+    fireEvent.click(screen.getByRole("button", { name: "Assign folder" }));
 
-    await waitFor(() => expect(api.assignSession).toHaveBeenCalledWith({
-      document_id: "doc-1",
-      assignee_id: annotator.id,
-    }));
+    await waitFor(() => expect(api.assignFolder).toHaveBeenCalledWith(folder.id, annotator.id));
+  });
+
+  it("uses bound emails as account identities and shows the role separately", async () => {
+    mockAuthenticated(admin);
+    vi.mocked(api.getAdminProgress).mockResolvedValue({
+      totals: { unassigned: 0, assigned: 1, in_progress: 0, completed: 0, total: 1 },
+      annotators: [],
+      folders: [folder],
+    });
+    vi.mocked(api.getAdminUsers).mockResolvedValue([admin, annotator]);
+
+    render(<App />);
+    const accountBlock = (await screen.findByRole("button", { name: "Sign out" })).parentElement;
+    expect(accountBlock).not.toBeNull();
+    expect(within(accountBlock!).getByText(admin.email)).toBeTruthy();
+    expect(within(accountBlock!).getByText("Admin")).toBeTruthy();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Manage assignments" }));
+
+    const accounts = await screen.findByRole("region", { name: "Accounts" });
+    expect(within(accounts).getByText(admin.email)).toBeTruthy();
+    expect(within(accounts).getByText(annotator.email)).toBeTruthy();
+    expect(within(accounts).queryByRole("button", { name: /Edit name/ })).toBeNull();
   });
 
   it("lets an admin create an annotator while batch operations stay CLI-only", async () => {
@@ -430,6 +639,7 @@ describe("hosted annotation app", () => {
     vi.mocked(api.getAdminProgress).mockResolvedValue({
       totals: { unassigned: 0, assigned: 1, in_progress: 0, completed: 0, total: 1 },
       annotators: [],
+      folders: [folder],
     });
     vi.mocked(api.getAdminUsers).mockResolvedValue([]);
     vi.mocked(api.createAdminUser).mockResolvedValue({
@@ -443,14 +653,13 @@ describe("hosted annotation app", () => {
     await screen.findByRole("heading", { name: "Add annotator" });
 
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: annotator.email } });
-    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: annotator.display_name } });
     fireEvent.click(screen.getByRole("button", { name: "Create annotator" }));
 
     await waitFor(() => expect(api.createAdminUser).toHaveBeenCalledWith({
       email: annotator.email,
-      display_name: annotator.display_name,
       role: "annotator",
     }));
+    expect(screen.queryByLabelText("Display name")).toBeNull();
     expect((await screen.findByRole("link", { name: "Activation link" })).getAttribute("href"))
       .toBe("/activate#token=one-time-token");
     expect(screen.queryByLabelText("Initial password")).toBeNull();
@@ -465,6 +674,7 @@ describe("hosted annotation app", () => {
     vi.mocked(api.getAdminProgress).mockResolvedValue({
       totals: { unassigned: 0, assigned: 0, in_progress: 0, completed: 0, total: 0 },
       annotators: [],
+      folders: [],
     });
     vi.mocked(api.getAdminUsers).mockResolvedValue([admin, annotator, pending, deactivated]);
     vi.mocked(api.resetAdminUserPassword).mockResolvedValue({
@@ -476,16 +686,16 @@ describe("hosted annotation app", () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Manage assignments" }));
 
-    const accounts = await screen.findByRole("region", { name: "Annotator accounts" });
-    expect(within(accounts).getByText("Active")).toBeTruthy();
+    const accounts = await screen.findByRole("region", { name: "Accounts" });
+    expect(within(accounts).getAllByText("Active")).toHaveLength(2);
     expect(within(accounts).getByText("Pending activation")).toBeTruthy();
     expect(within(accounts).getByText("Deactivated")).toBeTruthy();
-    expect(within(accounts).queryByText(admin.email)).toBeNull();
+    expect(within(accounts).getByText(admin.email)).toBeTruthy();
     expect(screen.queryByRole("link", { name: /password reset link/i })).toBeNull();
 
-    fireEvent.click(within(accounts).getByRole("button", { name: "Reset password for Ada Annotator" }));
+    fireEvent.click(within(accounts).getByRole("button", { name: `Reset password for ${annotator.email}` }));
 
-    expect((await screen.findByRole("link", { name: "Password reset link for Ada Annotator" })).getAttribute("href"))
+    expect((await screen.findByRole("link", { name: `Password reset link for ${annotator.email}` })).getAttribute("href"))
       .toBe("/activate#token=reset-token");
     expect(api.resetAdminUserPassword).toHaveBeenCalledWith(annotator.id);
   });
@@ -496,13 +706,14 @@ describe("hosted annotation app", () => {
     vi.mocked(api.getAdminProgress).mockResolvedValue({
       totals: { unassigned: 0, assigned: 2, in_progress: 0, completed: 0, total: 2 },
       annotators: [],
+      folders: [],
     });
     vi.mocked(api.getAdminUsers).mockResolvedValue([annotator, grace]);
     vi.mocked(api.deactivateAdminUser).mockResolvedValue({ ...annotator, state: "deactivated" });
 
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Manage assignments" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Deactivate Ada Annotator" }));
+    fireEvent.click(await screen.findByRole("button", { name: `Deactivate ${annotator.email}` }));
 
     const confirm = screen.getByRole("button", { name: "Confirm deactivation" });
     expect((confirm as HTMLButtonElement).disabled).toBe(true);
@@ -518,7 +729,7 @@ describe("hosted annotation app", () => {
       action: "reassign",
       assignee_id: grace.id,
     }));
-    expect(await screen.findByText("Ada Annotator was deactivated.")).toBeTruthy();
+    expect(await screen.findByText(`${annotator.email} was deactivated.`)).toBeTruthy();
   });
 
   it("can explicitly unassign unfinished work when deactivating an annotator", async () => {
@@ -526,13 +737,14 @@ describe("hosted annotation app", () => {
     vi.mocked(api.getAdminProgress).mockResolvedValue({
       totals: { unassigned: 0, assigned: 1, in_progress: 0, completed: 0, total: 1 },
       annotators: [],
+      folders: [],
     });
     vi.mocked(api.getAdminUsers).mockResolvedValue([annotator]);
     vi.mocked(api.deactivateAdminUser).mockResolvedValue({ ...annotator, state: "deactivated" });
 
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Manage assignments" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Deactivate Ada Annotator" }));
+    fireEvent.click(await screen.findByRole("button", { name: `Deactivate ${annotator.email}` }));
     fireEvent.click(screen.getByRole("radio", { name: "Unassign unfinished work" }));
     fireEvent.click(screen.getByRole("button", { name: "Confirm deactivation" }));
 
@@ -547,13 +759,14 @@ describe("hosted annotation app", () => {
     vi.mocked(api.getAdminProgress).mockResolvedValue({
       totals: { unassigned: 0, assigned: 0, in_progress: 0, completed: 0, total: 0 },
       annotators: [],
+      folders: [],
     });
     vi.mocked(api.getAdminUsers).mockResolvedValue([deactivated]);
     vi.mocked(api.reactivateAdminUser).mockRejectedValue(new api.ApiError(409, "Account cannot be reactivated."));
 
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Manage assignments" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Reactivate Ada Annotator" }));
+    fireEvent.click(await screen.findByRole("button", { name: `Reactivate ${annotator.email}` }));
 
     expect((await screen.findByRole("alert")).textContent).toContain("Account cannot be reactivated.");
     expect(screen.queryByRole("link", { name: /activation|password reset/i })).toBeNull();
