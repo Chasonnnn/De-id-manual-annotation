@@ -36,6 +36,10 @@ The unit of annotation presented as raw transcript, manual annotation, and proce
 
 An immutable selection of versioned raw sessions and processed references imported together for assignment.
 
+## Session Folder
+
+A manually named organizational group of sessions used for navigation, assignment, and progress tracking. A session folder does not identify or imply a provider or source.
+
 ## Assignment
 
 The current responsibility for one session held by one annotator. Reassignment changes responsibility without copying the session.

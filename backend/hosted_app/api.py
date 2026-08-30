@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Annotated, Literal, Self
 
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Response, status
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from sqlalchemy.exc import IntegrityError
 
 from .auth import (
@@ -16,9 +16,10 @@ from .auth import (
 )
 from .bulk_audit_api import create_bulk_audit_router
 from .domain import (
-    CompletedLocked,
+    ENTITY_TYPES,
     DocumentImport,
     DuplicateExternalId,
+    DuplicateFolderName,
     Forbidden,
     ImportMutationConflict,
     InvalidAccountAction,
@@ -82,8 +83,11 @@ class SessionSummaryResponse(BaseModel):
     id: str
     external_id: str
     filename: str
+    folder_id: str | None
+    folder_name: str | None
     assignment_id: str | None
     assignment_state: Literal["assigned", "in_progress", "completed"] | None
+    manual_annotation_count: int
     assignee_id: str | None
     assignee_name: str | None
 
@@ -157,9 +161,20 @@ class AnnotatorProgressResponse(BaseModel):
     completed: int
 
 
+class FolderProgressResponse(BaseModel):
+    id: str
+    name: str
+    session_count: int
+    unassigned: int
+    assigned: int
+    in_progress: int
+    completed: int
+
+
 class AdminProgressResponse(BaseModel):
     totals: AdminProgressTotals
     annotators: list[AnnotatorProgressResponse]
+    folders: list[FolderProgressResponse]
 
 
 class AssignDocumentRequest(RequestModel):
@@ -170,9 +185,24 @@ class AssignmentIdResponse(BaseModel):
     assignment_id: str
 
 
+class CreateFolderRequest(RequestModel):
+    name: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=120),
+    ]
+
+
+class MoveFolderSessionsRequest(RequestModel):
+    document_ids: list[str] = Field(min_length=1)
+
+
+class FolderAssignmentResponse(BaseModel):
+    folder_id: str
+    assignment_ids: list[str]
+
+
 class CreateUserRequest(RequestModel):
     email: str = Field(min_length=3)
-    display_name: str = Field(min_length=1, max_length=120)
     role: Literal["annotator"]
 
 
@@ -558,10 +588,10 @@ def create_hosted_app(
 
     @app.get("/api/workspace", response_model=WorkspaceResponse)
     def workspace(principal: CurrentPrincipal) -> WorkspaceResponse:
-        assignee_names = {principal.id: principal.display_name}
+        assignee_names = {principal.id: principal.email}
         if principal.role == "admin":
             assignee_names = {
-                user.id: user.display_name
+                user.id: user.email
                 for user in repository.list_users(admin_id=principal.id)
             }
         sessions: list[SessionSummaryResponse] = []
@@ -572,8 +602,11 @@ def create_hosted_app(
                     id=detail.id,
                     external_id=detail.external_id,
                     filename=detail.filename,
+                    folder_id=detail.folder_id,
+                    folder_name=detail.folder_name,
                     assignment_id=detail.assignment_id,
                     assignment_state=detail.assignment_state,
+                    manual_annotation_count=len(detail.manual_spans),
                     assignee_id=detail.assignee_id,
                     assignee_name=assignee_names.get(detail.assignee_id),
                 )
@@ -583,10 +616,10 @@ def create_hosted_app(
     def assignee_names_for(principal: AuthenticatedPrincipal) -> dict[str, str]:
         if principal.role == "admin":
             return {
-                user.id: user.display_name
+                user.id: user.email
                 for user in repository.list_users(admin_id=principal.id)
             }
-        return {principal.id: principal.display_name}
+        return {principal.id: principal.email}
 
     @app.get("/api/documents/{document_id}", response_model=DocumentResponse)
     def get_document(
@@ -613,7 +646,7 @@ def create_hosted_app(
             external_id=detail.external_id,
             filename=detail.filename,
             raw_text=detail.raw_text,
-            label_set=detail.label_set,
+            label_set=list(ENTITY_TYPES),
             reference_annotations=detail.reference_spans,
             manual_annotations=detail.manual_spans,
             annotation_revision=detail.revision,
@@ -640,7 +673,7 @@ def create_hosted_app(
                 raise HTTPException(
                     status_code=422, detail="span is outside transcript"
                 )
-            if span.label not in detail.label_set:
+            if span.label not in ENTITY_TYPES:
                 raise HTTPException(status_code=422, detail="span label is not allowed")
             if detail.raw_text[span.start : span.end] != span.text:
                 raise HTTPException(
@@ -656,8 +689,6 @@ def create_hosted_app(
                 mutation_id=body.mutation_id,
             )
         except RevisionConflict as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        except CompletedLocked as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         except NotFound as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
@@ -736,7 +767,7 @@ def create_hosted_app(
         try:
             invitation = auth.invite_user(
                 email=body.email,
-                display_name=body.display_name.strip(),
+                display_name=body.email.strip().lower(),
                 role=body.role,
                 admin_id=principal.id,
             )
@@ -1034,7 +1065,80 @@ def create_hosted_app(
             annotators=[
                 AnnotatorProgressResponse(**item) for item in progress.by_annotator
             ],
+            folders=[
+                FolderProgressResponse(**folder.__dict__)
+                for folder in repository.list_folders(admin_id=principal.id)
+            ],
         )
+
+    @app.get("/api/admin/folders", response_model=list[FolderProgressResponse])
+    def list_folders(principal: CurrentPrincipal) -> list[FolderProgressResponse]:
+        require_admin(principal)
+        return [
+            FolderProgressResponse(**folder.__dict__)
+            for folder in repository.list_folders(admin_id=principal.id)
+        ]
+
+    @app.post(
+        "/api/admin/folders",
+        response_model=FolderProgressResponse,
+        status_code=status.HTTP_201_CREATED,
+        dependencies=[Depends(require_csrf)],
+    )
+    def create_folder(
+        body: CreateFolderRequest,
+        principal: CurrentPrincipal,
+    ) -> FolderProgressResponse:
+        require_admin(principal)
+        try:
+            folder = repository.create_folder(name=body.name, admin_id=principal.id)
+        except DuplicateFolderName as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return FolderProgressResponse(**folder.__dict__)
+
+    @app.put(
+        "/api/admin/folders/{folder_id}/sessions",
+        response_model=FolderProgressResponse,
+        dependencies=[Depends(require_csrf)],
+    )
+    def move_folder_sessions(
+        folder_id: str,
+        body: MoveFolderSessionsRequest,
+        principal: CurrentPrincipal,
+    ) -> FolderProgressResponse:
+        require_admin(principal)
+        try:
+            folder = repository.move_documents_to_folder(
+                folder_id=folder_id,
+                document_ids=body.document_ids,
+                admin_id=principal.id,
+            )
+        except NotFound as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return FolderProgressResponse(**folder.__dict__)
+
+    @app.put(
+        "/api/admin/folders/{folder_id}/assignment",
+        response_model=FolderAssignmentResponse,
+        dependencies=[Depends(require_csrf)],
+    )
+    def assign_folder(
+        folder_id: str,
+        body: AssignDocumentRequest,
+        principal: CurrentPrincipal,
+    ) -> FolderAssignmentResponse:
+        require_admin(principal)
+        try:
+            result = repository.assign_folder(
+                folder_id=folder_id,
+                assignee_id=body.assignee_id,
+                admin_id=principal.id,
+            )
+        except InvalidAssignee as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except NotFound as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return FolderAssignmentResponse(**result.__dict__)
 
     @app.put(
         "/api/admin/documents/{document_id}/assignment",

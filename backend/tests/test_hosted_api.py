@@ -4,13 +4,14 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, create_engine
+
 from hosted_app.api import create_hosted_app
 from hosted_app.auth import AuthManager
 from hosted_app.database import create_schema
 from hosted_app.domain import DocumentImport, Role
 from hosted_app.repository import HostedRepository
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, create_engine
 
 
 def csrf_headers(client: TestClient) -> dict[str, str]:
@@ -274,10 +275,13 @@ def test_annotator_workspace_contains_only_assigned_sessions(
                 "id": response.json()["sessions"][0]["id"],
                 "external_id": "session-ada",
                 "filename": "session-ada.json",
+                "folder_id": None,
+                "folder_name": None,
                 "assignment_id": response.json()["sessions"][0]["assignment_id"],
                 "assignment_state": "assigned",
+                "manual_annotation_count": 0,
                 "assignee_id": login.json()["id"],
-                "assignee_name": "Ada Annotator",
+                "assignee_name": "ada@example.edu",
             }
         ]
     }
@@ -366,6 +370,10 @@ def test_annotation_save_is_revisioned_and_survives_document_reload(
     assert reloaded.json()["manual_annotations"] == saved.json()["spans"]
     assert reloaded.json()["annotation_revision"] == 1
     assert reloaded.json()["assignment"]["state"] == "in_progress"
+    assert (
+        client.get("/api/workspace").json()["sessions"][0]["manual_annotation_count"]
+        == 1
+    )
 
     stale = client.put(
         f"/api/documents/{document_id}/annotations",
@@ -382,7 +390,46 @@ def test_annotation_save_is_revisioned_and_survives_document_reload(
     }
 
 
-def test_completed_assignment_is_locked_until_an_admin_reopens_it(
+def test_platform_entity_types_are_available_for_every_session(
+    hosted_client: tuple[TestClient, HostedRepository, AuthManager],
+) -> None:
+    client, _, _ = hosted_client
+    assert (
+        client.post(
+            "/api/auth/login",
+            json={"email": "ada@example.edu", "password": "ada secure password"},
+        ).status_code
+        == 200
+    )
+    document_id = client.get("/api/workspace").json()["sessions"][0]["id"]
+
+    document = client.get(f"/api/documents/{document_id}")
+
+    assert document.status_code == 200
+    assert document.json()["label_set"] == [
+        "NAME",
+        "ADDRESS",
+        "DATE",
+        "PHONE_NUMBER",
+        "FAX_NUMBER",
+        "EMAIL",
+        "SSN",
+        "ACCOUNT_NUMBER",
+        "DEVICE_IDENTIFIER",
+        "URL",
+        "IP_ADDRESS",
+        "BIOMETRIC_IDENTIFIER",
+        "IMAGE",
+        "IDENTIFYING_NUMBER",
+        "AGE",
+        "SCHOOL",
+        "TUTOR_PROVIDER",
+        "CUSTOMIZED_FIELD",
+        "OTHER_LOCATIONS_IDENTIFIED",
+    ]
+
+
+def test_completed_assignment_remains_editable_and_completed_after_saving(
     hosted_client: tuple[TestClient, HostedRepository, AuthManager],
 ) -> None:
     client, _, _ = hosted_client
@@ -408,16 +455,23 @@ def test_completed_assignment_is_locked_until_an_admin_reopens_it(
         "assignment_id": assignment_id,
         "state": "completed",
     }
-    locked = client.put(
+    saved = client.put(
         f"/api/documents/{document_id}/annotations",
         json={
-            "spans": [],
+            "spans": [{"start": 0, "end": 3, "label": "NAME", "text": "Ada"}],
             "expected_revision": 0,
             "mutation_id": "after-completion",
         },
         headers=csrf_headers(client),
     )
-    assert locked.status_code == 409
+    assert saved.status_code == 200
+    assert saved.json() == {
+        "revision": 1,
+        "spans": [{"start": 0, "end": 3, "label": "NAME", "text": "Ada"}],
+    }
+    detail = client.get(f"/api/documents/{document_id}").json()
+    assert detail["assignment"]["state"] == "completed"
+    assert detail["manual_annotations"] == saved.json()["spans"]
 
     assert (
         client.post(
@@ -511,6 +565,139 @@ def test_admin_can_track_assign_and_reassign_sessions(
     assert client.get("/api/admin/progress").json()["totals"]["assigned"] == 3
 
 
+def test_admin_can_create_and_list_session_folders(
+    hosted_client: tuple[TestClient, HostedRepository, AuthManager],
+) -> None:
+    client, _, _ = hosted_client
+    assert (
+        client.post(
+            "/api/auth/login",
+            json={
+                "email": "admin@example.edu",
+                "password": "correct horse battery staple",
+            },
+        ).status_code
+        == 200
+    )
+
+    created = client.post(
+        "/api/admin/folders",
+        json={"name": "  August intake  "},
+        headers=csrf_headers(client),
+    )
+
+    assert created.status_code == 201
+    assert created.json() == {
+        "id": created.json()["id"],
+        "name": "August intake",
+        "session_count": 0,
+        "unassigned": 0,
+        "assigned": 0,
+        "in_progress": 0,
+        "completed": 0,
+    }
+    assert client.get("/api/admin/folders").json() == [created.json()]
+
+
+def test_admin_can_move_sessions_into_one_folder_and_workspace_exposes_membership(
+    hosted_client: tuple[TestClient, HostedRepository, AuthManager],
+) -> None:
+    client, _, _ = hosted_client
+    assert (
+        client.post(
+            "/api/auth/login",
+            json={
+                "email": "admin@example.edu",
+                "password": "correct horse battery staple",
+            },
+        ).status_code
+        == 200
+    )
+    folder = client.post(
+        "/api/admin/folders",
+        json={"name": "August intake"},
+        headers=csrf_headers(client),
+    ).json()
+    sessions = client.get("/api/workspace").json()["sessions"]
+    assigned_ids = [
+        item["id"] for item in sessions if item["assignment_state"] == "assigned"
+    ]
+
+    moved = client.put(
+        f"/api/admin/folders/{folder['id']}/sessions",
+        json={"document_ids": assigned_ids},
+        headers=csrf_headers(client),
+    )
+
+    assert moved.status_code == 200
+    assert moved.json() == {
+        **folder,
+        "session_count": 2,
+        "assigned": 2,
+    }
+    assert client.get("/api/admin/progress").json()["folders"] == [moved.json()]
+    reloaded = client.get("/api/workspace").json()["sessions"]
+    assert {
+        (item["external_id"], item["folder_id"], item["folder_name"])
+        for item in reloaded
+    } == {
+        ("session-ada", folder["id"], "August intake"),
+        ("session-grace", folder["id"], "August intake"),
+        ("session-unassigned", None, None),
+    }
+
+
+def test_admin_can_assign_every_session_in_a_folder_atomically(
+    hosted_client: tuple[TestClient, HostedRepository, AuthManager],
+) -> None:
+    client, _, _ = hosted_client
+    assert (
+        client.post(
+            "/api/auth/login",
+            json={
+                "email": "admin@example.edu",
+                "password": "correct horse battery staple",
+            },
+        ).status_code
+        == 200
+    )
+    users = client.get("/api/admin/users").json()
+    grace_id = next(
+        user["id"] for user in users if user["email"] == "grace@example.edu"
+    )
+    folder = client.post(
+        "/api/admin/folders",
+        json={"name": "Priority review"},
+        headers=csrf_headers(client),
+    ).json()
+    document_ids = [
+        item["id"] for item in client.get("/api/workspace").json()["sessions"]
+    ]
+    assert (
+        client.put(
+            f"/api/admin/folders/{folder['id']}/sessions",
+            json={"document_ids": document_ids},
+            headers=csrf_headers(client),
+        ).status_code
+        == 200
+    )
+
+    assigned = client.put(
+        f"/api/admin/folders/{folder['id']}/assignment",
+        json={"assignee_id": grace_id},
+        headers=csrf_headers(client),
+    )
+
+    assert assigned.status_code == 200
+    assert assigned.json()["folder_id"] == folder["id"]
+    assert len(assigned.json()["assignment_ids"]) == 3
+    workspace = client.get("/api/workspace").json()["sessions"]
+    assert {item["assignee_id"] for item in workspace} == {grace_id}
+    tracked = client.get("/api/admin/folders").json()[0]
+    assert tracked["assigned"] == 3
+    assert tracked["unassigned"] == 0
+
+
 def test_annotator_cannot_access_admin_management(
     hosted_client: tuple[TestClient, HostedRepository, AuthManager],
 ) -> None:
@@ -547,7 +734,6 @@ def test_admin_can_create_and_activate_an_invite_only_annotator_account(
         "/api/admin/users",
         json={
             "email": " New.Annotator@example.edu ",
-            "display_name": "New Annotator",
             "role": "annotator",
         },
         headers=csrf_headers(client),
@@ -557,7 +743,7 @@ def test_admin_can_create_and_activate_an_invite_only_annotator_account(
     assert created.json()["user"] == {
         "id": created.json()["user"]["id"],
         "email": "new.annotator@example.edu",
-        "display_name": "New Annotator",
+        "display_name": "new.annotator@example.edu",
         "role": "annotator",
         "state": "pending_activation",
     }
@@ -644,7 +830,6 @@ def test_admin_cannot_whitelist_an_account_outside_the_approved_domains(
         "/api/admin/users",
         json={
             "email": "outside@gmail.com",
-            "display_name": "Outside User",
             "role": "annotator",
         },
         headers=csrf_headers(client),

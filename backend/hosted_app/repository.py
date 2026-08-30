@@ -21,6 +21,8 @@ from .database import (
     BulkAssignmentMutation,
     Document,
     LoginSession,
+    SessionFolder,
+    SessionFolderMembership,
     User,
     utc_now,
 )
@@ -34,13 +36,15 @@ from .domain import (
     BulkAssignmentResult,
     BulkMutationConflict,
     BulkPlanStale,
-    CompletedLocked,
     DocumentAssignmentPrecondition,
     DocumentDetail,
     DocumentImport,
     DocumentProvenance,
     DuplicateExternalId,
+    DuplicateFolderName,
     DuplicateSelection,
+    FolderAssignmentResult,
+    FolderProgress,
     Forbidden,
     ImportedBatch,
     ImportMutationConflict,
@@ -706,6 +710,223 @@ class HostedRepository:
             self._require_admin(session, admin_id)
             return list(session.exec(select(User).order_by(User.email)).all())
 
+    def create_folder(self, *, name: str, admin_id: str) -> FolderProgress:
+        with self._session_factory() as session:
+            self._require_admin(session, admin_id)
+            folder = SessionFolder(name=name.strip(), created_by=admin_id)
+            session.add(folder)
+            self._record_audit(
+                session,
+                actor_id=admin_id,
+                action="folder.created",
+                target_type="session_folder",
+                target_id=folder.id,
+                before_metadata={"state": None},
+                after_metadata={"folder_id": folder.id, "state": "active"},
+            )
+            try:
+                session.commit()
+            except IntegrityError as error:
+                session.rollback()
+                raise DuplicateFolderName("folder name already exists") from error
+            return FolderProgress(
+                id=folder.id,
+                name=folder.name,
+                session_count=0,
+                unassigned=0,
+                assigned=0,
+                in_progress=0,
+                completed=0,
+            )
+
+    def list_folders(self, *, admin_id: str) -> list[FolderProgress]:
+        with self._session_factory() as session:
+            self._require_admin(session, admin_id)
+            folders = list(
+                session.exec(select(SessionFolder).order_by(SessionFolder.name)).all()
+            )
+            memberships = list(session.exec(select(SessionFolderMembership)).all())
+            assignments = {
+                assignment.document_id: assignment
+                for assignment in session.exec(select(Assignment)).all()
+            }
+            document_ids_by_folder: dict[str, list[str]] = {
+                folder.id: [] for folder in folders
+            }
+            for membership in memberships:
+                if membership.folder_id in document_ids_by_folder:
+                    document_ids_by_folder[membership.folder_id].append(
+                        membership.document_id
+                    )
+            result: list[FolderProgress] = []
+            for folder in folders:
+                document_ids = document_ids_by_folder[folder.id]
+                state_counts = {
+                    state: sum(
+                        assignments.get(document_id) is not None
+                        and assignments[document_id].state == state
+                        for document_id in document_ids
+                    )
+                    for state in AssignmentState
+                }
+                result.append(
+                    FolderProgress(
+                        id=folder.id,
+                        name=folder.name,
+                        session_count=len(document_ids),
+                        unassigned=sum(
+                            document_id not in assignments
+                            for document_id in document_ids
+                        ),
+                        assigned=state_counts[AssignmentState.ASSIGNED],
+                        in_progress=state_counts[AssignmentState.IN_PROGRESS],
+                        completed=state_counts[AssignmentState.COMPLETED],
+                    )
+                )
+            return result
+
+    def move_documents_to_folder(
+        self,
+        *,
+        folder_id: str,
+        document_ids: list[str],
+        admin_id: str,
+    ) -> FolderProgress:
+        with self._session_factory() as session:
+            self._require_admin(session, admin_id)
+            folder = session.get(SessionFolder, folder_id)
+            if folder is None:
+                raise NotFound("folder not found")
+            documents = list(
+                session.exec(
+                    select(Document).where(Document.id.in_(document_ids))
+                ).all()
+            )
+            if len(documents) != len(set(document_ids)):
+                raise NotFound("document not found")
+            now = utc_now()
+            for document_id in document_ids:
+                membership = session.get(SessionFolderMembership, document_id)
+                if membership is None:
+                    membership = SessionFolderMembership(
+                        document_id=document_id,
+                        folder_id=folder_id,
+                        updated_by=admin_id,
+                        updated_at=now,
+                    )
+                else:
+                    membership.folder_id = folder_id
+                    membership.updated_by = admin_id
+                    membership.updated_at = now
+                session.add(membership)
+            folder.updated_at = now
+            session.add(folder)
+            self._record_audit(
+                session,
+                actor_id=admin_id,
+                action="folder.sessions_moved",
+                target_type="session_folder",
+                target_id=folder_id,
+                before_metadata={"document_ids": sorted(document_ids)},
+                after_metadata={
+                    "document_ids": sorted(document_ids),
+                    "folder_id": folder_id,
+                },
+            )
+            session.commit()
+        return next(
+            folder
+            for folder in self.list_folders(admin_id=admin_id)
+            if folder.id == folder_id
+        )
+
+    def assign_folder(
+        self,
+        *,
+        folder_id: str,
+        assignee_id: str,
+        admin_id: str,
+    ) -> FolderAssignmentResult:
+        with self._session_factory() as session:
+            self._require_admin(session, admin_id)
+            if session.get(SessionFolder, folder_id) is None:
+                raise NotFound("folder not found")
+            assignee = session.get(User, assignee_id)
+            if (
+                assignee is None
+                or assignee.state != UserState.ACTIVE
+                or not (
+                    assignee.role == Role.ANNOTATOR
+                    or (assignee.role == Role.ADMIN and assignee.id == admin_id)
+                )
+            ):
+                raise InvalidAssignee(
+                    "assignee must be an active annotator or self-assigning admin"
+                )
+            document_ids = [
+                membership.document_id
+                for membership in session.exec(
+                    select(SessionFolderMembership).where(
+                        SessionFolderMembership.folder_id == folder_id
+                    )
+                ).all()
+            ]
+            assignments_by_document = {
+                assignment.document_id: assignment
+                for assignment in session.exec(
+                    self._assignments_for_documents(document_ids, lock=True)
+                ).all()
+            }
+            assignment_ids: list[str] = []
+            now = utc_now()
+            for document_id in document_ids:
+                assignment = assignments_by_document.get(document_id)
+                if assignment is None:
+                    assignment = Assignment(
+                        document_id=document_id,
+                        assignee_id=assignee_id,
+                        assigned_by=admin_id,
+                        assigned_at=now,
+                    )
+                    action = "assignment.assigned"
+                    before_metadata = {"assignee_id": None, "state": "unassigned"}
+                elif assignment.assignee_id == assignee_id:
+                    assignment_ids.append(assignment.id)
+                    continue
+                else:
+                    action = "assignment.reassigned"
+                    before_metadata = {
+                        "assignee_id": assignment.assignee_id,
+                        "state": assignment.state.value,
+                    }
+                    assignment.assignee_id = assignee_id
+                    assignment.assigned_by = admin_id
+                    assignment.state = AssignmentState.ASSIGNED
+                    assignment.assigned_at = now
+                    assignment.last_activity_at = None
+                    assignment.completed_at = None
+                session.add(assignment)
+                session.flush()
+                assignment_ids.append(assignment.id)
+                self._record_audit(
+                    session,
+                    actor_id=admin_id,
+                    action=action,
+                    target_type="assignment",
+                    target_id=assignment.id,
+                    before_metadata=before_metadata,
+                    after_metadata={
+                        "assignee_id": assignee_id,
+                        "folder_id": folder_id,
+                        "state": AssignmentState.ASSIGNED.value,
+                    },
+                )
+            session.commit()
+            return FolderAssignmentResult(
+                folder_id=folder_id,
+                assignment_ids=sorted(assignment_ids),
+            )
+
     def list_visible_documents(self, user_id: str) -> list[Document]:
         with self._session_factory() as session:
             user = session.get(User, user_id)
@@ -732,9 +953,17 @@ class HostedRepository:
             ):
                 raise VisibilityDenied("document not found")
             annotation = session.get(Annotation, document_id)
+            membership = session.get(SessionFolderMembership, document_id)
+            folder = (
+                session.get(SessionFolder, membership.folder_id)
+                if membership is not None
+                else None
+            )
             return DocumentDetail(
                 id=document.id,
                 batch_id=document.batch_id,
+                folder_id=folder.id if folder else None,
+                folder_name=folder.name if folder else None,
                 external_id=document.external_id,
                 filename=document.filename,
                 raw_text=document.raw_text,
@@ -802,9 +1031,6 @@ class HostedRepository:
                     assignment_state=assignment.state if assignment else None,
                 )
 
-            if assignment and assignment.state == AssignmentState.COMPLETED:
-                raise CompletedLocked("completed work must be reopened before editing")
-
             annotation = session.get(Annotation, document_id)
             current_revision = annotation.revision if annotation else 0
             if expected_revision != current_revision:
@@ -836,7 +1062,8 @@ class HostedRepository:
             session.add(annotation)
             session.add(revision)
             if assignment:
-                assignment.state = AssignmentState.IN_PROGRESS
+                if assignment.state != AssignmentState.COMPLETED:
+                    assignment.state = AssignmentState.IN_PROGRESS
                 assignment.last_activity_at = now
                 session.add(assignment)
             try:
@@ -1232,6 +1459,7 @@ class HostedRepository:
             "assignment_ids",
             "batch_id",
             "document_ids",
+            "folder_id",
             "imported_count",
             "manifest_digest",
             "reassignee_id",

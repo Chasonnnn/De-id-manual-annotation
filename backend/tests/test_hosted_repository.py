@@ -5,10 +5,13 @@ from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, create_engine
+
 from hosted_app.database import Assignment, create_schema
 from hosted_app.domain import (
     AssignmentState,
-    CompletedLocked,
     DocumentImport,
     DuplicateExternalId,
     Forbidden,
@@ -19,9 +22,6 @@ from hosted_app.domain import (
     Role,
 )
 from hosted_app.repository import HostedRepository
-from sqlalchemy.dialects import postgresql
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, create_engine
 
 
 @pytest.fixture
@@ -220,7 +220,7 @@ def test_admin_can_self_assign_but_cannot_assign_another_admin(
     ]
 
 
-def test_admin_can_edit_any_non_completed_document_without_changing_assignment(
+def test_admin_can_edit_any_document_without_changing_assignment(
     repository: HostedRepository,
 ) -> None:
     admin = repository.create_user(
@@ -280,14 +280,14 @@ def test_admin_can_edit_any_non_completed_document_without_changing_assignment(
         repository.complete_assignment(assignment.id, user_id=admin.id).state
         == AssignmentState.COMPLETED
     )
-    with pytest.raises(CompletedLocked):
-        repository.save_annotations(
-            document_id=assigned.id,
-            user_id=admin.id,
-            spans=[],
-            expected_revision=1,
-            mutation_id="admin-completed-save",
-        )
+    completed_save = repository.save_annotations(
+        document_id=assigned.id,
+        user_id=admin.id,
+        spans=[],
+        expected_revision=1,
+        mutation_id="admin-completed-save",
+    )
+    assert completed_save.assignment_state == AssignmentState.COMPLETED
 
 
 def test_saves_are_revisioned_idempotent_and_preserve_imported_content(
@@ -370,7 +370,7 @@ def test_assignment_mutations_use_a_postgresql_row_lock() -> None:
     assert statement.column_descriptions[0]["entity"] is Assignment
 
 
-def test_completed_work_is_locked_until_an_admin_reopens_it(
+def test_completed_work_remains_editable_until_an_admin_reopens_it(
     repository: HostedRepository,
 ) -> None:
     admin = repository.create_user(
@@ -412,14 +412,20 @@ def test_completed_work_is_locked_until_an_admin_reopens_it(
     assert completed.state == AssignmentState.COMPLETED
     assert completed.completed_at is not None
 
-    with pytest.raises(CompletedLocked):
-        repository.save_annotations(
-            document_id=document.id,
-            user_id=annotator.id,
-            spans=[],
-            expected_revision=1,
-            mutation_id="mutation-002",
-        )
+    saved_while_completed = repository.save_annotations(
+        document_id=document.id,
+        user_id=annotator.id,
+        spans=[],
+        expected_revision=1,
+        mutation_id="mutation-002",
+    )
+    assert saved_while_completed.revision == 2
+    assert saved_while_completed.assignment_state == AssignmentState.COMPLETED
+    still_completed = repository.complete_assignment(
+        assignment.id, user_id=annotator.id
+    )
+    assert still_completed.state == AssignmentState.COMPLETED
+    assert still_completed.completed_at == completed.completed_at
     with pytest.raises(Forbidden):
         repository.reopen_assignment(assignment.id, admin_id=other_annotator.id)
 
@@ -430,10 +436,10 @@ def test_completed_work_is_locked_until_an_admin_reopens_it(
         document_id=document.id,
         user_id=annotator.id,
         spans=[],
-        expected_revision=1,
+        expected_revision=2,
         mutation_id="mutation-003",
     )
-    assert saved.revision == 2
+    assert saved.revision == 3
 
 
 def test_admin_progress_counts_assignment_states_and_unassigned_documents(

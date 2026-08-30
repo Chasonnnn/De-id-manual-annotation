@@ -90,6 +90,16 @@ class Batch(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class SessionFolder(SQLModel, table=True):
+    __tablename__ = "session_folders"
+
+    id: str = Field(default_factory=new_id, primary_key=True)
+    name: str = Field(unique=True, index=True)
+    created_by: str = Field(foreign_key="users.id", index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class Document(SQLModel, table=True):
     __tablename__ = "documents"
     __table_args__ = (
@@ -114,6 +124,15 @@ class Document(SQLModel, table=True):
         default=None, sa_column=Column(JSON, nullable=True)
     )
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class SessionFolderMembership(SQLModel, table=True):
+    __tablename__ = "session_folder_memberships"
+
+    document_id: str = Field(foreign_key="documents.id", primary_key=True)
+    folder_id: str = Field(foreign_key="session_folders.id", index=True)
+    updated_by: str = Field(foreign_key="users.id")
+    updated_at: datetime = Field(default_factory=utc_now)
 
 
 class Assignment(SQLModel, table=True):

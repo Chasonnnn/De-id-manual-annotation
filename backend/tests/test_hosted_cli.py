@@ -2,6 +2,7 @@ import json
 from io import StringIO
 
 import httpx2
+
 from hosted_app.cli import run_cli
 from hosted_app.cli_credentials import Credential, InMemoryCredentialStore
 
@@ -188,6 +189,27 @@ def test_whoami_json_uses_the_saved_human_session() -> None:
     assert CSRF not in stdout
 
 
+def test_whoami_uses_the_bound_email_as_the_visible_identity() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            json={
+                "id": "admin-1",
+                "email": EMAIL,
+                "display_name": "Legacy Name",
+                "role": "admin",
+                "state": "active",
+            },
+        )
+
+    code, stdout, stderr, _, _ = invoke(["whoami"], handler, store=logged_in_store())
+
+    assert code == 0
+    assert stdout == f"{EMAIL} (admin, active)\n"
+    assert "Legacy Name" not in stdout
+    assert stderr == ""
+
+
 def test_read_commands_support_json_without_transcript_content() -> None:
     responses = {
         "/api/admin/users": [
@@ -289,6 +311,85 @@ def test_assignment_set_and_reopen_send_csrf_and_report_server_results() -> None
         "Assignment assignment-1 reopened.\n",
         "",
     )
+
+
+def test_folder_commands_create_list_move_and_assign_sessions() -> None:
+    folder = {
+        "id": "folder-1",
+        "name": "August intake",
+        "session_count": 2,
+        "unassigned": 0,
+        "assigned": 2,
+        "in_progress": 0,
+        "completed": 0,
+    }
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert_authenticated(request, csrf=request.method != "GET")
+        if request.method == "GET":
+            assert request.url.path == "/api/admin/folders"
+            return httpx2.Response(200, json=[folder])
+        if request.method == "POST":
+            assert request.url.path == "/api/admin/folders"
+            assert json.loads(request.content) == {"name": "August intake"}
+            return httpx2.Response(201, json=folder)
+        if request.url.path.endswith("/sessions"):
+            assert json.loads(request.content) == {
+                "document_ids": ["document-2", "document-1"]
+            }
+            return httpx2.Response(200, json=folder)
+        assert request.url.path == "/api/admin/folders/folder-1/assignment"
+        assert json.loads(request.content) == {"assignee_id": "annotator-1"}
+        return httpx2.Response(
+            200,
+            json={
+                "folder_id": "folder-1",
+                "assignment_ids": ["assignment-1", "assignment-2"],
+            },
+        )
+
+    commands = [
+        (["folders", "list", "--json"], [folder]),
+        (["folders", "create", "--name", "August intake", "--json"], folder),
+        (
+            [
+                "folders",
+                "move",
+                "--folder-id",
+                "folder-1",
+                "--document-id",
+                "document-2",
+                "--document-id",
+                "document-1",
+                "--json",
+            ],
+            folder,
+        ),
+        (
+            [
+                "folders",
+                "assign",
+                "--folder-id",
+                "folder-1",
+                "--assignee-id",
+                "annotator-1",
+                "--json",
+            ],
+            {
+                "folder_id": "folder-1",
+                "assignment_ids": ["assignment-1", "assignment-2"],
+            },
+        ),
+    ]
+    for args, expected in commands:
+        code, stdout, stderr, _, _ = invoke(
+            args,
+            handler,
+            store=logged_in_store(),
+        )
+        assert code == 0
+        assert json.loads(stdout) == expected
+        assert stderr == ""
 
 
 def test_bulk_assignment_preview_and_apply_use_the_server_plan_contract() -> None:
@@ -543,7 +644,6 @@ def test_user_lifecycle_uses_fixed_backend_contract_and_outputs_activation_once(
             assert request.method == "POST"
             assert json.loads(request.content) == {
                 "email": "ada@cornell.edu",
-                "display_name": "Ada Lovelace",
                 "role": "annotator",
             }
             return httpx2.Response(
@@ -552,7 +652,7 @@ def test_user_lifecycle_uses_fixed_backend_contract_and_outputs_activation_once(
                     "user": {
                         "id": "annotator-1",
                         "email": "ada@cornell.edu",
-                        "display_name": "Ada Lovelace",
+                        "display_name": "ada@cornell.edu",
                         "role": "annotator",
                         "state": "pending_activation",
                     },
@@ -591,8 +691,6 @@ def test_user_lifecycle_uses_fixed_backend_contract_and_outputs_activation_once(
             "create",
             "--email",
             "ada@cornell.edu",
-            "--display-name",
-            "Ada Lovelace",
         ],
         handler,
         store=store,
@@ -663,8 +761,6 @@ def test_activation_output_accepts_only_the_fragment_contract() -> None:
             "create",
             "--email",
             "ada@cornell.edu",
-            "--display-name",
-            "Ada Lovelace",
         ],
         handler,
         store=logged_in_store(),

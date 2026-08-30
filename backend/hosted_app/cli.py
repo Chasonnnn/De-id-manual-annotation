@@ -45,7 +45,6 @@ def _build_parser() -> argparse.ArgumentParser:
     users_list.add_argument("--json", action="store_true")
     users_create = users.add_parser("create")
     users_create.add_argument("--email", required=True)
-    users_create.add_argument("--display-name", required=True)
     users_deactivate = users.add_parser("deactivate")
     users_deactivate.add_argument("--user-id", required=True)
     incomplete = users_deactivate.add_mutually_exclusive_group(required=True)
@@ -64,6 +63,23 @@ def _build_parser() -> argparse.ArgumentParser:
 
     status = commands.add_parser("status")
     status.add_argument("--json", action="store_true")
+
+    folders = commands.add_parser("folders").add_subparsers(
+        dest="folders_command", required=True
+    )
+    folders_list = folders.add_parser("list")
+    folders_list.add_argument("--json", action="store_true")
+    folders_create = folders.add_parser("create")
+    folders_create.add_argument("--name", required=True)
+    folders_create.add_argument("--json", action="store_true")
+    folders_move = folders.add_parser("move")
+    folders_move.add_argument("--folder-id", required=True)
+    folders_move.add_argument("--document-id", action="append", required=True)
+    folders_move.add_argument("--json", action="store_true")
+    folders_assign = folders.add_parser("assign")
+    folders_assign.add_argument("--folder-id", required=True)
+    folders_assign.add_argument("--assignee-id", required=True)
+    folders_assign.add_argument("--json", action="store_true")
 
     assignments = commands.add_parser("assignments").add_subparsers(
         dest="assignments_command", required=True
@@ -279,12 +295,11 @@ def _run_users(
         else:
             _table(
                 stdout,
-                ("ID", "EMAIL", "NAME", "ROLE", "STATE"),
+                ("ID", "EMAIL", "ROLE", "STATE"),
                 [
                     (
                         user["id"],
                         user["email"],
-                        user["display_name"],
                         user["role"],
                         user["state"],
                     )
@@ -299,7 +314,6 @@ def _run_users(
             "/api/admin/users",
             body={
                 "email": args.email,
-                "display_name": args.display_name,
                 "role": "annotator",
             },
             csrf=True,
@@ -403,6 +417,68 @@ def _run_assignments(
         stdout.write(
             f"Applied {len(result['assignment_ids'])} assignments.\n"
             f"Mutation ID: {result['mutation_id']}\n"
+        )
+
+
+def _run_folders(
+    args: argparse.Namespace,
+    *,
+    stdout: TextIO,
+    client: ApiClient,
+) -> None:
+    command = args.folders_command
+    if command == "list":
+        result = client.request("GET", "/api/admin/folders")
+    elif command == "create":
+        result = client.request(
+            "POST",
+            "/api/admin/folders",
+            body={"name": args.name},
+            csrf=True,
+        )
+    elif command == "move":
+        result = client.request(
+            "PUT",
+            f"/api/admin/folders/{args.folder_id}/sessions",
+            body={"document_ids": args.document_id},
+            csrf=True,
+        )
+    else:
+        result = client.request(
+            "PUT",
+            f"/api/admin/folders/{args.folder_id}/assignment",
+            body={"assignee_id": args.assignee_id},
+            csrf=True,
+        )
+    if args.json:
+        _json_output(stdout, result)
+        return
+    if command == "list":
+        _table(
+            stdout,
+            ("ID", "NAME", "SESSIONS", "UNASSIGNED", "IN PROGRESS", "COMPLETED"),
+            [
+                (
+                    folder["id"],
+                    folder["name"],
+                    folder["session_count"],
+                    folder["unassigned"],
+                    folder["in_progress"],
+                    folder["completed"],
+                )
+                for folder in result
+            ],
+        )
+    elif command == "create":
+        stdout.write(f"Created folder {result['id']} ({result['name']}).\n")
+    elif command == "move":
+        stdout.write(
+            f"Moved {len(args.document_id)} sessions to folder {args.folder_id}.\n"
+        )
+    else:
+        stdout.write(
+            f"Assigned {len(result['assignment_ids'])} sessions in folder "
+            f"{args.folder_id}.\n"
         )
 
 
@@ -533,10 +609,7 @@ def run_cli(
             if args.json:
                 _json_output(stdout, user)
             else:
-                stdout.write(
-                    f"{user['display_name']} <{user['email']}> "
-                    f"({user['role']}, {user['state']})\n"
-                )
+                stdout.write(f"{user['email']} ({user['role']}, {user['state']})\n")
         elif args.command == "logout":
             client.request("POST", "/api/auth/logout", body={}, csrf=True)
             credential_store.delete()
@@ -550,11 +623,12 @@ def run_cli(
             else:
                 _table(
                     stdout,
-                    ("ID", "EXTERNAL ID", "FILE", "STATE", "ASSIGNEE"),
+                    ("ID", "EXTERNAL ID", "FOLDER", "FILE", "STATE", "ASSIGNEE"),
                     [
                         (
                             item["id"],
                             item["external_id"],
+                            item.get("folder_name") or "Unfiled",
                             item["filename"],
                             item["assignment_state"] or "unassigned",
                             item["assignee_name"],
@@ -581,6 +655,31 @@ def run_cli(
                         )
                     ],
                 )
+                if status.get("folders"):
+                    _table(
+                        stdout,
+                        (
+                            "FOLDER",
+                            "SESSIONS",
+                            "UNASSIGNED",
+                            "ASSIGNED",
+                            "IN PROGRESS",
+                            "COMPLETED",
+                        ),
+                        [
+                            (
+                                folder["name"],
+                                folder["session_count"],
+                                folder["unassigned"],
+                                folder["assigned"],
+                                folder["in_progress"],
+                                folder["completed"],
+                            )
+                            for folder in status["folders"]
+                        ],
+                    )
+        elif args.command == "folders":
+            _run_folders(args, stdout=stdout, client=client)
         elif args.command == "audit":
             _run_audit(args, stdout=stdout, client=client)
         elif args.command == "batches":

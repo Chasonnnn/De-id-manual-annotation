@@ -5,6 +5,28 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+ENTITY_TYPES = (
+    "NAME",
+    "ADDRESS",
+    "DATE",
+    "PHONE_NUMBER",
+    "FAX_NUMBER",
+    "EMAIL",
+    "SSN",
+    "ACCOUNT_NUMBER",
+    "DEVICE_IDENTIFIER",
+    "URL",
+    "IP_ADDRESS",
+    "BIOMETRIC_IDENTIFIER",
+    "IMAGE",
+    "IDENTIFYING_NUMBER",
+    "AGE",
+    "SCHOOL",
+    "TUTOR_PROVIDER",
+    "CUSTOMIZED_FIELD",
+    "OTHER_LOCATIONS_IDENTIFIED",
+)
+
 
 class Role(StrEnum):
     ADMIN = "admin"
@@ -47,11 +69,11 @@ class RevisionConflict(RepositoryError):
         self.current_revision = current_revision
 
 
-class CompletedLocked(RepositoryError):
+class DuplicateExternalId(RepositoryError):
     pass
 
 
-class DuplicateExternalId(RepositoryError):
+class DuplicateFolderName(RepositoryError):
     pass
 
 
@@ -130,6 +152,8 @@ class SaveResult:
 class DocumentDetail:
     id: str
     batch_id: str
+    folder_id: str | None
+    folder_name: str | None
     external_id: str
     filename: str
     raw_text: str
@@ -150,6 +174,23 @@ class Progress:
     in_progress: int
     completed: int
     by_annotator: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class FolderProgress:
+    id: str
+    name: str
+    session_count: int
+    unassigned: int
+    assigned: int
+    in_progress: int
+    completed: int
+
+
+@dataclass(frozen=True)
+class FolderAssignmentResult:
+    folder_id: str
+    assignment_ids: list[str]
 
 
 @dataclass(frozen=True)
