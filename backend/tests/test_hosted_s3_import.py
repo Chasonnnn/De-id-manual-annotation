@@ -9,6 +9,9 @@ from io import BytesIO
 from typing import Any
 
 import pytest
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, create_engine
+
 from hosted_app.database import create_schema
 from hosted_app.domain import ImportMutationConflict, Role
 from hosted_app.repository import HostedRepository
@@ -31,8 +34,6 @@ from hosted_app.s3_import import (
     Utf8TranscriptDecoder,
     canonical_manifest_digest,
 )
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, create_engine
 
 
 class InMemoryS3Client:

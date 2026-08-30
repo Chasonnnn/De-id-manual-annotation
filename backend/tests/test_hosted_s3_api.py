@@ -7,6 +7,9 @@ from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, create_engine
+
 from hosted_app.api import create_hosted_app
 from hosted_app.auth import AuthManager
 from hosted_app.database import create_schema
@@ -17,8 +20,6 @@ from hosted_app.s3_import import (
     S3CatalogConfig,
     S3ObjectIdentity,
 )
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, create_engine
 
 
 class InMemoryS3Reader:

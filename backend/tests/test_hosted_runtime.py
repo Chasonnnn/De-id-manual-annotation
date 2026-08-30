@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
 from hosted_app.runtime import (
     RuntimeConfigurationError,
     RuntimeSettings,
