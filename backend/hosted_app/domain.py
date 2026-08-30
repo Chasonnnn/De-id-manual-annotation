@@ -123,7 +123,7 @@ class ManualAnnotationExport:
 class SaveResult:
     revision: int
     spans: list[dict[str, Any]]
-    assignment_state: AssignmentState
+    assignment_state: AssignmentState | None
 
 
 @dataclass(frozen=True)

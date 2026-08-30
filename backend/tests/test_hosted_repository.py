@@ -220,6 +220,76 @@ def test_admin_can_self_assign_but_cannot_assign_another_admin(
     ]
 
 
+def test_admin_can_edit_any_non_completed_document_without_changing_assignment(
+    repository: HostedRepository,
+) -> None:
+    admin = repository.create_user(
+        email="admin@example.edu", password_hash="hash-admin", role=Role.ADMIN
+    )
+    annotator = repository.create_user(
+        email="annotator@example.edu",
+        password_hash="hash-annotator",
+        role=Role.ANNOTATOR,
+    )
+    unassigned, assigned = import_documents(
+        repository,
+        admin_id=admin.id,
+        documents=[
+            DocumentImport(
+                external_id="session-unassigned",
+                filename="session-unassigned.json",
+                raw_text="raw",
+                label_set=["NAME"],
+                reference_spans=None,
+            ),
+            DocumentImport(
+                external_id="session-assigned",
+                filename="session-assigned.json",
+                raw_text="raw",
+                label_set=["NAME"],
+                reference_spans=None,
+            ),
+        ],
+    )
+    assignment = repository.assign_document(
+        document_id=assigned.id,
+        assignee_id=annotator.id,
+        assigned_by_id=admin.id,
+    )
+
+    unassigned_save = repository.save_annotations(
+        document_id=unassigned.id,
+        user_id=admin.id,
+        spans=[],
+        expected_revision=0,
+        mutation_id="admin-unassigned-save",
+    )
+    assigned_save = repository.save_annotations(
+        document_id=assigned.id,
+        user_id=admin.id,
+        spans=[],
+        expected_revision=0,
+        mutation_id="admin-assigned-save",
+    )
+
+    assert unassigned_save.assignment_state is None
+    assert assigned_save.assignment_state == AssignmentState.IN_PROGRESS
+    persisted_assignment = repository.list_assignments(admin_id=admin.id)[0]
+    assert persisted_assignment.assignee_id == annotator.id
+    assert (
+        repository.complete_assignment(assignment.id, user_id=admin.id).state
+        == AssignmentState.COMPLETED
+    )
+    with pytest.raises(CompletedLocked):
+        repository.save_annotations(
+            document_id=assigned.id,
+            user_id=admin.id,
+            spans=[],
+            expected_revision=1,
+            mutation_id="admin-completed-save",
+        )
+
+
 def test_saves_are_revisioned_idempotent_and_preserve_imported_content(
     repository: HostedRepository,
 ) -> None:

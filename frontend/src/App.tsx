@@ -269,7 +269,7 @@ function WorkspacePanels({
               className="primary-button compact"
               size="compact"
               type="button"
-              disabled={completed || completing || saveStatus !== "saved"}
+              disabled={!document.assignment || completed || completing || saveStatus !== "saved"}
               onClick={onComplete}
             >
               {completed ? "Completed" : completing ? "Completing…" : "Mark complete"}
@@ -910,7 +910,9 @@ export default function App() {
     }
   }
 
-  const canEditDocument = user !== null && document?.assignment?.assignee_id === user.id;
+  const canEditDocument = user !== null && (
+    user.role === "admin" || document?.assignment?.assignee_id === user.id
+  );
   const pendingRecovery = pendingSaveRef.current;
   const recoveryJson = saveStatus === "conflict" && canEditDocument && document && pendingRecovery
     ? JSON.stringify({

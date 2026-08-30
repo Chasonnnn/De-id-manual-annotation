@@ -162,15 +162,15 @@ describe("hosted annotation app", () => {
     expect(screen.queryByRole("button", { name: "Manage assignments" })).toBeNull();
   });
 
-  it("renders admin session inspection as read-only", async () => {
+  it("lets an admin edit a session assigned to an annotator", async () => {
     mockAuthenticated(admin);
 
     render(<App />);
     fireEvent.click(await screen.findByText("Session 001"));
 
-    expect(await screen.findByText("Admin view is read-only.")).toBeTruthy();
-    expect(screen.queryByLabelText("Manual annotation editor")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Mark complete" })).toBeNull();
+    expect(await screen.findByLabelText("Manual annotation editor")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Mark complete" })).toBeTruthy();
+    expect(screen.queryByText("Admin view is read-only.")).toBeNull();
     expect(screen.queryByRole("button", { name: "Retry save" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Copy recovery JSON" })).toBeNull();
   });

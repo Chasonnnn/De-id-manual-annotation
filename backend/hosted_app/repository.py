@@ -771,10 +771,18 @@ class HostedRepository:
         mutation_id: str,
     ) -> SaveResult:
         with self._session_factory() as session:
+            user = session.get(User, user_id)
             assignment = session.exec(
                 self._assignment_for_update(document_id=document_id)
             ).one_or_none()
-            if assignment is None or assignment.assignee_id != user_id:
+            is_active_admin = (
+                user is not None
+                and user.role == Role.ADMIN
+                and user.state == UserState.ACTIVE
+            )
+            if not is_active_admin and (
+                assignment is None or assignment.assignee_id != user_id
+            ):
                 raise VisibilityDenied("document not found")
 
             prior_revision = session.exec(
@@ -791,10 +799,10 @@ class HostedRepository:
                 return SaveResult(
                     revision=prior_revision.revision,
                     spans=prior_revision.spans,
-                    assignment_state=assignment.state,
+                    assignment_state=assignment.state if assignment else None,
                 )
 
-            if assignment.state == AssignmentState.COMPLETED:
+            if assignment and assignment.state == AssignmentState.COMPLETED:
                 raise CompletedLocked("completed work must be reopened before editing")
 
             annotation = session.get(Annotation, document_id)
@@ -825,11 +833,12 @@ class HostedRepository:
                 author_id=user_id,
                 created_at=now,
             )
-            assignment.state = AssignmentState.IN_PROGRESS
-            assignment.last_activity_at = now
             session.add(annotation)
             session.add(revision)
-            session.add(assignment)
+            if assignment:
+                assignment.state = AssignmentState.IN_PROGRESS
+                assignment.last_activity_at = now
+                session.add(assignment)
             try:
                 session.commit()
             except IntegrityError as error:
@@ -839,15 +848,23 @@ class HostedRepository:
             return SaveResult(
                 revision=next_revision,
                 spans=spans,
-                assignment_state=AssignmentState.IN_PROGRESS,
+                assignment_state=assignment.state if assignment else None,
             )
 
     def complete_assignment(self, assignment_id: str, *, user_id: str) -> Assignment:
         with self._session_factory() as session:
+            user = session.get(User, user_id)
             assignment = session.exec(
                 self._assignment_by_id_for_update(assignment_id)
             ).one_or_none()
-            if assignment is None or assignment.assignee_id != user_id:
+            is_active_admin = (
+                user is not None
+                and user.role == Role.ADMIN
+                and user.state == UserState.ACTIVE
+            )
+            if assignment is None or (
+                assignment.assignee_id != user_id and not is_active_admin
+            ):
                 raise VisibilityDenied("assignment not found")
             if assignment.state != AssignmentState.COMPLETED:
                 before_state = assignment.state
