@@ -22,6 +22,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  document.cookie = "annotation_csrf=; Max-Age=0; path=/";
 });
 
 describe("hosted API client", () => {
@@ -93,6 +94,56 @@ describe("hosted API client", () => {
     expect(fetchMock.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
       headers: expect.objectContaining({ "X-CSRF-Token": "csrf-token-123" }),
     }));
+  });
+
+  it("refreshes a rejected CSRF cookie and retries the identical save once", async () => {
+    document.cookie = "annotation_csrf=stale-token; path=/";
+    const payload = {
+      spans: [{ start: 0, end: 5, label: "NAME", text: "Adoni" }],
+      expected_revision: 0,
+      mutation_id: "mutation-csrf-recovery",
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ detail: "CSRF validation failed" }, 403))
+      .mockImplementationOnce(async () => {
+        document.cookie = "annotation_csrf=fresh-token; path=/";
+        return new Response(null, { status: 204 });
+      })
+      .mockResolvedValueOnce(jsonResponse({ revision: 1, spans: payload.spans }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(saveAnnotations("doc-1", payload)).resolves.toEqual({
+      revision: 1,
+      spans: payload.spans,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/documents/doc-1/annotations");
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/auth/csrf");
+    expect(fetchMock.mock.calls[2]?.[0]).toBe("/api/documents/doc-1/annotations");
+    expect(fetchMock.mock.calls[2]?.[1]).toEqual(expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify(payload),
+      headers: expect.objectContaining({ "X-CSRF-Token": "fresh-token" }),
+    }));
+  });
+
+  it("surfaces the original CSRF failure when token refresh is rejected", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ detail: "CSRF validation failed" }, 403))
+      .mockResolvedValueOnce(jsonResponse({ detail: "Authentication required" }, 401));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(saveAnnotations("doc-1", {
+      spans: [],
+      expected_revision: 0,
+      mutation_id: "mutation-expired-session",
+    })).rejects.toEqual(expect.objectContaining({
+      status: 403,
+      message: "CSRF validation failed",
+    }));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/auth/csrf");
   });
 
   it("assigns a document through the idempotent document endpoint", async () => {

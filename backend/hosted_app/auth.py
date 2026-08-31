@@ -211,7 +211,7 @@ class AuthManager:
         self._repository.create_login_session(session)
         return LoginResult(
             token=token,
-            csrf_token=self._csrf_token(token),
+            csrf_token=self.csrf_token(token),
             expires_at=expires_at,
             principal=AuthenticatedPrincipal(
                 id=user.id,
@@ -223,10 +223,10 @@ class AuthManager:
         )
 
     def validate_csrf(self, token: str, csrf_token: str) -> bool:
-        return compare_digest(self._csrf_token(token), csrf_token)
+        return compare_digest(self.csrf_token(token), csrf_token)
 
     @staticmethod
-    def _csrf_token(token: str) -> str:
+    def csrf_token(token: str) -> str:
         return new_hmac(
             token.encode(),
             b"annotation-csrf-v1",

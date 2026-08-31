@@ -37,7 +37,7 @@ function readCookie(name: string): string | undefined {
     ?.slice(prefix.length);
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, canRefreshCsrf = true): Promise<T> {
   const method = (init?.method ?? "GET").toUpperCase();
   const csrfToken = method === "GET" || method === "HEAD" || path === "/api/auth/login"
     ? undefined
@@ -60,7 +60,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // The HTTP status still provides an explicit failure when no JSON body exists.
     }
-    throw new ApiError(response.status, message);
+    const error = new ApiError(response.status, message);
+    if (
+      canRefreshCsrf
+      && method !== "GET"
+      && method !== "HEAD"
+      && error.status === 403
+      && error.message === "CSRF validation failed"
+    ) {
+      const refreshed = await fetch("/api/auth/csrf", { credentials: "same-origin" });
+      if (refreshed.ok) return request(path, init, false);
+    }
+    throw error;
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;

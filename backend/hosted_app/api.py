@@ -555,6 +555,30 @@ def create_hosted_app(
     def me(principal: CurrentPrincipal) -> UserResponse:
         return _user_response(principal)
 
+    @app.get("/api/auth/csrf", status_code=status.HTTP_204_NO_CONTENT)
+    def refresh_csrf(
+        response: Response,
+        principal: CurrentPrincipal,
+        annotation_session: Annotated[
+            str | None,
+            Cookie(alias=SESSION_COOKIE),
+        ] = None,
+    ) -> None:
+        del principal
+        if not annotation_session:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+            )
+        response.set_cookie(
+            key=CSRF_COOKIE,
+            value=auth.csrf_token(annotation_session),
+            httponly=False,
+            secure=cookie_secure,
+            samesite="lax",
+            path="/",
+        )
+
     @app.post(
         "/api/auth/logout",
         status_code=status.HTTP_204_NO_CONTENT,

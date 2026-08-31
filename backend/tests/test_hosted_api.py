@@ -204,6 +204,49 @@ def test_authenticated_writes_require_the_session_bound_csrf_token(
     assert accepted.status_code == 200
 
 
+def test_authenticated_client_can_restore_a_missing_csrf_cookie(
+    hosted_client: tuple[TestClient, HostedRepository, AuthManager],
+) -> None:
+    client, _, _ = hosted_client
+    assert client.get("/api/auth/csrf").status_code == 401
+    assert (
+        client.post(
+            "/api/auth/login",
+            json={"email": "ada@example.edu", "password": "ada secure password"},
+        ).status_code
+        == 200
+    )
+    document_id = client.get("/api/workspace").json()["sessions"][0]["id"]
+    session_cookie = client.cookies["annotation_session"]
+    client.cookies.delete("annotation_csrf")
+
+    failed = client.put(
+        f"/api/documents/{document_id}/annotations",
+        json={
+            "spans": [],
+            "expected_revision": 0,
+            "mutation_id": "csrf-recovery",
+        },
+    )
+    refreshed = client.get("/api/auth/csrf")
+    recovered = client.put(
+        f"/api/documents/{document_id}/annotations",
+        json={
+            "spans": [],
+            "expected_revision": 0,
+            "mutation_id": "csrf-recovery",
+        },
+        headers=csrf_headers(client),
+    )
+
+    assert failed.status_code == 403
+    assert failed.json() == {"detail": "CSRF validation failed"}
+    assert refreshed.status_code == 204
+    assert client.cookies["annotation_session"] == session_cookie
+    assert client.cookies["annotation_csrf"]
+    assert recovered.status_code == 200
+
+
 def test_health_probe_does_not_require_authentication(
     hosted_client: tuple[TestClient, HostedRepository, AuthManager],
 ) -> None:
