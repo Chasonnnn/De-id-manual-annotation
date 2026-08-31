@@ -80,7 +80,7 @@ def s3_api() -> tuple[TestClient, HostedRepository, AuthManager, InMemoryS3Reade
     )
     create_schema(engine)
     repository = HostedRepository(lambda: Session(engine))
-    auth = AuthManager(repository, allowed_email_domains=("example.edu",))
+    auth = AuthManager(repository)
     auth.bootstrap_admin(
         "admin@example.edu",
         "correct horse battery staple",

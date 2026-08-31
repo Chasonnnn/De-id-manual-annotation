@@ -6,11 +6,11 @@ A human user who performs an authenticated action through the web or command-lin
 
 ## Human Admin
 
-An active user with an approved Cornell email who can manage annotators, annotation batches, assignments, and releases.
+An active user with an explicitly created email account who can manage annotators, annotation batches, assignments, and releases.
 
 ## Annotator
 
-An active user with an approved Cornell email who can view and edit only assigned sessions.
+An active user with an explicitly created email account who can view and edit only assigned sessions.
 
 ## Account State
 

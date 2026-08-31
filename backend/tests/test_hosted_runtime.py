@@ -38,7 +38,6 @@ def test_runtime_parses_explicit_cookie_and_bootstrap_configuration() -> None:
     assert settings.initial_admin_email == "admin@example.edu"
     assert settings.initial_admin_display_name == "Admin"
     assert settings.initial_admin_password == "correct horse battery staple"
-    assert settings.allowed_email_domains == ("cornell.edu",)
 
 
 def test_runtime_parses_one_governed_s3_bucket_and_explicit_source_prefixes() -> None:

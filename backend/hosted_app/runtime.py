@@ -95,7 +95,6 @@ class RuntimeSettings:
     database_url: str
     cookie_secure: bool = True
     allowed_hosts: tuple[str, ...] = ("localhost", "127.0.0.1")
-    allowed_email_domains: tuple[str, ...] = ("cornell.edu",)
     initial_admin_email: str | None = None
     initial_admin_display_name: str | None = None
     initial_admin_password: str | None = None
@@ -189,10 +188,7 @@ def build_runtime_app(settings: RuntimeSettings) -> FastAPI:
     engine = create_engine(settings.database_url, pool_pre_ping=True)
     create_schema(engine)
     repository = HostedRepository(lambda: Session(engine))
-    auth = AuthManager(
-        repository,
-        allowed_email_domains=settings.allowed_email_domains,
-    )
+    auth = AuthManager(repository)
 
     if settings.initial_admin_email is not None:
         existing = repository.get_user_by_email(settings.initial_admin_email)

@@ -126,15 +126,11 @@ class AuthManager:
         now: Callable[[], datetime] | None = None,
         session_ttl: timedelta = timedelta(hours=12),
         activation_ttl: timedelta = timedelta(hours=24),
-        allowed_email_domains: tuple[str, ...] = (),
     ) -> None:
         self._repository = repository
         self._now = now or (lambda: datetime.now(UTC))
         self._session_ttl = session_ttl
         self._activation_ttl = activation_ttl
-        self._allowed_email_domains = frozenset(
-            domain.strip().lower() for domain in allowed_email_domains if domain.strip()
-        )
         self._password_hash = PasswordHash.recommended()
         self._unknown_user_hash = self._password_hash.hash(secrets.token_urlsafe(32))
 
@@ -170,16 +166,8 @@ class AuthManager:
     def normalize_account_email(self, email: str) -> str:
         normalized_email = email.strip().lower()
         local_part, separator, domain = normalized_email.rpartition("@")
-        if (
-            not separator
-            or not local_part
-            or not domain
-            or (
-                self._allowed_email_domains
-                and domain not in self._allowed_email_domains
-            )
-        ):
-            raise EmailNotAllowed("approved Cornell email is required")
+        if not separator or not local_part or not domain:
+            raise EmailNotAllowed("valid email is required")
         return normalized_email
 
     def login(self, email: str, password: str) -> LoginResult:

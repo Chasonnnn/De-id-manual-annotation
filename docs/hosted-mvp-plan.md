@@ -4,7 +4,7 @@
 
 - The product is a hosted annotation application with a web client and a command-line client.
 - Both clients use the same authenticated human identity, permissions, domain operations, and audit records.
-- Accounts are restricted to explicitly created `@cornell.edu` users. Public registration and Cornell SSO are excluded from the pilot.
+- Accounts are restricted to explicitly created email addresses. Public registration and SSO are excluded from the pilot.
 - Admins can create, activate, deactivate, and reactivate annotators; import annotation batches; assign, rebalance, reassign, and reopen sessions; inspect progress; and build releases.
 - Annotators can see only assigned sessions, edit manual annotations, and mark work complete.
 - Raw and processed source objects remain immutable in S3. Live annotation state is revisioned in PostgreSQL.
@@ -80,7 +80,7 @@ One credential-store interface has a macOS Keychain adapter for the CLI and an i
 ### Work
 
 1. Replace the active boolean contract with explicit account states: `pending_activation`, `active`, and `deactivated`.
-2. Make admin user creation accept Cornell email and display name without accepting a permanent password.
+2. Make admin user creation accept an email address without accepting a permanent password.
 3. Generate a single-use activation token, store only its hash, expire it after twenty-four hours, and return the activation URL once.
 4. Let the annotator set the initial password through the activation page.
 5. Add admin deactivation, reactivation, and password-reset operations.

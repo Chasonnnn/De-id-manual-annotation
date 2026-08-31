@@ -522,7 +522,7 @@ def test_bulk_and_audit_router_enforces_admin_and_exposes_filtered_events() -> N
 
 def test_integrated_bulk_routes_require_login_csrf_and_admin_role() -> None:
     repository = make_repository()
-    auth = AuthManager(repository, allowed_email_domains=("example.edu",))
+    auth = AuthManager(repository)
     admin = auth.bootstrap_admin(
         "admin@example.edu",
         "correct horse battery staple",

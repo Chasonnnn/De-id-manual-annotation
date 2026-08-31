@@ -31,7 +31,7 @@ DATABASE_URL=postgresql+psycopg://USER:PASSWORD@HOST:5432/DATABASE?sslmode=requi
 The first deployment may bootstrap one administrator:
 
 ```text
-INITIAL_ADMIN_EMAIL=<admin>@cornell.edu
+INITIAL_ADMIN_EMAIL=<admin-email>
 INITIAL_ADMIN_DISPLAY_NAME=Admin
 INITIAL_ADMIN_PASSWORD=<at-least-12-characters>
 ```

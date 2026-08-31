@@ -27,10 +27,7 @@ def hosted_client() -> tuple[TestClient, HostedRepository, AuthManager]:
     )
     create_schema(engine)
     repository = HostedRepository(lambda: Session(engine))
-    auth = AuthManager(
-        repository,
-        allowed_email_domains=("example.edu", "cornell.edu"),
-    )
+    auth = AuthManager(repository)
     admin = auth.bootstrap_admin(
         "admin@example.edu",
         "correct horse battery staple",
@@ -133,7 +130,7 @@ def test_login_cookie_authenticates_me_without_exposing_password_data(
     assert me.json() == response.json()
 
 
-def test_login_rejects_email_outside_the_configured_whitelist(
+def test_login_rejects_an_unknown_email_from_any_domain(
     hosted_client: tuple[TestClient, HostedRepository, AuthManager],
 ) -> None:
     client, _, _ = hosted_client
@@ -145,6 +142,31 @@ def test_login_rejects_email_outside_the_configured_whitelist(
 
     assert response.status_code == 401
     assert response.json() == {"detail": "Invalid email or password"}
+
+
+def test_admin_rejects_a_malformed_email_address(
+    hosted_client: tuple[TestClient, HostedRepository, AuthManager],
+) -> None:
+    client, _, _ = hosted_client
+    assert (
+        client.post(
+            "/api/auth/login",
+            json={
+                "email": "admin@example.edu",
+                "password": "correct horse battery staple",
+            },
+        ).status_code
+        == 200
+    )
+
+    response = client.post(
+        "/api/admin/users",
+        json={"email": "not-an-email", "role": "annotator"},
+        headers=csrf_headers(client),
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "valid email is required"}
 
 
 def test_request_bodies_reject_unknown_fields(
@@ -854,7 +876,7 @@ def test_admin_can_create_and_activate_an_invite_only_annotator_account(
     )
 
 
-def test_admin_cannot_whitelist_an_account_outside_the_approved_domains(
+def test_admin_can_invite_an_account_from_any_email_domain(
     hosted_client: tuple[TestClient, HostedRepository, AuthManager],
 ) -> None:
     client, _, _ = hosted_client
@@ -872,14 +894,20 @@ def test_admin_cannot_whitelist_an_account_outside_the_approved_domains(
     response = client.post(
         "/api/admin/users",
         json={
-            "email": "outside@gmail.com",
+            "email": "annotator@freshcognate.com",
             "role": "annotator",
         },
         headers=csrf_headers(client),
     )
 
-    assert response.status_code == 422
-    assert response.json() == {"detail": "approved Cornell email is required"}
+    assert response.status_code == 201
+    assert response.json()["user"] == {
+        "id": response.json()["user"]["id"],
+        "email": "annotator@freshcognate.com",
+        "display_name": "annotator@freshcognate.com",
+        "role": "annotator",
+        "state": "pending_activation",
+    }
 
 
 def test_admin_password_reset_revokes_sessions_and_issues_single_use_activation(

@@ -40,9 +40,9 @@ Subsequent runs can omit `--install`. The frontend is served at `http://localhos
 Run the CLI from `backend/`. Login prompts for the password without echo and stores the resulting human session in macOS Keychain.
 
 ```bash
-uv run annotationctl login --url http://localhost:8000 --email admin@cornell.edu
+uv run annotationctl login --url http://localhost:8000 --email admin@example.com
 uv run annotationctl whoami
-uv run annotationctl users create --email annotator@cornell.edu --display-name "Annotator"
+uv run annotationctl users create --email annotator@example.com
 uv run annotationctl sessions list
 uv run annotationctl status
 ```
