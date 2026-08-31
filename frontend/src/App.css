@@ -185,8 +185,9 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .state-dot.started { background: #f6b73c; }
 .state-dot.complete { background: #45b97c; }
 .sidebar-empty { padding: 12px 16px; color: #8e99ad; font-size: 13px; }
-.admin-button {
-  margin: 10px 12px;
+.sidebar-tools { display: grid; gap: 8px; padding: 10px 12px; }
+.sidebar-tool-button {
+  width: 100%;
   min-height: 38px;
   border: 1px solid #465673;
   border-radius: 7px;
@@ -195,6 +196,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   font-size: 12px;
   font-weight: 600;
 }
+.sidebar-tool-button:hover:not(:disabled) { color: #fff; background: #29354a; }
 .account-block {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -287,22 +289,6 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   letter-spacing: .03em;
 }
 .panel-heading > span { color: var(--muted); font-size: 11px; }
-.reference-heading { gap: 12px; }
-.reference-tabs { display: flex; align-items: center; gap: 4px; }
-.reference-tabs button {
-  min-height: 28px;
-  padding: 0 9px;
-  border: 0;
-  border-radius: 6px;
-  color: #667085;
-  background: transparent;
-  font: inherit;
-  font-size: 11px;
-  font-weight: 700;
-  cursor: pointer;
-}
-.reference-tabs button:hover { background: #f0f3f8; }
-.reference-tabs button[aria-selected="true"] { color: #243f82; background: #e9efff; }
 .hosted-panel-body, .pane-body {
   flex: 1;
   min-height: 0;
@@ -345,6 +331,48 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .codebook-label { display: inline-block; max-width: 100%; padding: 4px 7px; border-radius: 4px; color: #172033; font-size: 10px; font-weight: 800; overflow-wrap: anywhere; }
 .codebook-entry p { margin: 0; font-size: 12px; line-height: 1.45; }
 .codebook-entry ul { display: grid; gap: 3px; margin: 8px 0 0; padding-left: 18px; color: #5b6575; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; overflow-wrap: anywhere; }
+
+.codebook-dialog-layer {
+  position: fixed;
+  z-index: 2000;
+  inset: 0;
+  display: grid;
+  padding: 16px;
+  place-items: center;
+  background: rgba(15, 23, 42, .58);
+}
+.codebook-dialog {
+  position: relative;
+  inset: auto;
+  display: flex;
+  width: min(900px, 100%);
+  height: min(760px, 100%);
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #cfd6e2;
+  border-radius: 12px;
+  background: #f8fafc;
+  box-shadow: 0 24px 64px rgba(15, 23, 42, .34);
+}
+.codebook-dialog-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  background: #fff;
+}
+.codebook-dialog-header > div { display: grid; gap: 2px; }
+.codebook-dialog-header h2 { margin: 0; color: var(--ink); font-size: 18px; }
+.codebook-dialog-header span { color: var(--muted); font-size: 11px; }
+.codebook-dialog-header button { min-height: 36px; }
+.codebook-dialog .codebook-panel { background: #f8fafc; }
 
 .transcript-rows { display: grid; align-content: start; }
 .transcript-row {
@@ -560,7 +588,6 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   .workspace-actions { flex-wrap: wrap; justify-content: flex-start; gap: 6px; }
   .workspace-actions > button { flex: 1 1 auto; }
   .save-state { display: none; }
-  .reference-heading { align-items: flex-start; flex-direction: column; padding: 7px 12px; }
   .codebook-entry { grid-template-columns: 1fr; gap: 8px; }
   .progress-cards { grid-template-columns: repeat(2, 1fr); }
   .folder-management-heading, .new-folder-form, .folder-assignment-form, .folder-move-form { align-items: stretch; flex-direction: column; }

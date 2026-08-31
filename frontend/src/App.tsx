@@ -198,6 +198,7 @@ function SessionSidebar({
   selectedId,
   saveStatus,
   onSelect,
+  onCodebook,
   onAdmin,
   onLogout,
 }: {
@@ -206,6 +207,7 @@ function SessionSidebar({
   selectedId: string | null;
   saveStatus: SaveStatus;
   onSelect: (id: string) => void;
+  onCodebook: () => void;
   onAdmin: () => void;
   onLogout: () => void;
 }) {
@@ -301,17 +303,55 @@ function SessionSidebar({
         })}
         {visible.length === 0 && <p className="sidebar-empty">No sessions</p>}
       </nav>
-      {user.role === "admin" && (
-        <Button className="admin-button" variant="outline" type="button" disabled={saveStatus !== "saved"} onClick={onAdmin}>
-          Manage assignments
+      <div className="sidebar-tools">
+        <Button className="sidebar-tool-button" variant="outline" type="button" onClick={onCodebook}>
+          Codebook
         </Button>
-      )}
+        {user.role === "admin" && (
+          <Button className="admin-button sidebar-tool-button" variant="outline" type="button" disabled={saveStatus !== "saved"} onClick={onAdmin}>
+            Manage assignments
+          </Button>
+        )}
+      </div>
       <div className="account-block">
         <span>{user.email}</span>
         <small>{user.role === "admin" ? "Admin" : "Annotator"}</small>
         <Button variant="ghost" type="button" disabled={saveStatus !== "saved"} onClick={onLogout}>Sign out</Button>
       </div>
     </aside>
+  );
+}
+
+function CodebookDialog({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="codebook-dialog-layer">
+      <dialog
+        open
+        className="codebook-dialog"
+        aria-labelledby="codebook-dialog-title"
+        aria-modal="true"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") onClose();
+        }}
+      >
+        <header className="codebook-dialog-header">
+          <div>
+            <h2 id="codebook-dialog-title">Annotation codebook</h2>
+            <span>{ENTITY_TYPES.length} types</span>
+          </div>
+          <Button
+            variant="outline"
+            type="button"
+            autoFocus
+            aria-label="Close codebook"
+            onClick={onClose}
+          >
+            Close
+          </Button>
+        </header>
+        <CodebookPanel />
+      </dialog>
+    </div>
   );
 }
 
@@ -349,7 +389,6 @@ function WorkspacePanels({
   const completed = document.assignment?.state === "completed";
   const [comparisonMode, setComparisonMode] = useState(false);
   const [completionReviewOpen, setCompletionReviewOpen] = useState(false);
-  const [referenceView, setReferenceView] = useState<"session" | "codebook">("session");
   const manualScrollRef = useRef<HTMLDivElement>(null);
   const referenceScrollRef = useRef<HTMLDivElement>(null);
   const scrollSyncLockRef = useRef(false);
@@ -468,51 +507,29 @@ function WorkspacePanels({
           />
         </section>
         <section className="hosted-panel reference-panel">
-          <div className="panel-heading reference-heading">
-            <h2 className="visually-hidden">Reference</h2>
-            <div className="reference-tabs" role="tablist" aria-label="Reference panel">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={referenceView === "session"}
-                onClick={() => setReferenceView("session")}
-              >
-                Session reference
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={referenceView === "codebook"}
-                onClick={() => setReferenceView("codebook")}
-              >
-                Codebook
-              </button>
-            </div>
-            <span>{referenceView === "session" ? `${document.reference_annotations?.length ?? 0} spans` : `${ENTITY_TYPES.length} types`}</span>
+          <div className="panel-heading">
+            <h2>Reference</h2>
+            <span>{document.reference_annotations?.length ?? 0} spans</span>
           </div>
-          {referenceView === "codebook" ? (
-            <CodebookPanel />
-          ) : (
-            <div
-              className="hosted-panel-body transcript-body"
-              ref={referenceScrollRef}
-              onScroll={(event) => synchronizeScroll(event.currentTarget, manualScrollRef.current)}
-            >
-              {document.reference_annotations === null ? (
-                <div className="reference-empty">
-                  <span aria-hidden="true">—</span>
-                  <p>Reference annotations are not available for this session.</p>
-                </div>
-              ) : (
-                <TranscriptRows
-                  text={document.raw_text}
-                  spans={document.reference_annotations}
-                  comparisonSpans={spans}
-                  comparisonMode={comparisonMode}
-                />
-              )}
-            </div>
-          )}
+          <div
+            className="hosted-panel-body transcript-body"
+            ref={referenceScrollRef}
+            onScroll={(event) => synchronizeScroll(event.currentTarget, manualScrollRef.current)}
+          >
+            {document.reference_annotations === null ? (
+              <div className="reference-empty">
+                <span aria-hidden="true">—</span>
+                <p>Reference annotations are not available for this session.</p>
+              </div>
+            ) : (
+              <TranscriptRows
+                text={document.raw_text}
+                spans={document.reference_annotations}
+                comparisonSpans={spans}
+                comparisonMode={comparisonMode}
+              />
+            )}
+          </div>
         </section>
         </div>
       </div>
@@ -1061,6 +1078,7 @@ export default function App() {
   const [documentLoadState, setDocumentLoadState] = useState<"idle" | "loading">("idle");
   const [completing, setCompleting] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
+  const [codebookOpen, setCodebookOpen] = useState(false);
   const [appError, setAppError] = useState<string | null>(null);
   const [recoveryCopyState, setRecoveryCopyState] = useState<RecoveryCopyState>({ status: "idle", error: null });
   const revisionRef = useRef(0);
@@ -1338,6 +1356,7 @@ export default function App() {
         selectedId={selectedId}
         saveStatus={saveStatus}
         onSelect={(id) => { void handleSelect(id); }}
+        onCodebook={() => setCodebookOpen(true)}
         onAdmin={() => {
           documentLoadRequestRef.current += 1;
           setAdminOpen(true);
@@ -1382,6 +1401,7 @@ export default function App() {
           </div>
         )}
       </div>
+      {codebookOpen && <CodebookDialog onClose={() => setCodebookOpen(false)} />}
     </div>
   );
 }

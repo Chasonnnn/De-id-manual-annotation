@@ -363,17 +363,28 @@ describe("hosted annotation app", () => {
     expect(status?.lastElementChild?.classList.contains("save-copy")).toBe(true);
   });
 
-  it("keeps the manual editor available while showing the codebook", async () => {
+  it("opens the codebook from the sidebar and closes it without replacing the workspace", async () => {
     mockAuthenticated();
 
     render(<App />);
     fireEvent.click(await screen.findByText("Session 001"));
-    fireEvent.click(await screen.findByRole("tab", { name: "Codebook" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Codebook" }));
 
+    const dialog = await screen.findByRole("dialog", { name: "Annotation codebook" });
     expect(screen.getByText("Manual annotation")).toBeTruthy();
-    expect(screen.getByText("Examples are synthetic and contain no session data.")).toBeTruthy();
-    expect(screen.getByRole("list", { name: "NAME examples" }).children).toHaveLength(2);
-    expect(screen.getByRole("tab", { name: "Codebook" }).getAttribute("aria-selected")).toBe("true");
+    expect(within(dialog).getByText("Examples are synthetic and contain no session data.")).toBeTruthy();
+    expect(within(dialog).getByRole("list", { name: "NAME examples" }).children).toHaveLength(2);
+    expect(screen.queryByRole("tab", { name: "Codebook" })).toBeNull();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close codebook" }));
+
+    expect(screen.queryByRole("dialog", { name: "Annotation codebook" })).toBeNull();
+    expect(screen.getByText("Manual annotation")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Codebook" }));
+    fireEvent.keyDown(await screen.findByRole("dialog", { name: "Annotation codebook" }), { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Annotation codebook" })).toBeNull();
+    expect(screen.getByText("Manual annotation")).toBeTruthy();
   });
 
   it("guards browser unload only while annotation changes are unsaved", async () => {

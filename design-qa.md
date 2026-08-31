@@ -62,14 +62,17 @@ No actionable P0, P1, or P2 issue remains.
    - Corrected the save-status dot selector so the status copy retains its natural dimensions.
    - Preserved the browser text selection while the annotation-type picker is open.
    - Added a v4 codebook with all 19 canonical labels and two synthetic examples per label.
-   - Verified annotation, save response, selection persistence, codebook access, and zero page-level horizontal overflow at 516×490, 800×600, 1024×768, 1366×768, and 1920×1080.
+   - Moved the codebook from the reference-panel tabs to a full-width sidebar control directly above Manage assignments.
+   - Source/trigger comparison: `output/playwright/codebook-trigger-source-vs-implementation.png`.
+   - Dialog implementation: `output/playwright/codebook-dialog-reported-narrow.png`; initial review found a P1 clipping issue caused by the sticky sidebar stacking context, then lifting the dialog to the application root removed the obstruction.
+   - Verified annotation, save response, selection persistence, closable modal access, unchanged annotation scroll position, reachable Close control, complete viewport containment, and zero page-level horizontal overflow at 516×490, 800×600, 1024×768, 1366×768, and 1920×1080.
 
 ## Interaction verification
 
 - Comparison toggle: match and difference states verified.
 - Label picker: exactly 19 canonical labels plus Delete, in the approved order.
 - Selection persistence: selected text remains selected until the annotator chooses a label or dismisses the picker.
-- Codebook: all 19 canonical labels and exactly two synthetic examples per label remain available beside the manual editor.
+- Codebook: all 19 canonical labels and exactly two synthetic examples per label open in a closable modal while the current annotation workspace remains mounted.
 - Completion checkpoint: manual/reference counts, save status, Keep editing, and Complete session verified.
 - Completed-session editing: label picker, save lifecycle, and persistent Complete status verified.
 - Next session: advances the assignment and updates the position indicator.
