@@ -136,6 +136,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   text-transform: uppercase;
 }
 .session-search {
+  width: auto;
   margin: 0 12px 10px;
   min-height: 36px;
   padding: 0 10px;
