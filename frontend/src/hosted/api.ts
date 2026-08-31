@@ -18,6 +18,17 @@ export type IncompleteAssignmentAction =
   | { action: "unassign" }
   | { action: "reassign"; assignee_id: string };
 
+export interface BulkAssignmentPreview {
+  plan_digest: string;
+  assignments: Array<{ document_id: string; assignee_id: string }>;
+}
+
+export interface BulkAssignmentResult {
+  plan_digest: string;
+  mutation_id: string;
+  assignment_ids: string[];
+}
+
 export class ApiError extends Error {
   public readonly status: number;
 
@@ -205,5 +216,35 @@ export function assignSession(payload: {
   return request(`/api/admin/documents/${encodeURIComponent(payload.document_id)}/assignment`, {
     method: "PUT",
     body: JSON.stringify({ assignee_id: payload.assignee_id }),
+  });
+}
+
+export function previewBulkAssignment(
+  documentIds: string[],
+  annotatorIds: string[],
+): Promise<BulkAssignmentPreview> {
+  return request("/api/admin/assignments/bulk/preview", {
+    method: "POST",
+    body: JSON.stringify({
+      document_ids: documentIds,
+      annotator_ids: annotatorIds,
+    }),
+  });
+}
+
+export function applyBulkAssignment(
+  documentIds: string[],
+  annotatorIds: string[],
+  planDigest: string,
+  mutationId: string,
+): Promise<BulkAssignmentResult> {
+  return request("/api/admin/assignments/bulk/apply", {
+    method: "POST",
+    body: JSON.stringify({
+      document_ids: documentIds,
+      annotator_ids: annotatorIds,
+      plan_digest: planDigest,
+      mutation_id: mutationId,
+    }),
   });
 }

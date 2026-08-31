@@ -469,6 +469,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .folder-assignment-form { display: flex; align-items: end; gap: 8px; }
 .folder-assignment-form label { display: grid; gap: 5px; color: #475467; font-size: 11px; font-weight: 700; }
 .folder-assignment-form select,
+.selected-assignment-form select,
 .folder-move-form select {
   min-height: 40px;
   padding: 0 10px;
@@ -493,7 +494,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .folder-session-list small { color: var(--muted); }
 .folder-session-list b { color: #475467; font-size: 11px; text-align: right; }
 .folder-session-list .admin-empty { padding: 22px 18px; }
-.folder-move-form {
+.folder-selected-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -504,7 +505,8 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   font-size: 11px;
   font-weight: 700;
 }
-.folder-move-form label { color: #475467; }
+.selected-assignment-form, .folder-move-form { display: flex; align-items: center; gap: 9px; }
+.selected-assignment-form label, .folder-move-form label { color: #475467; }
 .assignment-form { display: grid; grid-template-columns: 90px minmax(180px, 1fr) 90px minmax(180px, 1fr) auto; align-items: center; gap: 10px; }
 .assignment-form label { font-size: 12px; font-weight: 600; }
 .stacked-form { display: grid; gap: 8px; }
@@ -565,7 +567,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   .assignment-form { grid-template-columns: 1fr; }
   .folder-detail-header { align-items: stretch; flex-direction: column; }
   .folder-management-layout { grid-template-columns: 180px minmax(0, 1fr); }
-  .folder-assignment-form, .folder-move-form { flex-wrap: wrap; }
+  .folder-selected-actions, .selected-assignment-form, .folder-assignment-form, .folder-move-form { flex-wrap: wrap; }
   .folder-assignment-form label { flex: 1 1 190px; }
   .folder-session-list > label { grid-template-columns: auto minmax(75px, 1fr) auto auto; }
   .progress-cards { grid-template-columns: repeat(3, 1fr); }
@@ -591,7 +593,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   .save-state { display: none; }
   .codebook-entry { grid-template-columns: 1fr; gap: 8px; }
   .progress-cards { grid-template-columns: repeat(2, 1fr); }
-  .folder-management-heading, .new-folder-form, .folder-assignment-form, .folder-move-form { align-items: stretch; flex-direction: column; }
+  .folder-management-heading, .new-folder-form, .folder-selected-actions, .selected-assignment-form, .folder-assignment-form, .folder-move-form { align-items: stretch; flex-direction: column; }
   .new-folder-form input { width: 100%; }
   .folder-management-layout { grid-template-columns: 1fr; }
   .admin-folder-list { border-right: 0; border-bottom: 1px solid var(--line); }

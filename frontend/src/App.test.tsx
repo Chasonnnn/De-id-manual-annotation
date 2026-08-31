@@ -21,6 +21,8 @@ vi.mock("./hosted/api", async (importOriginal) => {
     moveSessionsToFolder: vi.fn(),
     assignFolder: vi.fn(),
     assignSession: vi.fn(),
+    previewBulkAssignment: vi.fn(),
+    applyBulkAssignment: vi.fn(),
     createAdminUser: vi.fn(),
     deactivateAdminUser: vi.fn(),
     reactivateAdminUser: vi.fn(),
@@ -664,6 +666,55 @@ describe("hosted annotation app", () => {
     fireEvent.click(screen.getByRole("button", { name: "Assign folder" }));
 
     await waitFor(() => expect(api.assignFolder).toHaveBeenCalledWith(folder.id, annotator.id));
+  });
+
+  it("atomically assigns selected sessions to an invited pending annotator", async () => {
+    const pending = {
+      ...annotator,
+      id: "pending-1",
+      email: "pending@example.com",
+      state: "pending_activation" as const,
+    };
+    mockAuthenticated(admin);
+    vi.mocked(api.getAdminProgress).mockResolvedValue({
+      totals: { unassigned: 2, assigned: 0, in_progress: 0, completed: 0, total: 2 },
+      annotators: [],
+      folders: [folder],
+    });
+    vi.mocked(api.getAdminUsers).mockResolvedValue([pending]);
+    vi.mocked(api.previewBulkAssignment).mockResolvedValue({
+      plan_digest: "digest-1",
+      assignments: sessions.map((session) => ({
+        document_id: session.id,
+        assignee_id: pending.id,
+      })),
+    });
+    vi.mocked(api.applyBulkAssignment).mockResolvedValue({
+      plan_digest: "digest-1",
+      mutation_id: "mutation-1",
+      assignment_ids: ["assignment-1", "assignment-2"],
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Manage assignments" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Session 001" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Session 002" }));
+    fireEvent.change(screen.getByLabelText("Selected assignee"), {
+      target: { value: pending.id },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Assign selected" }));
+
+    await waitFor(() => expect(api.previewBulkAssignment).toHaveBeenCalledWith(
+      ["doc-1", "doc-2"],
+      [pending.id],
+    ));
+    await waitFor(() => expect(api.applyBulkAssignment).toHaveBeenCalledWith(
+      ["doc-1", "doc-2"],
+      [pending.id],
+      "digest-1",
+      expect.any(String),
+    ));
+    expect(await screen.findByText("2 sessions assigned to pending@example.com.")).toBeTruthy();
   });
 
   it("uses bound emails as account identities and shows the role separately", async () => {

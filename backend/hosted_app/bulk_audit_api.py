@@ -49,7 +49,7 @@ class DocumentPreconditionResponse(BaseModel):
 
 class AnnotatorPreconditionResponse(BaseModel):
     user_id: str
-    state: Literal["active"]
+    state: Literal["pending_activation", "active"]
 
 
 class BulkAssignmentPreviewResponse(BaseModel):

@@ -9,6 +9,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
   ApiError,
+  applyBulkAssignment,
   assignFolder,
   completeAssignment,
   createAdminFolder,
@@ -22,6 +23,7 @@ import {
   login,
   logout,
   moveSessionsToFolder,
+  previewBulkAssignment,
   reactivateAdminUser,
   resetAdminUserPassword,
   saveAnnotations,
@@ -786,6 +788,7 @@ function AdminView({
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([]);
   const [folderAssigneeId, setFolderAssigneeId] = useState("");
+  const [selectedAssigneeId, setSelectedAssigneeId] = useState("");
   const [moveTargetFolderId, setMoveTargetFolderId] = useState("");
   const [newFolderName, setNewFolderName] = useState("");
   const [creatingFolder, setCreatingFolder] = useState(false);
@@ -797,6 +800,9 @@ function AdminView({
   const [creatingUser, setCreatingUser] = useState(false);
 
   const activeAnnotators = annotators.filter((user) => user.state === "active");
+  const invitedAnnotators = annotators.filter(
+    (user) => user.state === "active" || user.state === "pending_activation",
+  );
   const assignmentCandidates = [currentAdmin, ...activeAnnotators];
   const folders = progress?.folders ?? [];
   const unfiledSessions = sessions.filter((session) => !session.folder_id);
@@ -876,6 +882,35 @@ function AdminView({
       await Promise.all([loadAdminData(), onAssigned()]);
       setSelectedDocumentIds([]);
       setNotice(`${selectedDocumentIds.length} session${selectedDocumentIds.length === 1 ? "" : "s"} moved to ${target.name}.`);
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleAssignSelected(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedAssigneeId || selectedDocumentIds.length === 0) return;
+    const assignee = annotators.find((user) => user.id === selectedAssigneeId);
+    if (!assignee) return;
+    setSubmitting(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const preview = await previewBulkAssignment(selectedDocumentIds, [selectedAssigneeId]);
+      const result = await applyBulkAssignment(
+        selectedDocumentIds,
+        [selectedAssigneeId],
+        preview.plan_digest,
+        crypto.randomUUID(),
+      );
+      await Promise.all([loadAdminData(), onAssigned()]);
+      setSelectedDocumentIds([]);
+      setSelectedAssigneeId("");
+      setNotice(
+        `${result.assignment_ids.length} session${result.assignment_ids.length === 1 ? "" : "s"} assigned to ${assignee.email}.`,
+      );
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
@@ -1021,19 +1056,33 @@ function AdminView({
               ))}
               {selectedFolderSessions.length === 0 && <p className="admin-empty">No sessions.</p>}
             </div>
-            <form className="folder-move-form" onSubmit={handleMoveSessions}>
+            <div className="folder-selected-actions">
               <span>{selectedDocumentIds.length} selected</span>
-              <label htmlFor="move-target-folder">Move to folder</label>
-              <select id="move-target-folder" required value={moveTargetFolderId} onChange={(event) => setMoveTargetFolderId(event.target.value)}>
-                <option value="">Select a folder</option>
-                {folders.map((folder) => folder.id === selectedFolderId
-                  ? null
-                  : <option key={folder.id} value={folder.id}>{folder.name}</option>)}
-              </select>
-              <Button variant="outline" type="submit" disabled={submitting || selectedDocumentIds.length === 0 || !moveTargetFolderId}>
-                Move selected
-              </Button>
-            </form>
+              <form className="selected-assignment-form" onSubmit={handleAssignSelected}>
+                <label htmlFor="selected-assignee">Selected assignee</label>
+                <select id="selected-assignee" required value={selectedAssigneeId} onChange={(event) => setSelectedAssigneeId(event.target.value)}>
+                  <option value="">Select an assignee</option>
+                  {invitedAnnotators.map((candidate) => (
+                    <option key={candidate.id} value={candidate.id}>{candidate.email}</option>
+                  ))}
+                </select>
+                <Button className="primary-button" type="submit" disabled={submitting || selectedDocumentIds.length === 0 || !selectedAssigneeId}>
+                  {submitting ? "Assigning…" : "Assign selected"}
+                </Button>
+              </form>
+              <form className="folder-move-form" onSubmit={handleMoveSessions}>
+                <label htmlFor="move-target-folder">Move to folder</label>
+                <select id="move-target-folder" required value={moveTargetFolderId} onChange={(event) => setMoveTargetFolderId(event.target.value)}>
+                  <option value="">Select a folder</option>
+                  {folders.map((folder) => folder.id === selectedFolderId
+                    ? null
+                    : <option key={folder.id} value={folder.id}>{folder.name}</option>)}
+                </select>
+                <Button variant="outline" type="submit" disabled={submitting || selectedDocumentIds.length === 0 || !moveTargetFolderId}>
+                  Move selected
+                </Button>
+              </form>
+            </div>
           </section>
         </div>
       </Card>

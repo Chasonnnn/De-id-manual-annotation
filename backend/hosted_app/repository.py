@@ -1332,12 +1332,13 @@ class HostedRepository:
             raise NotFound("document not found")
         users = list(session.exec(user_statement).all())
         if {user.id for user in users} != set(canonical_annotator_ids):
-            raise InvalidAssignee("assignee must be an active annotator")
+            raise InvalidAssignee("assignee must be an invited annotator")
         if any(
-            user.role != Role.ANNOTATOR or user.state != UserState.ACTIVE
+            user.role != Role.ANNOTATOR
+            or user.state not in (UserState.PENDING_ACTIVATION, UserState.ACTIVE)
             for user in users
         ):
-            raise InvalidAssignee("assignee must be an active annotator")
+            raise InvalidAssignee("assignee must be an invited annotator")
 
         assignments_by_document = {
             assignment.document_id: assignment
@@ -1368,8 +1369,9 @@ class HostedRepository:
                     revision=revisions_by_document.get(document_id, 0),
                 )
             )
+        user_states = {user.id: user.state for user in users}
         annotator_preconditions = [
-            AnnotatorPrecondition(user_id=user_id, state=UserState.ACTIVE)
+            AnnotatorPrecondition(user_id=user_id, state=user_states[user_id])
             for user_id in canonical_annotator_ids
         ]
         canonical_payload = {

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   activate,
+  applyBulkAssignment,
   assignFolder,
   assignSession,
   createAdminFolder,
@@ -8,6 +9,7 @@ import {
   deactivateAdminUser,
   login,
   moveSessionsToFolder,
+  previewBulkAssignment,
   reactivateAdminUser,
   resetAdminUserPassword,
   saveAnnotations,
@@ -213,6 +215,40 @@ describe("hosted API client", () => {
       body: JSON.stringify({
         email: "annotator@cornell.edu",
         role: "annotator",
+      }),
+    }));
+  });
+
+  it("previews and atomically applies a selected-session assignment", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ plan_digest: "digest-1", assignments: [] }))
+      .mockResolvedValueOnce(jsonResponse({ assignment_ids: ["assignment-1"] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await previewBulkAssignment(["doc-2", "doc-1"], ["user-1"]);
+    await applyBulkAssignment(
+      ["doc-2", "doc-1"],
+      ["user-1"],
+      "digest-1",
+      "mutation-1",
+    );
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/admin/assignments/bulk/preview");
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        document_ids: ["doc-2", "doc-1"],
+        annotator_ids: ["user-1"],
+      }),
+    }));
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/admin/assignments/bulk/apply");
+    expect(fetchMock.mock.calls[1]?.[1]).toEqual(expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        document_ids: ["doc-2", "doc-1"],
+        annotator_ids: ["user-1"],
+        plan_digest: "digest-1",
+        mutation_id: "mutation-1",
       }),
     }));
   });

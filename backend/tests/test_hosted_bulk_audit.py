@@ -100,6 +100,30 @@ def test_bulk_preview_is_deterministic_balanced_and_read_only() -> None:
     assert repository.list_audit_events(admin_id=admin.id) == audit_before
 
 
+def test_bulk_preview_accepts_an_invited_pending_annotator() -> None:
+    repository = make_repository()
+    admin, _, documents = seed_bulk_case(repository)
+    pending = repository.create_pending_user_with_activation(
+        email="pending@example.edu",
+        display_name="pending@example.edu",
+        role=Role.ANNOTATOR.value,
+        activation=ActivationTokenRecord(
+            token_hash="pending-activation-token",
+            expires_at=datetime(2026, 9, 1, tzinfo=UTC),
+        ),
+        admin_id=admin.id,
+    )
+
+    plan = repository.preview_balanced_assignment(
+        admin_id=admin.id,
+        document_ids=[documents[0].id],
+        annotator_ids=[pending.id],
+    )
+
+    assert plan.assignments[0].assignee_id == pending.id
+    assert plan.annotator_preconditions[0].state.value == "pending_activation"
+
+
 def test_bulk_preview_rejects_duplicates_missing_documents_and_inactive_users() -> None:
     repository = make_repository()
     admin, annotators, documents = seed_bulk_case(repository)
@@ -518,6 +542,52 @@ def test_bulk_and_audit_router_enforces_admin_and_exposes_filtered_events() -> N
         client.post("/api/admin/assignments/bulk/preview", json=payload).status_code
         == 403
     )
+
+
+def test_bulk_preview_api_serializes_a_pending_annotator_precondition() -> None:
+    repository = make_repository()
+    admin, _, documents = seed_bulk_case(repository)
+    pending = repository.create_pending_user_with_activation(
+        email="pending@example.edu",
+        display_name="pending@example.edu",
+        role=Role.ANNOTATOR.value,
+        activation=ActivationTokenRecord(
+            token_hash="api-pending-activation-token",
+            expires_at=datetime(2026, 9, 1, tzinfo=UTC),
+        ),
+        admin_id=admin.id,
+    )
+
+    def principal() -> AuthenticatedPrincipal:
+        return AuthenticatedPrincipal(
+            id=admin.id,
+            email=admin.email,
+            display_name=admin.display_name,
+            role=admin.role,
+            state=admin.state,
+        )
+
+    app = FastAPI()
+    app.include_router(
+        create_bulk_audit_router(
+            repository=repository,
+            current_principal=principal,
+            require_csrf=lambda: None,
+        )
+    )
+
+    response = TestClient(app).post(
+        "/api/admin/assignments/bulk/preview",
+        json={
+            "document_ids": [documents[0].id],
+            "annotator_ids": [pending.id],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["annotator_preconditions"] == [
+        {"user_id": pending.id, "state": "pending_activation"}
+    ]
 
 
 def test_integrated_bulk_routes_require_login_csrf_and_admin_role() -> None:
