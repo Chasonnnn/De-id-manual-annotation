@@ -1,5 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildNewSpansFromSelection } from "../annotationSelection";
+import ManualAnnotationPane from "./ManualAnnotationPane";
+
+beforeEach(() => {
+  Object.defineProperties(HTMLElement.prototype, {
+    showPopover: { configurable: true, value: vi.fn() },
+    hidePopover: { configurable: true, value: vi.fn() },
+  });
+});
+
+afterEach(() => {
+  cleanup();
+  window.getSelection()?.removeAllRanges();
+  delete (HTMLElement.prototype as { showPopover?: () => void }).showPopover;
+  delete (HTMLElement.prototype as { hidePopover?: () => void }).hidePopover;
+});
 
 describe("buildNewSpansFromSelection", () => {
   it("splits a URL around transcript speaker prefixes", () => {
@@ -61,5 +77,48 @@ describe("buildNewSpansFromSelection", () => {
         text,
       },
     ]);
+  });
+});
+
+describe("ManualAnnotationPane", () => {
+  it("keeps selected text highlighted while the annotation type menu is open", () => {
+    render(
+      <ManualAnnotationPane
+        text="Hello Adoni."
+        spans={[]}
+        labels={["NAME", "ADDRESS"]}
+        onSpansChange={vi.fn()}
+      />,
+    );
+    const segment = document.querySelector('[data-offset="0"]');
+    const textNode = segment?.firstChild;
+    expect(textNode).toBeInstanceOf(Text);
+
+    const range = document.createRange();
+    range.setStart(textNode!, 6);
+    range.setEnd(textNode!, 11);
+    Object.defineProperty(range, "getBoundingClientRect", {
+      value: () => ({
+        bottom: 40,
+        height: 20,
+        left: 20,
+        right: 70,
+        top: 20,
+        width: 50,
+        x: 20,
+        y: 20,
+        toJSON: () => ({}),
+      }),
+    });
+    const selection = window.getSelection();
+    expect(selection).not.toBeNull();
+    selection!.removeAllRanges();
+    selection!.addRange(range);
+
+    fireEvent.mouseUp(segment!);
+
+    expect(document.querySelector(".annotation-popup")?.textContent).toContain("NAME");
+    expect(selection!.rangeCount).toBe(1);
+    expect(selection!.toString()).toBe("Adoni");
   });
 });

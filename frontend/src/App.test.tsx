@@ -351,6 +351,31 @@ describe("hosted annotation app", () => {
     expect(await screen.findByText("Saved")).toBeTruthy();
   });
 
+  it("renders the save indicator dot separately from its status copy", async () => {
+    mockAuthenticated();
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("Session 001"));
+
+    const status = (await screen.findByText("Saved")).closest('[role="status"]');
+    expect(status).not.toBeNull();
+    expect(status?.firstElementChild?.classList.contains("save-state-dot")).toBe(true);
+    expect(status?.lastElementChild?.classList.contains("save-copy")).toBe(true);
+  });
+
+  it("keeps the manual editor available while showing the codebook", async () => {
+    mockAuthenticated();
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("Session 001"));
+    fireEvent.click(await screen.findByRole("tab", { name: "Codebook" }));
+
+    expect(screen.getByText("Manual annotation")).toBeTruthy();
+    expect(screen.getByText("Examples are synthetic and contain no session data.")).toBeTruthy();
+    expect(screen.getByRole("list", { name: "NAME examples" }).children).toHaveLength(2);
+    expect(screen.getByRole("tab", { name: "Codebook" }).getAttribute("aria-selected")).toBe("true");
+  });
+
   it("guards browser unload only while annotation changes are unsaved", async () => {
     mockAuthenticated();
     let resolveSave: ((value: Awaited<ReturnType<typeof api.saveAnnotations>>) => void) | undefined;

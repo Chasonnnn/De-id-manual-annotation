@@ -25,7 +25,7 @@ No actionable P0, P1, or P2 issue remains.
 - Image quality and asset fidelity: the workspace contains no source imagery, illustration, logo asset, or custom icon requiring raster/vector comparison.
 - Copy and content: only requested functional labels are present. No sync-scroll description, legend, or additional suggestion copy was introduced.
 - Behavior: synchronized scrolling is always active; corresponding rows retain equal geometry; Next session, local-draft save recovery, retry state, completion confirmation, and post-completion editing work in the production build.
-- Accessibility: comparison uses text-adjacent highlight colors plus underline shadows, controls are semantic buttons/checkbox/dialog elements, and the two panels remain available through horizontal overflow at narrow widths.
+- Accessibility: comparison uses text-adjacent highlight colors plus underline shadows, controls are semantic buttons/checkbox/dialog elements, and the two panels stack without page-level horizontal overflow at narrow widths.
 - Completed sessions remain fully editable and retain their green Complete status after subsequent saves.
 
 ## Comparison history
@@ -58,11 +58,18 @@ No actionable P0, P1, or P2 issue remains.
    - Verified independently collapsible workspace folders, stable alphabetical folder ordering with Unfiled last, folder creation, whole-folder assignment, and selected-session movement between folders.
    - Corrected a narrow-viewport overflow in the assignee action row and session-state columns; the follow-up capture keeps all controls visible.
    - Visible account identity is email-only in the sidebar, assignment controls, accounts, progress, and account-action copy; role and account state remain separate.
+9. Annotation-workspace revision:
+   - Corrected the save-status dot selector so the status copy retains its natural dimensions.
+   - Preserved the browser text selection while the annotation-type picker is open.
+   - Added a v4 codebook with all 19 canonical labels and two synthetic examples per label.
+   - Verified annotation, save response, selection persistence, codebook access, and zero page-level horizontal overflow at 516×490, 800×600, 1024×768, 1366×768, and 1920×1080.
 
 ## Interaction verification
 
 - Comparison toggle: match and difference states verified.
 - Label picker: exactly 19 canonical labels plus Delete, in the approved order.
+- Selection persistence: selected text remains selected until the annotator chooses a label or dismisses the picker.
+- Codebook: all 19 canonical labels and exactly two synthetic examples per label remain available beside the manual editor.
 - Completion checkpoint: manual/reference counts, save status, Keep editing, and Complete session verified.
 - Completed-session editing: label picker, save lifecycle, and persistent Complete status verified.
 - Next session: advances the assignment and updates the position indicator.
@@ -75,6 +82,6 @@ No actionable P0, P1, or P2 issue remains.
 
 ## Residual notes
 
-- React Doctor score: 86/100. Its two non-blocking warnings concern the existing large `App` component and related state organization. Addressing them would be a separate architectural refactor, not part of the approved UX change.
+- React Doctor score: 85/100. Its three non-blocking warnings concern the existing large `App` component, related state organization, and an existing default-array prop in `TranscriptRows`. Addressing them would be a separate architectural refactor, not part of this revision.
 
 final result: passed

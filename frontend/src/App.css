@@ -228,7 +228,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .eyebrow { margin: 0; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
 .workspace-actions { display: flex; align-items: center; gap: 12px; }
 .save-state { display: inline-flex; flex: 0 0 auto; min-width: 86px; align-items: center; gap: 6px; color: #24704a; font-size: 12px; }
-.save-state > span { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.save-state-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .save-copy { display: grid; line-height: 1.15; }
 .save-copy strong { font-size: 12px; font-weight: 700; }
 .save-copy small { max-width: 280px; color: currentColor; font-size: 10px; white-space: nowrap; }
@@ -287,6 +287,22 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   letter-spacing: .03em;
 }
 .panel-heading > span { color: var(--muted); font-size: 11px; }
+.reference-heading { gap: 12px; }
+.reference-tabs { display: flex; align-items: center; gap: 4px; }
+.reference-tabs button {
+  min-height: 28px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  color: #667085;
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.reference-tabs button:hover { background: #f0f3f8; }
+.reference-tabs button[aria-selected="true"] { color: #243f82; background: #e9efff; }
 .hosted-panel-body, .pane-body {
   flex: 1;
   min-height: 0;
@@ -306,6 +322,29 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .reference-empty { display: grid; height: 100%; place-content: center; justify-items: center; color: #8a94a6; text-align: center; }
 .reference-empty span { display: grid; width: 32px; height: 32px; place-items: center; border: 1px solid #cfd6e2; border-radius: 50%; }
 .reference-empty p { max-width: 220px; margin: 12px 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; font-size: 12px; line-height: 1.5; }
+
+.codebook-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 16px 24px;
+  color: #344054;
+}
+.codebook-note { margin: 0 0 12px; color: var(--muted); font-size: 11px; }
+.codebook-list { display: grid; gap: 10px; margin: 0; }
+.codebook-entry {
+  display: grid;
+  grid-template-columns: minmax(150px, .42fr) minmax(0, 1fr);
+  gap: 14px;
+  padding: 12px;
+  border: 1px solid #e2e7ef;
+  border-radius: 8px;
+  background: #fff;
+}
+.codebook-entry dt, .codebook-entry dd { margin: 0; }
+.codebook-label { display: inline-block; max-width: 100%; padding: 4px 7px; border-radius: 4px; color: #172033; font-size: 10px; font-weight: 800; overflow-wrap: anywhere; }
+.codebook-entry p { margin: 0; font-size: 12px; line-height: 1.45; }
+.codebook-entry ul { display: grid; gap: 3px; margin: 8px 0 0; padding-left: 18px; color: #5b6575; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; overflow-wrap: anywhere; }
 
 .transcript-rows { display: grid; align-content: start; }
 .transcript-row {
@@ -505,11 +544,24 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   .account-actions { grid-column: 1 / -1; justify-content: flex-start; }
 }
 
+@media (max-width: 1150px) {
+  .panel-viewport { overflow-x: hidden; overflow-y: auto; }
+  .panel-grid {
+    height: auto;
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: repeat(2, minmax(420px, 1fr));
+  }
+}
+
 @media (max-width: 700px) {
   .hosted-sidebar { flex-basis: 210px; }
-  .workspace-header { gap: 10px; }
-  .workspace-actions { gap: 6px; }
+  .workspace-header { align-items: stretch; flex-direction: column; gap: 10px; min-height: auto; padding: 10px 12px; }
+  .workspace-actions { flex-wrap: wrap; justify-content: flex-start; gap: 6px; }
+  .workspace-actions > button { flex: 1 1 auto; }
   .save-state { display: none; }
+  .reference-heading { align-items: flex-start; flex-direction: column; padding: 7px 12px; }
+  .codebook-entry { grid-template-columns: 1fr; gap: 8px; }
   .progress-cards { grid-template-columns: repeat(2, 1fr); }
   .folder-management-heading, .new-folder-form, .folder-assignment-form, .folder-move-form { align-items: stretch; flex-direction: column; }
   .new-folder-form input { width: 100%; }

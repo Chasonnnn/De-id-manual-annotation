@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { ENTITY_TYPES, type CanonicalSpan } from "./hosted/types";
 import ManualAnnotationPane from "./components/ManualAnnotationPane";
 import TranscriptRows from "./components/TranscriptRows";
+import CodebookPanel from "./components/CodebookPanel";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -348,6 +349,7 @@ function WorkspacePanels({
   const completed = document.assignment?.state === "completed";
   const [comparisonMode, setComparisonMode] = useState(false);
   const [completionReviewOpen, setCompletionReviewOpen] = useState(false);
+  const [referenceView, setReferenceView] = useState<"session" | "codebook">("session");
   const manualScrollRef = useRef<HTMLDivElement>(null);
   const referenceScrollRef = useRef<HTMLDivElement>(null);
   const scrollSyncLockRef = useRef(false);
@@ -384,7 +386,7 @@ function WorkspacePanels({
             className={`save-state ${saveStatus}`}
             role={saveStatus === "conflict" || saveStatus === "error" ? "alert" : "status"}
           >
-            <span aria-hidden="true" />
+            <span className="save-state-dot" aria-hidden="true" />
             <span className="save-copy">
               <strong>{statusLabel}</strong>
               {saveStatus === "saved" && savedTime && <small>at {savedTime}</small>}
@@ -466,29 +468,51 @@ function WorkspacePanels({
           />
         </section>
         <section className="hosted-panel reference-panel">
-          <div className="panel-heading">
-            <h2>Reference</h2>
-            <span>{document.reference_annotations?.length ?? 0} spans</span>
+          <div className="panel-heading reference-heading">
+            <h2 className="visually-hidden">Reference</h2>
+            <div className="reference-tabs" role="tablist" aria-label="Reference panel">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={referenceView === "session"}
+                onClick={() => setReferenceView("session")}
+              >
+                Session reference
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={referenceView === "codebook"}
+                onClick={() => setReferenceView("codebook")}
+              >
+                Codebook
+              </button>
+            </div>
+            <span>{referenceView === "session" ? `${document.reference_annotations?.length ?? 0} spans` : `${ENTITY_TYPES.length} types`}</span>
           </div>
-          <div
-            className="hosted-panel-body transcript-body"
-            ref={referenceScrollRef}
-            onScroll={(event) => synchronizeScroll(event.currentTarget, manualScrollRef.current)}
-          >
-            {document.reference_annotations === null ? (
-              <div className="reference-empty">
-                <span aria-hidden="true">—</span>
-                <p>Reference annotations are not available for this session.</p>
-              </div>
-            ) : (
-              <TranscriptRows
-                text={document.raw_text}
-                spans={document.reference_annotations}
-                comparisonSpans={spans}
-                comparisonMode={comparisonMode}
-              />
-            )}
-          </div>
+          {referenceView === "codebook" ? (
+            <CodebookPanel />
+          ) : (
+            <div
+              className="hosted-panel-body transcript-body"
+              ref={referenceScrollRef}
+              onScroll={(event) => synchronizeScroll(event.currentTarget, manualScrollRef.current)}
+            >
+              {document.reference_annotations === null ? (
+                <div className="reference-empty">
+                  <span aria-hidden="true">—</span>
+                  <p>Reference annotations are not available for this session.</p>
+                </div>
+              ) : (
+                <TranscriptRows
+                  text={document.raw_text}
+                  spans={document.reference_annotations}
+                  comparisonSpans={spans}
+                  comparisonMode={comparisonMode}
+                />
+              )}
+            </div>
+          )}
         </section>
         </div>
       </div>

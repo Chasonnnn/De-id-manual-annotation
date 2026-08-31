@@ -207,7 +207,6 @@ export default function ManualAnnotationPane({
         selText: normalizedSelection.text,
         editIndex: null,
       });
-      sel.removeAllRanges();
     }, [text, trimBoundaries]);
 
     const handleSpanClick = useCallback(
