@@ -242,6 +242,8 @@ function SessionSidebar({
   });
   const searching = query.trim().length > 0;
   const collapsedFolderIdSet = new Set(collapsedFolderIds);
+  const navigationLocked = saveStatus !== "saved";
+  const navigationBlockedByFailure = saveStatus === "error" || saveStatus === "conflict";
 
   function toggleFolder(folderId: string) {
     setCollapsedFolderIds((current) => current.includes(folderId)
@@ -289,8 +291,11 @@ function SessionSidebar({
                     className={session.id === selectedId ? "session-row active" : "session-row"}
                     type="button"
                     key={session.id}
-                    disabled={saveStatus !== "saved"}
-                    onClick={() => onSelect(session.id)}
+                    disabled={navigationBlockedByFailure}
+                    aria-disabled={navigationLocked}
+                    onClick={() => {
+                      if (!navigationLocked) onSelect(session.id);
+                    }}
                   >
                     <span className="session-title">{session.external_id}</span>
                     <span className={`state-dot ${reviewState}`} aria-hidden="true" />

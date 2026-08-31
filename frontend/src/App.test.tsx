@@ -351,6 +351,25 @@ describe("hosted annotation app", () => {
     expect(await screen.findByText("Saved")).toBeTruthy();
   });
 
+  it("keeps the session list visually stable during routine autosave", async () => {
+    mockAuthenticated();
+    let resolveSave: ((value: Awaited<ReturnType<typeof api.saveAnnotations>>) => void) | undefined;
+    vi.mocked(api.saveAnnotations).mockImplementation(() => new Promise((resolve) => { resolveSave = resolve; }));
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("Session 001"));
+    const sessionButton = screen.getByText("Session 001").closest("button") as HTMLButtonElement;
+    fireEvent.click(await screen.findByRole("button", { name: "Add test annotation" }));
+    await screen.findByText("Saving…");
+
+    expect(sessionButton.disabled).toBe(false);
+    expect(sessionButton.getAttribute("aria-disabled")).toBe("true");
+
+    resolveSave?.({ revision: 1, spans: [{ start: 0, end: 5, label: "NAME", text: "Alice" }] });
+    await screen.findByText("Saved");
+    expect(sessionButton.getAttribute("aria-disabled")).toBe("false");
+  });
+
   it("renders the save indicator dot separately from its status copy", async () => {
     mockAuthenticated();
 

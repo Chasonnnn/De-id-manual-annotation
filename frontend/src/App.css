@@ -177,6 +177,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   background: transparent;
 }
 .session-row:hover:not(:disabled) { background: #202a3b; }
+.session-row[aria-disabled="true"]:not(:disabled) { cursor: wait; }
 .session-row.active { border-left-color: #78a0ff; background: #263249; }
 .session-title { overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .session-state { grid-column: 1; color: #8e99ad; font-size: 11px; }
