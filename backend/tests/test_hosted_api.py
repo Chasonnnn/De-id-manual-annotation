@@ -4,14 +4,13 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, create_engine
-
 from hosted_app.api import create_hosted_app
 from hosted_app.auth import AuthManager
 from hosted_app.database import create_schema
 from hosted_app.domain import DocumentImport, Role
 from hosted_app.repository import HostedRepository
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, create_engine
 
 
 def csrf_headers(client: TestClient) -> dict[str, str]:
@@ -429,6 +428,7 @@ def test_annotation_save_is_revisioned_and_survives_document_reload(
     assert saved.json() == {
         "revision": 1,
         "spans": [{"start": 8, "end": 13, "label": "NAME", "text": "Alice"}],
+        "assignment_state": "in_progress",
     }
     reloaded = client.get(f"/api/documents/{document_id}")
     assert reloaded.status_code == 200
@@ -494,7 +494,7 @@ def test_platform_entity_types_are_available_for_every_session(
     ]
 
 
-def test_completed_assignment_remains_editable_and_completed_after_saving(
+def test_editing_a_completed_assignment_reopens_it_for_review(
     hosted_client: tuple[TestClient, HostedRepository, AuthManager],
 ) -> None:
     client, _, _ = hosted_client
@@ -533,10 +533,20 @@ def test_completed_assignment_remains_editable_and_completed_after_saving(
     assert saved.json() == {
         "revision": 1,
         "spans": [{"start": 0, "end": 3, "label": "NAME", "text": "Ada"}],
+        "assignment_state": "in_progress",
     }
     detail = client.get(f"/api/documents/{document_id}").json()
-    assert detail["assignment"]["state"] == "completed"
+    assert detail["assignment"]["state"] == "in_progress"
     assert detail["manual_annotations"] == saved.json()["spans"]
+    completed_again = client.post(
+        f"/api/assignments/{assignment_id}/complete",
+        headers=csrf_headers(client),
+    )
+    assert completed_again.status_code == 200
+    assert completed_again.json() == {
+        "assignment_id": assignment_id,
+        "state": "completed",
+    }
 
     assert (
         client.post(

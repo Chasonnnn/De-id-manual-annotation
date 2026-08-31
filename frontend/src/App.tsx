@@ -1270,28 +1270,25 @@ export default function App() {
       if (pendingSaveRef.current === pending) pendingSaveRef.current = null;
       revisionRef.current = saved.revision;
       if (documentRef.current?.id === activeDocument.id) {
-        if (documentRef.current.assignment?.state === "assigned") {
+        if (documentRef.current.assignment && saved.assignment_state) {
           documentRef.current = {
             ...documentRef.current,
-            assignment: { ...documentRef.current.assignment, state: "in_progress" },
+            assignment: {
+              ...documentRef.current.assignment,
+              state: saved.assignment_state,
+            },
           };
           setDocument(documentRef.current);
-          setSessions((current) => current.map((session) =>
-            session.id === activeDocument.id
-              ? {
-                  ...session,
-                  assignment_state: "in_progress",
-                  manual_annotation_count: saved.spans.length,
-                }
-              : session,
-          ));
-        } else {
-          setSessions((current) => current.map((session) =>
-            session.id === activeDocument.id
-              ? { ...session, manual_annotation_count: saved.spans.length }
-              : session,
-          ));
         }
+        setSessions((current) => current.map((session) =>
+          session.id === activeDocument.id
+            ? {
+                ...session,
+                assignment_state: saved.assignment_state ?? session.assignment_state,
+                manual_annotation_count: saved.spans.length,
+              }
+            : session,
+        ));
         if (queuedSaveRef.current === null) setSpans(saved.spans);
       }
       saveInFlightRef.current = false;

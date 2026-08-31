@@ -137,6 +137,7 @@ class SaveAnnotationsRequest(RequestModel):
 class SaveAnnotationsResponse(BaseModel):
     revision: int
     spans: list[CanonicalSpan]
+    assignment_state: Literal["assigned", "in_progress", "completed"] | None
 
 
 class AssignmentStateResponse(BaseModel):
@@ -716,7 +717,11 @@ def create_hosted_app(
             raise HTTPException(status_code=409, detail=str(error)) from error
         except NotFound as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
-        return SaveAnnotationsResponse(revision=result.revision, spans=result.spans)
+        return SaveAnnotationsResponse(
+            revision=result.revision,
+            spans=result.spans,
+            assignment_state=result.assignment_state,
+        )
 
     @app.post(
         "/api/assignments/{assignment_id}/complete",

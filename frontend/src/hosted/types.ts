@@ -118,6 +118,7 @@ export interface SaveAnnotationsRequest {
 export interface SaveAnnotationsResponse {
   revision: number;
   spans: CanonicalSpan[];
+  assignment_state: AssignmentState | null;
 }
 
 export interface AdminProgress {

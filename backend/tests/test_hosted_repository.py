@@ -5,10 +5,6 @@ from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy.dialects import postgresql
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, create_engine
-
 from hosted_app.database import Assignment, create_schema
 from hosted_app.domain import (
     AssignmentState,
@@ -22,6 +18,9 @@ from hosted_app.domain import (
     Role,
 )
 from hosted_app.repository import HostedRepository
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, create_engine
 
 
 @pytest.fixture
@@ -287,7 +286,9 @@ def test_admin_can_edit_any_document_without_changing_assignment(
         expected_revision=1,
         mutation_id="admin-completed-save",
     )
-    assert completed_save.assignment_state == AssignmentState.COMPLETED
+    assert completed_save.assignment_state == AssignmentState.IN_PROGRESS
+    reopened_assignment = repository.list_assignments(admin_id=admin.id)[0]
+    assert reopened_assignment.completed_at is None
 
 
 def test_saves_are_revisioned_idempotent_and_preserve_imported_content(
@@ -370,7 +371,7 @@ def test_assignment_mutations_use_a_postgresql_row_lock() -> None:
     assert statement.column_descriptions[0]["entity"] is Assignment
 
 
-def test_completed_work_remains_editable_until_an_admin_reopens_it(
+def test_editing_completed_work_reopens_it_for_completion(
     repository: HostedRepository,
 ) -> None:
     admin = repository.create_user(
@@ -420,12 +421,14 @@ def test_completed_work_remains_editable_until_an_admin_reopens_it(
         mutation_id="mutation-002",
     )
     assert saved_while_completed.revision == 2
-    assert saved_while_completed.assignment_state == AssignmentState.COMPLETED
-    still_completed = repository.complete_assignment(
+    assert saved_while_completed.assignment_state == AssignmentState.IN_PROGRESS
+    reopened_assignment = repository.list_assignments(admin_id=admin.id)[0]
+    assert reopened_assignment.completed_at is None
+    completed_again = repository.complete_assignment(
         assignment.id, user_id=annotator.id
     )
-    assert still_completed.state == AssignmentState.COMPLETED
-    assert still_completed.completed_at == completed.completed_at
+    assert completed_again.state == AssignmentState.COMPLETED
+    assert completed_again.completed_at is not None
     with pytest.raises(Forbidden):
         repository.reopen_assignment(assignment.id, admin_id=other_annotator.id)
 

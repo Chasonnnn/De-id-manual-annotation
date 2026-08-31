@@ -1062,8 +1062,8 @@ class HostedRepository:
             session.add(annotation)
             session.add(revision)
             if assignment:
-                if assignment.state != AssignmentState.COMPLETED:
-                    assignment.state = AssignmentState.IN_PROGRESS
+                assignment.state = AssignmentState.IN_PROGRESS
+                assignment.completed_at = None
                 assignment.last_activity_at = now
                 session.add(assignment)
             try:

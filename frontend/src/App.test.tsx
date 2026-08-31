@@ -349,7 +349,11 @@ describe("hosted annotation app", () => {
       }),
     );
 
-    resolveSave?.({ revision: 1, spans: [{ start: 0, end: 5, label: "NAME", text: "Alice" }] });
+    resolveSave?.({
+      revision: 1,
+      spans: [{ start: 0, end: 5, label: "NAME", text: "Alice" }],
+      assignment_state: "in_progress",
+    });
     expect(await screen.findByText("Saved")).toBeTruthy();
   });
 
@@ -367,7 +371,11 @@ describe("hosted annotation app", () => {
     expect(sessionButton.disabled).toBe(false);
     expect(sessionButton.getAttribute("aria-disabled")).toBe("true");
 
-    resolveSave?.({ revision: 1, spans: [{ start: 0, end: 5, label: "NAME", text: "Alice" }] });
+    resolveSave?.({
+      revision: 1,
+      spans: [{ start: 0, end: 5, label: "NAME", text: "Alice" }],
+      assignment_state: "in_progress",
+    });
     await screen.findByText("Saved");
     expect(sessionButton.getAttribute("aria-disabled")).toBe("false");
   });
@@ -426,7 +434,11 @@ describe("hosted annotation app", () => {
     window.dispatchEvent(unsavedUnload);
     expect(unsavedUnload.defaultPrevented).toBe(true);
 
-    resolveSave?.({ revision: 1, spans: [{ start: 0, end: 5, label: "NAME", text: "Alice" }] });
+    resolveSave?.({
+      revision: 1,
+      spans: [{ start: 0, end: 5, label: "NAME", text: "Alice" }],
+      assignment_state: "in_progress",
+    });
     await screen.findByText("Saved");
     const acknowledgedUnload = new Event("beforeunload", { cancelable: true });
     window.dispatchEvent(acknowledgedUnload);
@@ -444,7 +456,11 @@ describe("hosted annotation app", () => {
 
     expect(localStorage.getItem("deid_annotation_draft:doc-1")).toContain('"label":"NAME"');
 
-    resolveSave?.({ revision: 1, spans: [{ start: 0, end: 5, label: "NAME", text: "Alice" }] });
+    resolveSave?.({
+      revision: 1,
+      spans: [{ start: 0, end: 5, label: "NAME", text: "Alice" }],
+      assignment_state: "in_progress",
+    });
     await screen.findByText("Saved");
     expect(localStorage.getItem("deid_annotation_draft:doc-1")).toBeNull();
   });
@@ -535,6 +551,7 @@ describe("hosted annotation app", () => {
       .mockResolvedValueOnce({
         revision: 1,
         spans: [{ start: 0, end: 5, label: "NAME", text: "Alice" }],
+        assignment_state: "in_progress",
       });
 
     render(<App />);
@@ -563,8 +580,16 @@ describe("hosted annotation app", () => {
     ];
     vi.mocked(api.saveAnnotations)
       .mockRejectedValueOnce(new api.ApiError(503, "The save response was lost."))
-      .mockResolvedValueOnce({ revision: 1, spans: firstSpans })
-      .mockResolvedValueOnce({ revision: 2, spans: latestSpans });
+      .mockResolvedValueOnce({
+        revision: 1,
+        spans: firstSpans,
+        assignment_state: "in_progress",
+      })
+      .mockResolvedValueOnce({
+        revision: 2,
+        spans: latestSpans,
+        assignment_state: "in_progress",
+      });
 
     render(<App />);
     fireEvent.click(await screen.findByText("Session 001"));
@@ -605,7 +630,7 @@ describe("hosted annotation app", () => {
     expect(await screen.findByText("Completed")).toBeTruthy();
   });
 
-  it("keeps a completed session editable and completed after saving", async () => {
+  it("reopens a completed session after a successful annotation save", async () => {
     mockAuthenticated();
     vi.mocked(api.getDocument).mockResolvedValue({
       ...document,
@@ -620,6 +645,11 @@ describe("hosted annotation app", () => {
     vi.mocked(api.saveAnnotations).mockResolvedValue({
       revision: 1,
       spans: [{ start: 0, end: 5, label: "NAME", text: "Alice" }],
+      assignment_state: "in_progress",
+    });
+    vi.mocked(api.completeAssignment).mockResolvedValue({
+      assignment_id: "assignment-2",
+      state: "completed",
     });
 
     render(<App />);
@@ -638,7 +668,16 @@ describe("hosted annotation app", () => {
         spans: [{ start: 0, end: 5, label: "NAME", text: "Alice" }],
       }),
     ));
-    expect(window.document.querySelector(".state-dot.complete")).toBeTruthy();
+    const reviewButton = await screen.findByRole("button", { name: "Review & complete" });
+    expect((reviewButton as HTMLButtonElement).disabled).toBe(false);
+    expect(window.document.querySelector(".state-dot.started")).toBeTruthy();
+    expect(window.document.querySelector(".state-dot.complete")).toBeNull();
+
+    fireEvent.click(reviewButton);
+    fireEvent.click(screen.getByRole("button", { name: "Complete session" }));
+
+    await waitFor(() => expect(api.completeAssignment).toHaveBeenCalledWith("assignment-2"));
+    expect(await screen.findByRole("button", { name: "Completed" })).toBeTruthy();
   });
 
   it("lets an admin track progress and assign a complete folder", async () => {
