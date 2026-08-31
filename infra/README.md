@@ -11,6 +11,7 @@ Official references:
 - [AWS provider Express service](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ecs_express_gateway_service)
 - [AWS CloudFormation Express service](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-resource-ecs-expressgatewayservice.html)
 - [ECS Express managed resources and networking](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/express-service-work.html)
+- [Application Load Balancer connection idle timeout](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/edit-load-balancer-attributes.html#connection-idle-timeout)
 - [AWSCC provider model](https://registry.terraform.io/providers/hashicorp/awscc/latest/docs)
 - [Terraform lifecycle protection](https://developer.hashicorp.com/terraform/language/meta-arguments/lifecycle)
 - [RDS backup retention and point-in-time recovery](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.BackupRetention.html)
@@ -66,7 +67,8 @@ No plan or apply is authorized until all gates are explicitly approved:
 7. Complete backend, frontend, container, PostgreSQL concurrency, and two-account authorization tests.
 8. Populate secret values before enabling Express; never pass them through `-var`, shell arguments, committed files, or plan output.
 9. Confirm the Express plan preserves the exact service name and infrastructure role. Both are replacement-sensitive, and replacement is blocked during the pilot.
-10. Apply only the reviewed saved plan, then verify TLS, `/api/health`, secure cookies, CSRF, role isolation, import, autosave, assignment, export, RDS backups, alarms, and the stable URL.
+10. Set the generated Application Load Balancer's `idle_timeout.timeout_seconds` attribute to `300`; the AWS default of `60` is too short for a verified 300-session import, and Express does not expose this generated-resource attribute in the service resource.
+11. Apply only the reviewed saved plan, then verify TLS, `/api/health`, secure cookies, CSRF, role isolation, import, autosave, assignment, export, RDS backups, alarms, and the stable URL.
 
 Example backend configuration, deliberately excluded from Git:
 

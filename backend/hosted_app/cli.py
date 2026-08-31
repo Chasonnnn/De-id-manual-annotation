@@ -24,6 +24,9 @@ class CliError(RuntimeError):
     pass
 
 
+BATCH_APPLY_TIMEOUT_SECONDS = 330
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="annotationctl")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -152,6 +155,7 @@ class ApiClient:
         body: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
         csrf: bool = False,
+        timeout: float = 15,
     ) -> Any:
         headers: dict[str, str] = {}
         if csrf:
@@ -162,6 +166,7 @@ class ApiClient:
             json=body,
             params=params,
             headers=headers,
+            timeout=timeout,
         )
         _raise_for_status(response, authenticated=True)
         if response.status_code == 204:
@@ -570,6 +575,7 @@ def _run_batches(
             "mutation_id": mutation_id,
         },
         csrf=True,
+        timeout=BATCH_APPLY_TIMEOUT_SECONDS,
     )
     if args.json:
         _json_output(stdout, result)

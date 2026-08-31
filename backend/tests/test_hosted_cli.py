@@ -521,6 +521,7 @@ def test_s3_batch_plan_and_apply_use_manifest_and_exact_plan_files(tmp_path) -> 
             assert set(body) == {"manifest"}
             return httpx2.Response(200, json=plan)
         assert request.url.path.endswith("/apply")
+        assert request.extensions["timeout"]["read"] == 330
         assert body == {
             "manifest": manifest,
             "expected_manifest_digest": plan["manifest_digest"],
