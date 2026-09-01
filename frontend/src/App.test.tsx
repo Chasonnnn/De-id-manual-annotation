@@ -465,6 +465,35 @@ describe("hosted annotation app", () => {
     expect(localStorage.getItem("deid_annotation_draft:doc-1")).toBeNull();
   });
 
+  it("automatically resumes a matching local draft after reopening a session", async () => {
+    mockAuthenticated();
+    const restoredSpans = [{ start: 0, end: 5, label: "NAME", text: "Alice" }];
+    localStorage.setItem("deid_annotation_draft:doc-1", JSON.stringify({
+      documentId: "doc-1",
+      mutation_id: "restored-mutation",
+      spans: restoredSpans,
+      expected_revision: 0,
+      saved_at: "2026-09-01T12:00:00.000Z",
+    }));
+    vi.mocked(api.saveAnnotations).mockResolvedValue({
+      revision: 1,
+      spans: restoredSpans,
+      assignment_state: "in_progress",
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByText("Session 001"));
+
+    await waitFor(() => expect(api.saveAnnotations).toHaveBeenCalledWith("doc-1", {
+      spans: restoredSpans,
+      expected_revision: 0,
+      mutation_id: "restored-mutation",
+    }));
+    expect(await screen.findByText("Saved")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry save" })).toBeNull();
+    expect(localStorage.getItem("deid_annotation_draft:doc-1")).toBeNull();
+  });
+
   it("shows a conflict and blocks completion after a stale save", async () => {
     mockAuthenticated();
     vi.mocked(api.saveAnnotations).mockRejectedValue(new api.ApiError(409, "This session was updated elsewhere."));

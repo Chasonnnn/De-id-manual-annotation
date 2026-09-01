@@ -1220,11 +1220,12 @@ export default function App() {
       saveInFlightRef.current = false;
       setDocument(nextDocument);
       setSpans(canRestoreDraft ? draft.spans : nextDocument.manual_annotations);
-      setSaveStatus(canRestoreDraft ? "error" : "saved");
-      setSaveError(canRestoreDraft ? "Local draft restored. Retry save." : null);
+      setSaveStatus("saved");
+      setSaveError(null);
       setSavedAt(canRestoreDraft ? null : new Date());
       recoveryCopyRequestRef.current += 1;
       setRecoveryCopyState({ status: "idle", error: null });
+      if (canRestoreDraft) void flushSave();
     } catch (caught) {
       if (documentLoadRequestRef.current !== requestId) return;
       setAppError(errorMessage(caught));
